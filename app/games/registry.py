@@ -1,10 +1,11 @@
-from app.games.abiotic_factor.game import AbioticFactorGame
+from app.games.abiotic_factor.definition import AbioticFactorGame
 from app.games.base import SupportedGame
-from app.games.valheim.game import ValheimGame
+from app.games.game_id import GameId
+from app.games.valheim.definition import ValheimGame
 
 
 class GameRegistry:
-    _games: dict[str, SupportedGame] = {
+    _games: dict[GameId, SupportedGame] = {
         ValheimGame.game_id: ValheimGame(),
         AbioticFactorGame.game_id: AbioticFactorGame(),
     }
@@ -14,8 +15,13 @@ class GameRegistry:
         return list(cls._games.values())
 
     @classmethod
-    def get_by_game_id(cls, game_id: str) -> SupportedGame | None:
-        return cls._games.get(game_id)
+    def get_by_game_id(cls, game_id: str | GameId) -> SupportedGame | None:
+        try:
+            normalized_game_id = GameId(game_id)
+        except ValueError:
+            return None
+
+        return cls._games.get(normalized_game_id)
 
     @classmethod
     def get_by_display_name(cls, display_name: str) -> SupportedGame | None:

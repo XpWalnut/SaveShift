@@ -1,5 +1,6 @@
 from app.database.database import SessionLocal
 from app.database.models.installed_game import InstalledGame
+from app.utils.logging import logger
 
 
 class InstalledGameService:
@@ -20,6 +21,7 @@ class InstalledGameService:
             session.add(installed_game)
             session.commit()
             session.refresh(installed_game)
+            logger.info("Installed game added: %s", display_name)
             return installed_game
 
     @staticmethod

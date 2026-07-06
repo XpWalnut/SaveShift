@@ -1,9 +1,10 @@
 from pathlib import Path
 
 from app.database.database import SessionLocal
-from app.database.models.project import Project
 from app.database.models.installed_game import InstalledGame
+from app.database.models.project import Project
 from app.games.registry import GameRegistry
+from app.utils.logging import logger
 
 
 class ProjectService:
@@ -32,39 +33,53 @@ class ProjectService:
             )
 
             if installed_game is None:
+                logger.warning("Project discovery failed. Installed game ID %s was not found.", installed_game_id)
                 return []
 
             supported_game = GameRegistry.get_by_game_id(installed_game.game_id)
 
             if supported_game is None:
+                logger.warning("Project discovery failed. Unsupported game ID: %s", installed_game.game_id)
                 return []
 
-            discovered_worlds = supported_game.scan_worlds(Path(installed_game.save_path))
-            saved_projects: list[Project] = []
+            logger.info("Discovering projects for %s", installed_game.display_name)
 
-            for world in discovered_worlds:
+            discovered_projects = supported_game.discovery().discover_projects(
+                Path(installed_game.save_path)
+            )
+
+            tracked_projects: list[Project] = []
+
+            for discovered_project in discovered_projects:
                 existing_project = (
                     session.query(Project)
                     .filter(Project.installed_game_id == installed_game.id)
-                    .filter(Project.name == world.name)
+                    .filter(Project.name == discovered_project.name)
                     .first()
                 )
 
                 if existing_project:
-                    saved_projects.append(existing_project)
+                    tracked_projects.append(existing_project)
                     continue
 
                 project = Project(
                     installed_game_id=installed_game.id,
-                    name=world.name,
-                    local_path=str(world.path),
+                    name=discovered_project.name,
+                    local_path=str(discovered_project.root_path),
                 )
+
                 session.add(project)
-                saved_projects.append(project)
+                tracked_projects.append(project)
 
             session.commit()
 
-            for project in saved_projects:
+            for project in tracked_projects:
                 session.refresh(project)
 
-            return saved_projects
+            logger.info(
+                "Project discovery complete for %s. Found %d project(s).",
+                installed_game.display_name,
+                len(tracked_projects),
+            )
+
+            return tracked_projects

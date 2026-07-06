@@ -1,20 +1,21 @@
-from dataclasses import dataclass
-from pathlib import Path
 from abc import ABC, abstractmethod
+from pathlib import Path
+
+from app.games.game_id import GameId
+from app.games.project_discovery import DiscoveredProject
 
 
-@dataclass(frozen=True)
-class GameWorld:
-    name: str
-    path: Path
-    files: list[Path]
+class GameDiscovery(ABC):
+    @abstractmethod
+    def discover_projects(self, save_path: Path) -> list[DiscoveredProject]:
+        pass
 
 
 class SupportedGame(ABC):
-    game_id: str
+    game_id: GameId
     display_name: str
     process_names: list[str]
 
     @abstractmethod
-    def scan_worlds(self, save_path: Path) -> list[GameWorld]:
+    def discovery(self) -> GameDiscovery:
         pass
