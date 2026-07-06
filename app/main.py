@@ -6,6 +6,7 @@ from app.core.logging import logger
 
 
 def main() -> None:
+    logger.info("Save Shift started")
     init_db()
 
     app = QApplication([])
@@ -13,8 +14,6 @@ def main() -> None:
     window.show()
 
     app.exec()
-
-    logger.info("Save Shift started")
 
 
 if __name__ == "__main__":

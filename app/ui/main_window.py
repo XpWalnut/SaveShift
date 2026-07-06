@@ -30,7 +30,7 @@ class MainWindow(QMainWindow):
         self.title = QLabel("Save Shift")
         self.title.setStyleSheet("font-size: 28px; font-weight: bold;")
 
-        self.subtitle = QLabel("Friend-group save handoff for peer-hosted co-op games.")
+        self.subtitle = QLabel("Seamlessly hand off self-hosted co-op game worlds between friends.")
         self.subtitle.setStyleSheet("font-size: 14px; color: gray;")
 
         self.installed_game_list = QListWidget()
