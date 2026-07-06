@@ -1,6 +1,8 @@
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 import json
+import hashlib
+from typing import BinaryIO
 
 from app.core.logging import logger
 from app.packages.checksum import calculate_checksums
@@ -19,11 +21,11 @@ class PackageService:
         save_shift_version: str = "0.1.0-alpha",
         metadata: dict | None = None,
     ) -> Path:
-        if not root_path.exists():
-            raise FileNotFoundError(f"Root path does not exist: {root_path}")
-
-        if not save_files:
-            raise ValueError("Cannot create package without save files.")
+        PackageService._validate_package_inputs(
+            root_path=root_path,
+            save_files=save_files,
+            output_path=output_path,
+        )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -89,9 +91,41 @@ class PackageService:
         return True
 
     @staticmethod
-    def _calculate_stream_sha256(file) -> str:
-        import hashlib
+    def _validate_package_inputs(
+        root_path: Path,
+        save_files: list[Path],
+        output_path: Path,
+    ) -> None:
+        if not root_path.exists():
+            raise FileNotFoundError(f"Root path does not exist: {root_path}")
 
+        if not root_path.is_dir():
+            raise NotADirectoryError(f"Root path is not a directory: {root_path}")
+
+        if not save_files:
+            raise ValueError("Cannot create package without save files.")
+
+        resolved_root = root_path.resolve()
+
+        for save_file in save_files:
+            if not save_file.exists():
+                raise FileNotFoundError(f"Save file does not exist: {save_file}")
+
+            if not save_file.is_file():
+                raise ValueError(f"Save path is not a file: {save_file}")
+
+            resolved_file = save_file.resolve()
+
+            if not resolved_file.is_relative_to(resolved_root):
+                raise ValueError(
+                    f"Save file is outside the project root: {save_file}"
+                )
+
+        if output_path.exists() and output_path.is_dir():
+            raise IsADirectoryError(f"Output path is a directory: {output_path}")
+
+    @staticmethod
+    def _calculate_stream_sha256(file: BinaryIO) -> str:
         sha256 = hashlib.sha256()
 
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
