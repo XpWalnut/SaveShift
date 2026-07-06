@@ -6,7 +6,7 @@ from typing import BinaryIO
 
 from app.core.logging import logger
 from app.packages.checksum import calculate_checksums
-from app.packages.manifest import PackageManifest
+from app.packages.package_manifest import PackageManifest
 
 
 class PackageService:
