@@ -1,5 +1,5 @@
 from app.database.database import SessionLocal
-from app.models.installed_game import InstalledGame
+from app.database.models.installed_game import InstalledGame
 
 
 class InstalledGameService:

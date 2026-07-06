@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from app.database.database import SessionLocal
-from app.models.project import Project
-from app.models.installed_game import InstalledGame
+from app.database.models.project import Project
+from app.database.models.installed_game import InstalledGame
 from app.games.registry import GameRegistry
 
 
