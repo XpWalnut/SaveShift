@@ -2,7 +2,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.database.database import init_db
 from app.ui.main_window import MainWindow
-from app.utils.logging import logger
+from app.core.logging import logger
 
 
 def main() -> None:

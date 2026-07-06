@@ -4,7 +4,7 @@ from app.database.database import SessionLocal
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.games.registry import GameRegistry
-from app.utils.logging import logger
+from app.core.logging import logger
 
 
 class ProjectService:
