@@ -1,5 +1,6 @@
 from typing import Final
 
+
 class AppResources:
     SAVESHIFT: Final[str] = ".saveshift"
     DATA: Final[str] = "data"
