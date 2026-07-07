@@ -28,6 +28,7 @@ class PackageReader:
 
         return PackageInfo(
             package_format_version=manifest["package_format_version"],
+            project_uuid=manifest["project_uuid"],
             game_id=manifest["game_id"],
             project_name=manifest["project_name"],
             created_at_utc=manifest["created_at_utc"],

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class PackageInfo:
     package_format_version: int
+    project_uuid: str
     game_id: str
     project_name: str
     created_at_utc: str

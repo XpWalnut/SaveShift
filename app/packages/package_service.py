@@ -8,6 +8,7 @@ import re
 
 from app.core.config import AppConfig
 from app.core.logging import logger
+from app.database.models.project import Project
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
 
@@ -16,7 +17,7 @@ class PackageService:
     @staticmethod
     def create_package(
         game_id: str,
-        project_name: str,
+        project: Project,
         root_path: Path,
         save_files: list[Path],
         output_path: Path,
@@ -34,7 +35,7 @@ class PackageService:
 
         manifest = PackageManifest.create(
             game_id=game_id,
-            project_name=project_name,
+            project=project,
             created_by=created_by,
             save_shift_version=save_shift_version,
             files=save_files,
@@ -65,6 +66,7 @@ class PackageService:
     def create_project_package(
             game_id: str,
             project_name: str,
+            project_uuid: str,
             root_path: Path,
             save_files: list[Path],
             created_by: str,
@@ -87,6 +89,7 @@ class PackageService:
         return PackageService.create_package(
             game_id=game_id,
             project_name=project_name,
+            project_uuid=project_uuid,
             root_path=root_path,
             save_files=save_files,
             output_path=output_path,

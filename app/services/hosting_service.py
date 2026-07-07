@@ -31,6 +31,7 @@ class HostingService:
         ]
 
         package_path = PackageService.create_project_package(
+            project=project,
             game_id=game_id,
             project_name=project.name,
             root_path=root_path,
