@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from app.packages.package_extractor import PackageExtractor
+from app.packages.package_reader import PackageReader
 from app.packages.package_service import PackageService
 
 
@@ -24,7 +26,11 @@ def main() -> None:
         created_by="Jake",
     )
 
-    print(f"Created package: {output_path}")
+    info = PackageReader.read(output_path)
+    print(info)
+
+    extracted_path = PackageExtractor.extract(output_path)
+    print(f"Extracted package to: {extracted_path}")
 
 
 if __name__ == "__main__":
