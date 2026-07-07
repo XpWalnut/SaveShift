@@ -3,7 +3,10 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import json
 import hashlib
 from typing import BinaryIO
+from datetime import UTC, datetime
+import re
 
+from app.core.config import AppConfig
 from app.core.logging import logger
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
@@ -59,6 +62,40 @@ class PackageService:
         return output_path
 
     @staticmethod
+    def create_project_package(
+            game_id: str,
+            project_name: str,
+            root_path: Path,
+            save_files: list[Path],
+            created_by: str,
+            save_shift_version: str = "0.1.0-alpha",
+            metadata: dict | None = None,
+    ) -> Path:
+        safe_game_id = PackageService._sanitize_path_component(game_id)
+        safe_project_name = PackageService._sanitize_path_component(project_name)
+
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
+
+        output_directory = (
+                AppConfig.get_packages_directory()
+                / safe_game_id
+                / safe_project_name
+        )
+
+        output_path = output_directory / f"{timestamp}.sspkg"
+
+        return PackageService.create_package(
+            game_id=game_id,
+            project_name=project_name,
+            root_path=root_path,
+            save_files=save_files,
+            output_path=output_path,
+            created_by=created_by,
+            save_shift_version=save_shift_version,
+            metadata=metadata,
+        )
+
+    @staticmethod
     def verify_package(package_path: Path) -> bool:
         if not package_path.exists():
             raise FileNotFoundError(f"Package does not exist: {package_path}")
@@ -89,6 +126,15 @@ class PackageService:
                     raise ValueError(f"Checksum mismatch for {relative_file}")
 
         return True
+
+    @staticmethod
+    def _sanitize_path_component(value: str) -> str:
+        sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "_", value).strip("_")
+
+        if not sanitized:
+            return "unknown"
+
+        return sanitized
 
     @staticmethod
     def _validate_package_inputs(
