@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.packages.package_service import PackageService
+from app.packages.package_reader import PackageReader
 
 
 def main() -> None:
@@ -25,6 +26,8 @@ def main() -> None:
     )
 
     print(f"Created package: {output_path}")
+    info = PackageReader.read(output_path)
+    print(info)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,9 @@
-from pathlib import Path
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-APP_DATA_DIR = Path.home() / ".saveshift"
-APP_DATA_DIR.mkdir(exist_ok=True)
+from app.core.config import AppConfig
 
-DATABASE_PATH = APP_DATA_DIR / "saveshift.sqlite3"
-
-engine = create_engine(f"sqlite:///{DATABASE_PATH}", echo=False)
+engine = create_engine(f"sqlite:///{AppConfig.get_database_path()}", echo=False)
 SessionLocal = sessionmaker(bind=engine)
 
 
