@@ -14,8 +14,10 @@ from PySide6.QtWidgets import (
 )
 
 from app.games.registry import GameRegistry
+from app.services.hosting_service import HostingService
 from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
+from app.services.project_version_service import ProjectVersionService
 
 
 class MainWindow(QMainWindow):
@@ -26,6 +28,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(850, 600)
 
         self.installed_game_ids_by_row: dict[int, int] = {}
+        self.project_context_by_row: dict[int, tuple[int, str]] = {}
 
         self.title = QLabel("Save Shift")
         self.title.setStyleSheet("font-size: 28px; font-weight: bold;")
@@ -34,6 +37,7 @@ class MainWindow(QMainWindow):
         self.subtitle.setStyleSheet("font-size: 14px; color: gray;")
 
         self.installed_game_list = QListWidget()
+        self.project_list = QListWidget()
 
         self.add_button = QPushButton("Add Installed Game")
         self.add_button.clicked.connect(self.add_installed_game)
@@ -44,22 +48,33 @@ class MainWindow(QMainWindow):
         self.discover_button = QPushButton("Discover Projects")
         self.discover_button.clicked.connect(self.discover_projects_for_selected_game)
 
-        button_row = QHBoxLayout()
-        button_row.addWidget(self.add_button)
-        button_row.addWidget(self.remove_button)
-        button_row.addWidget(self.discover_button)
+        self.host_button = QPushButton("Host Selected Project")
+        self.host_button.clicked.connect(self.host_selected_project)
+
+        game_button_row = QHBoxLayout()
+        game_button_row.addWidget(self.add_button)
+        game_button_row.addWidget(self.remove_button)
+        game_button_row.addWidget(self.discover_button)
+
+        project_button_row = QHBoxLayout()
+        project_button_row.addWidget(self.host_button)
 
         layout = QVBoxLayout()
         layout.addWidget(self.title)
         layout.addWidget(self.subtitle)
+        layout.addWidget(QLabel("Installed Games"))
         layout.addWidget(self.installed_game_list)
-        layout.addLayout(button_row)
+        layout.addLayout(game_button_row)
+        layout.addWidget(QLabel("Projects"))
+        layout.addWidget(self.project_list)
+        layout.addLayout(project_button_row)
 
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
 
         self.load_installed_games()
+        self.load_projects()
 
     def load_installed_games(self) -> None:
         self.installed_game_list.clear()
@@ -74,26 +89,58 @@ class MainWindow(QMainWindow):
             return
 
         for row, installed_game in enumerate(installed_games):
-            projects = ProjectService.get_projects_for_installed_game(installed_game.id)
-
-            project_lines = "\n".join(
-                f"    • {project.name}"
-                for project in projects
-            )
-
-            if not project_lines:
-                project_lines = "    No projects discovered yet."
-
             item_text = (
                 f"{installed_game.display_name}\n"
-                f"Save folder: {installed_game.save_path}\n"
-                f"Projects:\n"
-                f"{project_lines}"
+                f"Save folder: {installed_game.save_path}"
             )
 
             item = QListWidgetItem(item_text)
             self.installed_game_list.addItem(item)
             self.installed_game_ids_by_row[row] = installed_game.id
+
+    def load_projects(self) -> None:
+        self.project_list.clear()
+        self.project_context_by_row.clear()
+
+        installed_games = InstalledGameService.get_installed_games()
+
+        row = 0
+
+        for installed_game in installed_games:
+            projects = ProjectService.get_projects_for_installed_game(installed_game.id)
+
+            for project in projects:
+                latest_version = ProjectVersionService.get_latest_version(project.id)
+
+                version_text = (
+                    f"Version {latest_version.version_number}"
+                    if latest_version is not None
+                    else "No versions yet"
+                )
+
+                hosted_by_text = (
+                    f"Last updated by: {latest_version.created_by}"
+                    if latest_version is not None
+                    else "Last updated by: Nobody yet"
+                )
+
+                item_text = (
+                    f"{project.name}\n"
+                    f"Game: {installed_game.display_name}\n"
+                    f"{version_text}\n"
+                    f"{hosted_by_text}\n"
+                    f"Save folder: {project.local_path}"
+                )
+
+                item = QListWidgetItem(item_text)
+                self.project_list.addItem(item)
+                self.project_context_by_row[row] = (project.id, installed_game.game_id)
+                row += 1
+
+        if row == 0:
+            item = QListWidgetItem("No projects discovered yet. Select a game and click Discover Projects.")
+            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+            self.project_list.addItem(item)
 
     def add_installed_game(self) -> None:
         supported_games = GameRegistry.all()
@@ -132,6 +179,7 @@ class MainWindow(QMainWindow):
         )
 
         self.load_installed_games()
+        self.load_projects()
 
     def remove_selected_game(self) -> None:
         row = self.installed_game_list.currentRow()
@@ -151,6 +199,7 @@ class MainWindow(QMainWindow):
 
         InstalledGameService.delete_installed_game(self.installed_game_ids_by_row[row])
         self.load_installed_games()
+        self.load_projects()
 
     def discover_projects_for_selected_game(self) -> None:
         row = self.installed_game_list.currentRow()
@@ -168,6 +217,7 @@ class MainWindow(QMainWindow):
                 "No Projects Found",
                 "No projects were found in that save folder.",
             )
+            self.load_projects()
             return
 
         project_summary = "\n".join(
@@ -182,3 +232,48 @@ class MainWindow(QMainWindow):
         )
 
         self.load_installed_games()
+        self.load_projects()
+
+    def host_selected_project(self) -> None:
+        row = self.project_list.currentRow()
+
+        if row not in self.project_context_by_row:
+            QMessageBox.information(self, "No Project Selected", "Please select a project first.")
+            return
+
+        project_id, game_id = self.project_context_by_row[row]
+
+        hosted_by, ok = QInputDialog.getText(
+            self,
+            "Host Project",
+            "Who is hosting this version?",
+        )
+
+        if not ok or not hosted_by.strip():
+            return
+
+        try:
+            version = HostingService.host_project(
+                project_id=project_id,
+                game_id=game_id,
+                hosted_by=hosted_by.strip(),
+            )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Hosting Failed",
+                f"Save Shift could not host this project.\n\n{error}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Project Hosted",
+            (
+                f"Hosted version created successfully.\n\n"
+                f"Version: {version.version_number}\n"
+                f"Package:\n{version.package_path}"
+            ),
+        )
+
+        self.load_projects()
