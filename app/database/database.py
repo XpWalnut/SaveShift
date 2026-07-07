@@ -14,5 +14,6 @@ class Base(DeclarativeBase):
 def init_db() -> None:
     from app.database.models.installed_game import InstalledGame
     from app.database.models.project import Project
+    from app.database.models.project_version import ProjectVersion
 
     Base.metadata.create_all(bind=engine)
