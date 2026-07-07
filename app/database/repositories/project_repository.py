@@ -11,6 +11,11 @@ class ProjectRepository:
             return session.query(Project).order_by(Project.name).all()
 
     @staticmethod
+    def get_by_id(project_id: int) -> Project | None:
+        with SessionLocal() as session:
+            return session.get(Project, project_id)
+
+    @staticmethod
     def get_for_installed_game(installed_game_id: int) -> list[Project]:
         with SessionLocal() as session:
             return (
