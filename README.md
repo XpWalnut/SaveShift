@@ -77,7 +77,7 @@ The project is focused on building a robust architecture first before implementi
 
 ## Technology
 
-- Python 3.13
+- Python 3.11
 - PySide6
 - SQLAlchemy
 - SQLite
