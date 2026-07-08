@@ -8,6 +8,7 @@ import re
 
 from app.core.config import AppConfig
 from app.core.logging import logger
+from app.database.models.project import Project
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
 
@@ -16,7 +17,8 @@ class PackageService:
     @staticmethod
     def create_package(
         game_id: str,
-        project_name: str,
+        project: Project,
+        project_version: int,
         root_path: Path,
         save_files: list[Path],
         output_path: Path,
@@ -33,8 +35,10 @@ class PackageService:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         manifest = PackageManifest.create(
+            project_uuid=project.uuid,
+            project_version=project_version,
             game_id=game_id,
-            project_name=project_name,
+            project_name=project.name,
             created_by=created_by,
             save_shift_version=save_shift_version,
             files=save_files,
@@ -64,15 +68,16 @@ class PackageService:
     @staticmethod
     def create_project_package(
             game_id: str,
-            project_name: str,
-            root_path: Path,
+            project: Project,
+            project_version: int,
             save_files: list[Path],
             created_by: str,
             save_shift_version: str = "0.1.0-alpha",
             metadata: dict | None = None,
     ) -> Path:
+        root_path = Path(project.local_path)
         safe_game_id = PackageService._sanitize_path_component(game_id)
-        safe_project_name = PackageService._sanitize_path_component(project_name)
+        safe_project_name = PackageService._sanitize_path_component(project.name)
 
         timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
 
@@ -86,7 +91,8 @@ class PackageService:
 
         return PackageService.create_package(
             game_id=game_id,
-            project_name=project_name,
+            project=project,
+            project_version=project_version,
             root_path=root_path,
             save_files=save_files,
             output_path=output_path,

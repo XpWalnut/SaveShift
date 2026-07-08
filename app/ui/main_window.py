@@ -1,3 +1,4 @@
+from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -18,6 +19,7 @@ from app.services.hosting_service import HostingService
 from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
+from app.services.import_service import ImportService
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +53,9 @@ class MainWindow(QMainWindow):
         self.host_button = QPushButton("Host Selected Project")
         self.host_button.clicked.connect(self.host_selected_project)
 
+        self.import_button = QPushButton("Import Package")
+        self.import_button.clicked.connect(self.import_package)
+
         game_button_row = QHBoxLayout()
         game_button_row.addWidget(self.add_button)
         game_button_row.addWidget(self.remove_button)
@@ -58,6 +63,7 @@ class MainWindow(QMainWindow):
 
         project_button_row = QHBoxLayout()
         project_button_row.addWidget(self.host_button)
+        project_button_row.addWidget(self.import_button)
 
         layout = QVBoxLayout()
         layout.addWidget(self.title)
@@ -273,6 +279,75 @@ class MainWindow(QMainWindow):
                 f"Hosted version created successfully.\n\n"
                 f"Version: {version.version_number}\n"
                 f"Package:\n{version.package_path}"
+            ),
+        )
+
+        self.load_projects()
+
+    def import_package(self) -> None:
+        package_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Save Shift Package",
+            "",
+            "Save Shift Packages (*.sspkg)",
+        )
+
+        if not package_path:
+            return
+
+        try:
+            ImportService.validate_import_package(Path(package_path))
+        except ValueError as error:
+            QMessageBox.warning(
+                self,
+                "Import Not Allowed",
+                str(error),
+            )
+            return
+        except FileNotFoundError as error:
+            QMessageBox.critical(
+                self,
+                "Package Not Found",
+                str(error),
+            )
+            return
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"An unexpected error occurred.\n\n{error}",
+            )
+            return
+
+        imported_by, ok = QInputDialog.getText(
+            self,
+            "Import Package",
+            "Who is importing this package?",
+        )
+
+        if not ok or not imported_by.strip():
+            return
+
+        try:
+            version = ImportService.import_package(
+                package_path=Path(package_path),
+                imported_by=imported_by.strip(),
+            )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Save Shift could not import this package.\n\n{error}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Package Imported",
+            (
+                f"Package imported successfully.\n\n"
+                f"Version: {version.version_number}\n"
+                f"Backup created:\n{version.backup_path}"
             ),
         )
 

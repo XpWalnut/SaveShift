@@ -14,27 +14,23 @@ class ProjectVersionSource:
 class ProjectVersionService:
     @staticmethod
     def create_version(
-        project_id: int,
-        created_by: str,
-        source_type: str,
-        package_path: str | None = None,
-        backup_path: str | None = None,
-        package_checksum: str | None = None,
-        parent_version_id: int | None = None,
-        lineage_name: str = "main",
-        notes: str | None = None,
+            project_id: int,
+            created_by: str,
+            source_type: str,
+            version_number: int | None = None,
+            package_path: str | None = None,
+            backup_path: str | None = None,
+            package_checksum: str | None = None,
+            parent_version_id: int | None = None,
+            lineage_name: str = "main",
+            notes: str | None = None,
     ) -> ProjectVersion:
-        latest_version = ProjectVersionRepository.get_latest(project_id)
-
-        next_version_number = (
-            latest_version.version_number + 1
-            if latest_version is not None
-            else 1
-        )
+        if version_number is None:
+            version_number = ProjectVersionService.get_next_version_number(project_id)
 
         project_version = ProjectVersion(
             project_id=project_id,
-            version_number=next_version_number,
+            version_number=version_number,
             created_at_utc=datetime.now(UTC),
             created_by=created_by.strip(),
             source_type=source_type,
@@ -55,3 +51,12 @@ class ProjectVersionService:
     @staticmethod
     def get_latest_version(project_id: int) -> ProjectVersion | None:
         return ProjectVersionRepository.get_latest(project_id)
+
+    @staticmethod
+    def get_next_version_number(project_id: int) -> int:
+        latest = ProjectVersionRepository.get_latest(project_id)
+
+        if latest is None:
+            return 1
+
+        return latest.version_number + 1
