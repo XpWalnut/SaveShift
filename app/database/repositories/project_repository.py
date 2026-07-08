@@ -16,6 +16,15 @@ class ProjectRepository:
             return session.get(Project, project_id)
 
     @staticmethod
+    def get_by_uuid(project_uuid: str) -> Project | None:
+        with SessionLocal() as session:
+            return (
+                session.query(Project)
+                .filter(Project.uuid == project_uuid)
+                .first()
+            )
+
+    @staticmethod
     def get_for_installed_game(installed_game_id: int) -> list[Project]:
         with SessionLocal() as session:
             return (

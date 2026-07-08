@@ -18,6 +18,7 @@ class PackageService:
     def create_package(
         game_id: str,
         project: Project,
+        project_version: int,
         root_path: Path,
         save_files: list[Path],
         output_path: Path,
@@ -35,6 +36,7 @@ class PackageService:
 
         manifest = PackageManifest.create(
             project_uuid=project.uuid,
+            project_version=project_version,
             game_id=game_id,
             project_name=project.name,
             created_by=created_by,
@@ -67,6 +69,7 @@ class PackageService:
     def create_project_package(
             game_id: str,
             project: Project,
+            project_version: int,
             save_files: list[Path],
             created_by: str,
             save_shift_version: str = "0.1.0-alpha",
@@ -89,6 +92,7 @@ class PackageService:
         return PackageService.create_package(
             game_id=game_id,
             project=project,
+            project_version=project_version,
             root_path=root_path,
             save_files=save_files,
             output_path=output_path,

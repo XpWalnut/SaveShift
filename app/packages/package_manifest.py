@@ -11,6 +11,7 @@ PACKAGE_FORMAT_VERSION = 1
 class PackageManifest:
     package_format_version: int
     project_uuid: str
+    project_version: int
     game_id: str
     project_name: str
     created_at_utc: str
@@ -22,6 +23,7 @@ class PackageManifest:
     @staticmethod
     def create(
         project_uuid: str,
+        project_version: int,
         game_id: str,
         project_name: str,
         created_by: str,
@@ -38,6 +40,7 @@ class PackageManifest:
         return PackageManifest(
             package_format_version=PACKAGE_FORMAT_VERSION,
             project_uuid=project_uuid,
+            project_version=project_version,
             game_id=game_id,
             project_name=project_name,
             created_at_utc=datetime.now(UTC).isoformat(),
