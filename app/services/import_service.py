@@ -41,7 +41,7 @@ class ImportService:
             game_id=package_info.game_id,
         )
 
-        SaveFileService.restore_project(
+        SaveFileService.synchronize_project(
             project=project,
             source_directory=extracted_path,
         )

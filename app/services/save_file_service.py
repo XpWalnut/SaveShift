@@ -45,8 +45,14 @@ class SaveFileService:
         return backup_root
 
     @staticmethod
-    def restore_project(project: Project, source_directory: Path) -> None:
+    def synchronize_project(project: Project, source_directory: Path) -> None:
         project_root = Path(project.local_path)
+
+        if not project_root.exists():
+            raise FileNotFoundError(f"Project folder does not exist: {project_root}")
+
+        if not project_root.is_dir():
+            raise NotADirectoryError(f"Project path is not a folder: {project_root}")
 
         if not source_directory.exists():
             raise FileNotFoundError(f"Source folder does not exist: {source_directory}")
@@ -54,9 +60,16 @@ class SaveFileService:
         if not source_directory.is_dir():
             raise NotADirectoryError(f"Source path is not a folder: {source_directory}")
 
-        project_root.mkdir(parents=True, exist_ok=True)
+        project_files = SaveFileService._relative_file_set(project_root)
+        source_files = SaveFileService._relative_file_set(source_directory)
 
-        for source_file in SaveFileService._list_files(source_directory):
+        files_to_delete = project_files - source_files
+
+        for relative_path in files_to_delete:
+            (project_root / relative_path).unlink()
+
+
+        for source_file in SaveFileService._list_absolute_files(source_directory):
             relative_path = source_file.relative_to(source_directory)
             target_file = project_root / relative_path
 
@@ -64,12 +77,20 @@ class SaveFileService:
             shutil.copy2(source_file, target_file)
 
     @staticmethod
-    def _list_files(root: Path) -> list[Path]:
+    def _list_absolute_files(root: Path) -> list[Path]:
         return [
             path
             for path in root.rglob("*")
             if path.is_file()
         ]
+
+    @staticmethod
+    def _relative_file_set(root: Path) -> set[Path]:
+        return {
+            path.relative_to(root)
+            for path in root.rglob("*")
+            if path.is_file()
+        }
 
     @staticmethod
     def _sanitize_path_component(value: str) -> str:
