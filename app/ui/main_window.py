@@ -295,6 +295,30 @@ class MainWindow(QMainWindow):
         if not package_path:
             return
 
+        try:
+            ImportService.validate_import_package(Path(package_path))
+        except ValueError as error:
+            QMessageBox.warning(
+                self,
+                "Import Not Allowed",
+                str(error),
+            )
+            return
+        except FileNotFoundError as error:
+            QMessageBox.critical(
+                self,
+                "Package Not Found",
+                str(error),
+            )
+            return
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"An unexpected error occurred.\n\n{error}",
+            )
+            return
+
         imported_by, ok = QInputDialog.getText(
             self,
             "Import Package",
