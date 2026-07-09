@@ -1,25 +1,29 @@
 from pathlib import Path
-from PySide6.QtCore import Qt
+
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from app.database.models.installed_game import InstalledGame
+from app.database.models.project import Project
 from app.games.registry import GameRegistry
 from app.services.hosting_service import HostingService
+from app.services.import_service import ImportService
 from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
-from app.services.import_service import ImportService
+from app.ui import styles, theme
+from app.ui.widgets.installed_game_card import InstalledGameCard
+from app.ui.widgets.project_card import ProjectCard
 
 
 class MainWindow(QMainWindow):
@@ -27,19 +31,38 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Save Shift")
-        self.setMinimumSize(850, 600)
+        self.setMinimumSize(950, 650)
 
-        self.installed_game_ids_by_row: dict[int, int] = {}
-        self.project_context_by_row: dict[int, tuple[int, str]] = {}
+        self.selected_installed_game_id: int | None = None
 
         self.title = QLabel("Save Shift")
         self.title.setStyleSheet("font-size: 28px; font-weight: bold;")
 
         self.subtitle = QLabel("Seamlessly hand off self-hosted co-op game worlds between friends.")
-        self.subtitle.setStyleSheet("font-size: 14px; color: gray;")
+        self.subtitle.setStyleSheet(f"font-size: 14px; color: {theme.TEXT_SECONDARY};")
 
-        self.installed_game_list = QListWidget()
-        self.project_list = QListWidget()
+        self.installed_game_heading = QLabel("Installed Games")
+        self.project_heading = QLabel("Projects")
+
+        self.installed_game_container = QWidget()
+        self.installed_game_layout = QVBoxLayout()
+        self.installed_game_layout.setSpacing(theme.SPACING)
+        self.installed_game_container.setLayout(self.installed_game_layout)
+
+        self.project_scroll = QScrollArea()
+        self.project_scroll.setWidgetResizable(True)
+        self.project_scroll.setStyleSheet("""
+        QScrollArea {
+            border: none;
+            background: transparent;
+        }
+        """)
+
+        self.project_container = QWidget()
+        self.project_layout = QVBoxLayout()
+        self.project_layout.setSpacing(theme.SPACING)
+        self.project_container.setLayout(self.project_layout)
+        self.project_scroll.setWidget(self.project_container)
 
         self.add_button = QPushButton("Add Installed Game")
         self.add_button.clicked.connect(self.add_installed_game)
@@ -50,103 +73,115 @@ class MainWindow(QMainWindow):
         self.discover_button = QPushButton("Discover Projects")
         self.discover_button.clicked.connect(self.discover_projects_for_selected_game)
 
-        self.host_button = QPushButton("Host Selected Project")
-        self.host_button.clicked.connect(self.host_selected_project)
+        for button in (self.add_button, self.remove_button, self.discover_button):
+            button.setStyleSheet(styles.secondary_button_style())
 
-        self.import_button = QPushButton("Import Package")
-        self.import_button.clicked.connect(self.import_package)
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(self.installed_game_heading)
+        left_panel.addWidget(self.installed_game_container)
+        left_panel.addSpacing(theme.SPACING)
+        left_panel.addWidget(self.add_button)
+        left_panel.addWidget(self.discover_button)
+        left_panel.addWidget(self.remove_button)
+        left_panel.addStretch()
 
-        game_button_row = QHBoxLayout()
-        game_button_row.addWidget(self.add_button)
-        game_button_row.addWidget(self.remove_button)
-        game_button_row.addWidget(self.discover_button)
+        left_container = QWidget()
+        left_container.setLayout(left_panel)
 
-        project_button_row = QHBoxLayout()
-        project_button_row.addWidget(self.host_button)
-        project_button_row.addWidget(self.import_button)
+        right_panel = QVBoxLayout()
+        right_panel.addWidget(self.project_heading)
+        right_panel.addWidget(self.project_scroll)
+
+        right_container = QWidget()
+        right_container.setLayout(right_panel)
+
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(theme.SPACING_LARGE)
+        content_layout.addWidget(left_container)
+        content_layout.addWidget(right_container)
+        content_layout.setStretch(0, 2)
+        content_layout.setStretch(1, 7)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(theme.SPACING)
         layout.addWidget(self.title)
         layout.addWidget(self.subtitle)
-        layout.addWidget(QLabel("Installed Games"))
-        layout.addWidget(self.installed_game_list)
-        layout.addLayout(game_button_row)
-        layout.addWidget(QLabel("Projects"))
-        layout.addWidget(self.project_list)
-        layout.addLayout(project_button_row)
+        layout.addSpacing(theme.SPACING)
+        layout.addLayout(content_layout)
 
         container = QWidget()
         container.setLayout(layout)
+        container.setStyleSheet(f"background-color: {theme.WINDOW_BACKGROUND};")
         self.setCentralWidget(container)
 
         self.load_installed_games()
         self.load_projects()
 
     def load_installed_games(self) -> None:
-        self.installed_game_list.clear()
-        self.installed_game_ids_by_row.clear()
+        self._clear_installed_game_cards()
 
         installed_games = InstalledGameService.get_installed_games()
 
-        if not installed_games:
-            item = QListWidgetItem("No installed games configured yet. Click Add Installed Game to begin.")
-            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            self.installed_game_list.addItem(item)
-            return
+        if self.selected_installed_game_id is None and installed_games:
+            self.selected_installed_game_id = installed_games[0].id
 
-        for row, installed_game in enumerate(installed_games):
-            item_text = (
-                f"{installed_game.display_name}\n"
-                f"Save folder: {installed_game.save_path}"
-            )
-
-            item = QListWidgetItem(item_text)
-            self.installed_game_list.addItem(item)
-            self.installed_game_ids_by_row[row] = installed_game.id
-
-    def load_projects(self) -> None:
-        self.project_list.clear()
-        self.project_context_by_row.clear()
-
-        installed_games = InstalledGameService.get_installed_games()
-
-        row = 0
+        if self.selected_installed_game_id is not None:
+            existing_ids = {game.id for game in installed_games}
+            if self.selected_installed_game_id not in existing_ids:
+                self.selected_installed_game_id = installed_games[0].id if installed_games else None
 
         for installed_game in installed_games:
             projects = ProjectService.get_projects_for_installed_game(installed_game.id)
 
-            for project in projects:
-                latest_version = ProjectVersionService.get_latest_version(project.id)
+            card = InstalledGameCard(
+                installed_game=installed_game,
+                project_count=len(projects),
+                is_selected=installed_game.id == self.selected_installed_game_id,
+            )
+            card.selected.connect(self.select_installed_game)
 
-                version_text = (
-                    f"Version {latest_version.version_number}"
-                    if latest_version is not None
-                    else "No versions yet"
-                )
+            self.installed_game_layout.addWidget(card)
 
-                hosted_by_text = (
-                    f"Last updated by: {latest_version.created_by}"
-                    if latest_version is not None
-                    else "Last updated by: Nobody yet"
-                )
+        self.installed_game_layout.addStretch()
 
-                item_text = (
-                    f"{project.name}\n"
-                    f"Game: {installed_game.display_name}\n"
-                    f"{version_text}\n"
-                    f"{hosted_by_text}\n"
-                    f"Save folder: {project.local_path}"
-                )
+    def load_projects(self) -> None:
+        self._clear_project_cards()
 
-                item = QListWidgetItem(item_text)
-                self.project_list.addItem(item)
-                self.project_context_by_row[row] = (project.id, installed_game.game_id)
-                row += 1
+        selected_game = self._get_selected_installed_game()
 
-        if row == 0:
-            item = QListWidgetItem("No projects discovered yet. Select a game and click Discover Projects.")
-            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            self.project_list.addItem(item)
+        if selected_game is None:
+            self.project_heading.setText("Projects")
+            empty_label = QLabel("No installed games configured yet.")
+            empty_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+            self.project_layout.addWidget(empty_label)
+            self.project_layout.addStretch()
+            return
+
+        self.project_heading.setText(f"Projects — {selected_game.display_name}")
+
+        projects = ProjectService.get_projects_for_installed_game(selected_game.id)
+
+        if not projects:
+            empty_label = QLabel("No projects discovered yet. Click Discover Projects.")
+            empty_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+            self.project_layout.addWidget(empty_label)
+            self.project_layout.addStretch()
+            return
+
+        for project in projects:
+            card = self._create_project_card(
+                project=project,
+                installed_game=selected_game,
+            )
+            self.project_layout.addWidget(card)
+
+        self.project_layout.addStretch()
+
+    def select_installed_game(self, installed_game: InstalledGame) -> None:
+        self.selected_installed_game_id = installed_game.id
+        self.load_installed_games()
+        self.load_projects()
 
     def add_installed_game(self) -> None:
         supported_games = GameRegistry.all()
@@ -178,19 +213,18 @@ class MainWindow(QMainWindow):
         if not save_path:
             return
 
-        InstalledGameService.add_installed_game(
+        installed_game = InstalledGameService.add_installed_game(
             game_id=supported_game.game_id,
             display_name=supported_game.display_name,
             save_path=save_path,
         )
 
+        self.selected_installed_game_id = installed_game.id
         self.load_installed_games()
         self.load_projects()
 
     def remove_selected_game(self) -> None:
-        row = self.installed_game_list.currentRow()
-
-        if row not in self.installed_game_ids_by_row:
+        if self.selected_installed_game_id is None:
             QMessageBox.information(self, "No Game Selected", "Please select a configured game first.")
             return
 
@@ -203,19 +237,17 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
 
-        InstalledGameService.delete_installed_game(self.installed_game_ids_by_row[row])
+        InstalledGameService.delete_installed_game(self.selected_installed_game_id)
+        self.selected_installed_game_id = None
         self.load_installed_games()
         self.load_projects()
 
     def discover_projects_for_selected_game(self) -> None:
-        row = self.installed_game_list.currentRow()
-
-        if row not in self.installed_game_ids_by_row:
+        if self.selected_installed_game_id is None:
             QMessageBox.information(self, "No Game Selected", "Please select a configured game first.")
             return
 
-        installed_game_id = self.installed_game_ids_by_row[row]
-        projects = ProjectService.discover_projects(installed_game_id)
+        projects = ProjectService.discover_projects(self.selected_installed_game_id)
 
         if not projects:
             QMessageBox.information(
@@ -226,10 +258,7 @@ class MainWindow(QMainWindow):
             self.load_projects()
             return
 
-        project_summary = "\n".join(
-            f"• {project.name}"
-            for project in projects
-        )
+        project_summary = "\n".join(f"• {project.name}" for project in projects)
 
         QMessageBox.information(
             self,
@@ -240,14 +269,8 @@ class MainWindow(QMainWindow):
         self.load_installed_games()
         self.load_projects()
 
-    def host_selected_project(self) -> None:
-        row = self.project_list.currentRow()
-
-        if row not in self.project_context_by_row:
-            QMessageBox.information(self, "No Project Selected", "Please select a project first.")
-            return
-
-        project_id, game_id = self.project_context_by_row[row]
+    def host_project(self, project: Project) -> None:
+        installed_game = self._get_installed_game_for_project(project)
 
         hosted_by, ok = QInputDialog.getText(
             self,
@@ -260,8 +283,8 @@ class MainWindow(QMainWindow):
 
         try:
             version = HostingService.host_project(
-                project_id=project_id,
-                game_id=game_id,
+                project_id=project.id,
+                game_id=installed_game.game_id,
                 hosted_by=hosted_by.strip(),
             )
         except Exception as error:
@@ -282,9 +305,10 @@ class MainWindow(QMainWindow):
             ),
         )
 
+        self.load_installed_games()
         self.load_projects()
 
-    def import_package(self) -> None:
+    def import_package(self, project: Project) -> None:
         package_path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Save Shift Package",
@@ -298,18 +322,10 @@ class MainWindow(QMainWindow):
         try:
             ImportService.validate_import_package(Path(package_path))
         except ValueError as error:
-            QMessageBox.warning(
-                self,
-                "Import Not Allowed",
-                str(error),
-            )
+            QMessageBox.warning(self, "Import Not Allowed", str(error))
             return
         except FileNotFoundError as error:
-            QMessageBox.critical(
-                self,
-                "Package Not Found",
-                str(error),
-            )
+            QMessageBox.critical(self, "Package Not Found", str(error))
             return
         except Exception as error:
             QMessageBox.critical(
@@ -351,4 +367,61 @@ class MainWindow(QMainWindow):
             ),
         )
 
+        self.load_installed_games()
         self.load_projects()
+
+    def show_history(self, project: Project) -> None:
+        QMessageBox.information(
+            self,
+            "History",
+            f"History view for {project.name} is coming soon.",
+        )
+
+    def _create_project_card(
+        self,
+        project: Project,
+        installed_game: InstalledGame,
+    ) -> ProjectCard:
+        latest_version = ProjectVersionService.get_latest_version(project.id)
+
+        return ProjectCard(
+            project=project,
+            installed_game=installed_game,
+            latest_version=latest_version,
+            on_host=self.host_project,
+            on_import=self.import_package,
+            on_history=self.show_history,
+        )
+
+    def _clear_installed_game_cards(self) -> None:
+        while self.installed_game_layout.count():
+            item = self.installed_game_layout.takeAt(0)
+            widget = item.widget()
+
+            if widget is not None:
+                widget.deleteLater()
+
+    def _clear_project_cards(self) -> None:
+        while self.project_layout.count():
+            item = self.project_layout.takeAt(0)
+            widget = item.widget()
+
+            if widget is not None:
+                widget.deleteLater()
+
+    def _get_selected_installed_game(self) -> InstalledGame | None:
+        if self.selected_installed_game_id is None:
+            return None
+
+        for installed_game in InstalledGameService.get_installed_games():
+            if installed_game.id == self.selected_installed_game_id:
+                return installed_game
+
+        return None
+
+    def _get_installed_game_for_project(self, project: Project) -> InstalledGame:
+        for installed_game in InstalledGameService.get_installed_games():
+            if installed_game.id == project.installed_game_id:
+                return installed_game
+
+        raise ValueError(f"Installed game not found for project: {project.name}")
