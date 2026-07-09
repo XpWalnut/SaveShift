@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from app.ui import theme
+from app.ui import theme, styles
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
@@ -23,44 +23,8 @@ class ProjectCard(QFrame):
 
         self.setObjectName("ProjectCard")
         self.setStyleSheet(
-            f"""
-        QFrame#ProjectCard {{
-            background-color: {theme.CARD_BACKGROUND};
-            border: 1px solid {theme.CARD_BORDER};
-            border-radius: {theme.CARD_RADIUS}px;
-            padding: {theme.SPACING}px;
-        }}
-
-        QLabel {{
-            color: {theme.TEXT_PRIMARY};
-        }}
-
-        QLabel#SecondaryText {{
-            color: {theme.TEXT_SECONDARY};
-        }}
-
-        QPushButton {{
-            background-color: {theme.ACCENT};
-            color: {theme.TEXT_PRIMARY};
-            border: none;
-            border-radius: {theme.BUTTON_RADIUS}px;
-            for button in (
-            self.host_button,
-            self.import_button,
-            self.history_button,
-        ):
-            button.setMinimumWidth(115)
-            font-weight: bold;
-        }}
-
-        QPushButton:hover {{
-            background-color: {theme.ACCENT_HOVER};
-        }}
-
-        QPushButton:pressed {{
-            background-color: {theme.ACCENT_PRESSED};
-        }}
-        """
+            styles.card_style("ProjectCard")
+            + styles.primary_button_style()
         )
 
         title = QLabel(f"🌍 {project.name}")
@@ -82,9 +46,16 @@ class ProjectCard(QFrame):
         updated_by_label = QLabel(updated_by_text)
         updated_by_label.setObjectName("SecondaryText")
 
-        self.host_button = QPushButton("📤 Host")
-        self.import_button = QPushButton("📥 Import")
-        self.history_button = QPushButton("🕘 History")
+        self.host_button = QPushButton("Host")
+        self.import_button = QPushButton("Import")
+        self.history_button = QPushButton("History")
+
+        for button in (
+                self.host_button,
+                self.import_button,
+                self.history_button,
+        ):
+            button.setMinimumWidth(115)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.host_button)
@@ -112,5 +83,14 @@ class ProjectCard(QFrame):
         layout.addWidget(updated_by_label)
         layout.addSpacing(12)
         layout.addLayout(button_row)
+
+        layout.addStretch(0)
+        layout.setContentsMargins(
+            theme.SPACING,
+            theme.SPACING,
+            theme.SPACING,
+            theme.SPACING,
+        )
+        layout.setSpacing(theme.SPACING_SMALL)
 
         self.setLayout(layout)
