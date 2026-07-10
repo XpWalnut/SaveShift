@@ -12,13 +12,7 @@ Write-Host ""
 Remove-Item ".\build" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item ".\dist\SaveShift" -Recurse -Force -ErrorAction SilentlyContinue
 
-pyinstaller `
-    --noconfirm `
-    --clean `
-    --windowed `
-    --onedir `
-    --name SaveShift `
-    ".\run_saveshift.py"
+pyinstaller SaveShift.spec
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed."
