@@ -47,9 +47,7 @@ class SaveFileService:
     @staticmethod
     def synchronize_project(project: Project, source_directory: Path) -> None:
         project_root = Path(project.local_path)
-
-        if not project_root.exists():
-            raise FileNotFoundError(f"Project folder does not exist: {project_root}")
+        project_root.mkdir(parents=True, exist_ok=True)
 
         if not project_root.is_dir():
             raise NotADirectoryError(f"Project path is not a folder: {project_root}")

@@ -17,6 +17,20 @@ class ProjectService:
         return ProjectRepository.get_for_installed_game(installed_game_id)
 
     @staticmethod
+    def create_project(
+            installed_game_id: int,
+            project_uuid: str,
+            name: str,
+            local_path: Path,
+    ) -> Project:
+        return ProjectRepository.create(
+            installed_game_id=installed_game_id,
+            project_uuid=project_uuid,
+            name=name,
+            local_path=local_path,
+        )
+
+    @staticmethod
     def discover_projects(installed_game_id: int) -> list[Project]:
         installed_game = InstalledGameRepository.get_by_id(installed_game_id)
 

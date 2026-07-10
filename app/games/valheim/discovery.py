@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.games.base import GameDiscovery
-from app.games.project_discovery import DiscoveredProject
+from app.games.project_discovery import DiscoveredProject, ImportTarget
 
 
 class ValheimDiscovery(GameDiscovery):
@@ -32,3 +32,12 @@ class ValheimDiscovery(GameDiscovery):
             )
 
         return sorted(discovered_projects, key=lambda project: project.name.lower())
+
+    def get_import_target(
+            self,
+            save_path: Path,
+            project_name: str,
+    ) -> ImportTarget:
+        return ImportTarget(
+            project_root=save_path
+        )

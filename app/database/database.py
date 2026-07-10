@@ -1,9 +1,15 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+import os
 
 from app.core.config import AppConfig
 
-engine = create_engine(f"sqlite:///{AppConfig.get_database_path()}", echo=False)
+database_path = os.environ.get(
+    "SAVESHIFT_DATABASE_PATH",
+    str(AppConfig.get_database_path()),
+)
+
+engine = create_engine(f"sqlite:///{database_path}", echo=False)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
