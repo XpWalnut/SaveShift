@@ -22,6 +22,7 @@ class ProjectVersionService:
             backup_path: str | None = None,
             package_checksum: str | None = None,
             parent_version_id: int | None = None,
+            restored_from_version_id: int | None = None,
             lineage_name: str = "main",
             notes: str | None = None,
     ) -> ProjectVersion:
@@ -38,6 +39,7 @@ class ProjectVersionService:
             backup_path=backup_path,
             package_checksum=package_checksum,
             parent_version_id=parent_version_id,
+            restored_from_version_id=restored_from_version_id,
             lineage_name=lineage_name,
             notes=notes,
         )

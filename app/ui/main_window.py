@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
 
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
+from app.database.models.project_version import ProjectVersion
 from app.games.registry import GameRegistry
+from app.services.restore_service import RestoreService
 from app.services.hosting_service import HostingService
 from app.services.import_service import ImportService
 from app.services.installed_game_service import InstalledGameService
@@ -25,6 +27,7 @@ from app.services.project_version_service import ProjectVersionService
 from app.ui import styles, theme
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
+from app.ui.dialogs.history_dialog import HistoryDialog
 
 
 class MainWindow(QMainWindow):
@@ -387,11 +390,68 @@ class MainWindow(QMainWindow):
         self.load_projects()
 
     def show_history(self, project: Project) -> None:
+        dialog = HistoryDialog(
+            project=project,
+            on_restore=lambda version: self.restore_version(
+                project,
+                version,
+            ),
+            parent=self,
+        )
+        dialog.exec()
+
+    def restore_version(
+            self,
+            project: Project,
+            version: ProjectVersion,
+    ) -> ProjectVersion | None:
+        restored_by, ok = QInputDialog.getText(
+            self,
+            "Restore Version",
+            "Who is restoring this project?",
+        )
+
+        if not ok or not restored_by.strip():
+            return None
+
+        try:
+            restored_version = RestoreService.restore(
+                project_version=version,
+                restored_by=restored_by.strip(),
+            )
+        except FileNotFoundError as error:
+            QMessageBox.critical(
+                self,
+                "Restore Source Missing",
+                str(error),
+            )
+            return None
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Restore Failed",
+                (
+                    f"Save Shift could not restore "
+                    f"Version {version.version_number}.\n\n"
+                    f"{error}"
+                ),
+            )
+            return None
+
         QMessageBox.information(
             self,
-            "History",
-            f"History view for {project.name} is coming soon.",
+            "Version Restored",
+            (
+                f"{project.name} was restored successfully.\n\n"
+                f"Restored from Version: {version.version_number}\n"
+                f"New history version: "
+                f"{restored_version.version_number}"
+            ),
         )
+
+        self.load_projects()
+
+        return restored_version
 
     def _create_project_card(
         self,

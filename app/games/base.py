@@ -30,3 +30,8 @@ class SupportedGame(ABC):
     @abstractmethod
     def discovery(self) -> GameDiscovery:
         pass
+
+    @abstractmethod
+    def detect_save_path(self) -> Path | None:
+        """Return the default save folder if it exists."""
+        pass
