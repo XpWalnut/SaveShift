@@ -14,6 +14,7 @@ class ProjectCard(QFrame):
             latest_version: ProjectVersion | None,
             on_host,
             on_import,
+            on_export,
             on_history,
             parent=None,
     ) -> None:
@@ -48,11 +49,13 @@ class ProjectCard(QFrame):
 
         self.host_button = QPushButton("Host")
         self.import_button = QPushButton("Import")
+        self.export_button = QPushButton("Export")
         self.history_button = QPushButton("History")
 
         for button in (
                 self.host_button,
                 self.import_button,
+                self.export_button,
                 self.history_button,
         ):
             button.setMinimumWidth(115)
@@ -60,6 +63,7 @@ class ProjectCard(QFrame):
         button_row = QHBoxLayout()
         button_row.addWidget(self.host_button)
         button_row.addWidget(self.import_button)
+        button_row.addWidget(self.export_button)
         button_row.addWidget(self.history_button)
         button_row.addStretch()
 
@@ -68,6 +72,10 @@ class ProjectCard(QFrame):
         )
 
         self.import_button.clicked.connect(on_import)
+
+        self.export_button.clicked.connect(
+            lambda: on_export(project)
+        )
 
         self.history_button.clicked.connect(
             lambda: on_history(project)

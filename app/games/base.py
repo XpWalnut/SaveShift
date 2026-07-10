@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.games.game_id import GameId
+from app.games.launcher import GameLauncher
 from app.games.project_discovery import DiscoveredProject, ImportTarget
 
 
@@ -26,6 +27,7 @@ class SupportedGame(ABC):
     game_id: GameId
     display_name: str
     process_names: list[str]
+    steam_app_id: int
 
     @abstractmethod
     def discovery(self) -> GameDiscovery:
@@ -35,3 +37,14 @@ class SupportedGame(ABC):
     def detect_save_path(self) -> Path | None:
         """Return the default save folder if it exists."""
         pass
+
+    def is_running(self) -> bool:
+        return GameLauncher.is_any_process_running(
+            self.process_names
+        )
+
+    def launch(self) -> None:
+        if self.is_running():
+            return
+
+        GameLauncher.launch_steam_game(self.steam_app_id)

@@ -9,9 +9,12 @@ class AbioticFactorGame(SupportedGame):
     game_id = GameId.ABIOTIC_FACTOR
     display_name = "Abiotic Factor"
     process_names = ["AbioticFactor-Win64-Shipping.exe", "AbioticFactor.exe"]
+    steam_app_id = 427410
+
 
     def discovery(self) -> GameDiscovery:
         return AbioticFactorDiscovery()
+
 
     def detect_save_path(self) -> Path | None:
         path = (
