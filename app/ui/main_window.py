@@ -308,18 +308,67 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self.load_installed_games()
+        self.load_projects()
+
+        supported_game = GameRegistry.get_by_game_id(
+            installed_game.game_id
+        )
+
+        if supported_game is None:
+            QMessageBox.information(
+                self,
+                "Project Hosted",
+                (
+                    "Hosted version created successfully.\n\n"
+                    f"Version: {version.version_number}\n"
+                    f"Package:\n{version.package_path}\n\n"
+                    "The game could not be identified, so it was not "
+                    "launched automatically."
+                ),
+            )
+            return
+
+        try:
+            was_already_running = supported_game.is_running()
+
+            if not was_already_running:
+                supported_game.launch()
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "Project Hosted",
+                (
+                    "Hosted version created successfully.\n\n"
+                    f"Version: {version.version_number}\n"
+                    f"Package:\n{version.package_path}\n\n"
+                    "However, Save Shift could not launch "
+                    f"{supported_game.display_name} automatically.\n\n"
+                    f"{error}\n\n"
+                    "You can launch it manually from Steam."
+                ),
+            )
+            return
+
+        if was_already_running:
+            launch_message = (
+                f"{supported_game.display_name} is already running."
+            )
+        else:
+            launch_message = (
+                f"{supported_game.display_name} is launching through Steam."
+            )
+
         QMessageBox.information(
             self,
             "Project Hosted",
             (
-                f"Hosted version created successfully.\n\n"
+                "Hosted version created successfully.\n\n"
                 f"Version: {version.version_number}\n"
-                f"Package:\n{version.package_path}"
+                f"Package:\n{version.package_path}\n\n"
+                f"{launch_message}"
             ),
         )
-
-        self.load_installed_games()
-        self.load_projects()
 
     def import_package(
             self,
