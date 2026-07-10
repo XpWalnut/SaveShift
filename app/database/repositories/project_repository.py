@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.database.database import SessionLocal
 from app.database.models.project import Project
 from app.games.project_discovery import DiscoveredProject
@@ -86,3 +88,24 @@ class ProjectRepository:
                 session.refresh(project)
 
             return tracked_projects
+
+    @staticmethod
+    def create(
+            installed_game_id: int,
+            project_uuid: str,
+            name: str,
+            local_path: Path,
+    ) -> Project:
+        with SessionLocal() as session:
+            project = Project(
+                installed_game_id=installed_game_id,
+                uuid=project_uuid,
+                name=name,
+                local_path=str(local_path),
+            )
+
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+
+            return project

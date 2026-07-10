@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.games.base import GameDiscovery
-from app.games.project_discovery import DiscoveredProject
+from app.games.project_discovery import DiscoveredProject, ImportTarget
 
 
 class AbioticFactorDiscovery(GameDiscovery):
@@ -46,3 +46,23 @@ class AbioticFactorDiscovery(GameDiscovery):
                 )
 
         return sorted(discovered_projects, key=lambda project: project.name.lower())
+
+    def get_import_target(
+            self,
+            save_path: Path,
+            project_name: str,
+    ) -> ImportTarget:
+        steam_users = [
+            path
+            for path in save_path.iterdir()
+            if path.is_dir()
+        ]
+
+        if len(steam_users) != 1:
+            raise RuntimeError(
+                "Unable to determine which Steam profile should receive the imported project."
+            )
+
+        return ImportTarget(
+            project_root=steam_users[0] / "Worlds" / project_name
+        )
