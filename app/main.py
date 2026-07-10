@@ -1,4 +1,3 @@
-from PySide6.QtWidgets import QApplication
 from pathlib import Path
 import sys
 
@@ -17,12 +16,22 @@ def main() -> None:
     logger.info("Save Shift started")
     init_db()
 
-    app = QApplication([])
+    startup_package_path: Path | None = None
+
+    if len(sys.argv) > 1:
+        candidate = Path(sys.argv[1])
+
+        if candidate.suffix.lower() == ".sspkg":
+            startup_package_path = candidate
+
+    app = QApplication(sys.argv)
 
     icon = QIcon(str(get_resource_path("assets/icons/SaveShift.ico")))
     app.setWindowIcon(icon)
 
-    window = MainWindow()
+    window = MainWindow(
+        startup_package_path=startup_package_path,
+    )
     window.setWindowIcon(icon)
     window.show()
 

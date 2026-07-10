@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -27,7 +28,10 @@ from app.ui.widgets.project_card import ProjectCard
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(
+            self,
+            startup_package_path: Path | None = None,
+    ) -> None:
         super().__init__()
 
         self.setWindowTitle("Save Shift")
@@ -117,6 +121,12 @@ class MainWindow(QMainWindow):
 
         self.load_installed_games()
         self.load_projects()
+
+        if startup_package_path is not None:
+            QTimer.singleShot(
+                0,
+                lambda: self.import_package(startup_package_path),
+            )
 
     def load_installed_games(self) -> None:
         self._clear_installed_game_cards()
@@ -308,19 +318,25 @@ class MainWindow(QMainWindow):
         self.load_installed_games()
         self.load_projects()
 
-    def import_package(self, project: Project) -> None:
-        package_path, _ = QFileDialog.getOpenFileName(
+    def import_package(
             self,
-            "Import Save Shift Package",
-            "",
-            "Save Shift Packages (*.sspkg)",
-        )
+            package_path: Path | None = None,
+    ) -> None:
+        if package_path is None:
+            selected_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Import Save Shift Package",
+                "",
+                "Save Shift Packages (*.sspkg)",
+            )
 
-        if not package_path:
-            return
+            if not selected_path:
+                return
+
+            package_path = Path(selected_path)
 
         try:
-            ImportService.validate_import_package(Path(package_path))
+            ImportService.validate_import_package(package_path)
         except ValueError as error:
             QMessageBox.warning(self, "Import Not Allowed", str(error))
             return
@@ -346,7 +362,7 @@ class MainWindow(QMainWindow):
 
         try:
             version = ImportService.import_package(
-                package_path=Path(package_path),
+                package_path=package_path,
                 imported_by=imported_by.strip(),
             )
         except Exception as error:
