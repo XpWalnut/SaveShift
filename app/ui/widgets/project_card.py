@@ -67,9 +67,7 @@ class ProjectCard(QFrame):
             lambda: on_host(project)
         )
 
-        self.import_button.clicked.connect(
-            lambda: on_import(project)
-        )
+        self.import_button.clicked.connect(on_import)
 
         self.history_button.clicked.connect(
             lambda: on_history(project)

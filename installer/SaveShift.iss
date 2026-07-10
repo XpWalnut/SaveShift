@@ -48,5 +48,14 @@ Source: "..\dist\SaveShift\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 Name: "{group}\Save Shift"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\Save Shift"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\.sspkg"; ValueType: string; ValueName: ""; ValueData: "SaveShift.Package"; Flags: uninsdeletevalue
+
+Root: HKCU; Subkey: "Software\Classes\SaveShift.Package"; ValueType: string; ValueName: ""; ValueData: "Save Shift Package"; Flags: uninsdeletekey
+
+Root: HKCU; Subkey: "Software\Classes\SaveShift.Package\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
+
+Root: HKCU; Subkey: "Software\Classes\SaveShift.Package\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
+
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch Save Shift"; Flags: nowait postinstall skipifsilent
