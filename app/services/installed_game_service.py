@@ -10,6 +10,13 @@ class InstalledGameService:
 
     @staticmethod
     def add_installed_game(game_id: str, display_name: str, save_path: str) -> InstalledGame:
+        existing_game = InstalledGameRepository.get_by_game_id(game_id)
+
+        if existing_game is not None:
+            raise ValueError(
+                f"{display_name} has already been configured."
+            )
+
         installed_game = InstalledGameRepository.add(
             game_id=game_id,
             display_name=display_name,

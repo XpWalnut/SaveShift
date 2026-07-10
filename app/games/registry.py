@@ -2,11 +2,13 @@ from app.games.abiotic_factor.definition import AbioticFactorGame
 from app.games.base import SupportedGame
 from app.games.game_id import GameId
 from app.games.valheim.definition import ValheimGame
+from app.games.vrising.definition import VRisingGame
 
 
 class GameRegistry:
     _games: dict[GameId, SupportedGame] = {
         ValheimGame.game_id: ValheimGame(),
+        VRisingGame.game_id: VRisingGame(),
         AbioticFactorGame.game_id: AbioticFactorGame(),
     }
 
