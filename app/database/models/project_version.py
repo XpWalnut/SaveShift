@@ -56,6 +56,11 @@ class ProjectVersion(Base):
         nullable=True,
     )
 
+    restored_from_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_versions.id"),
+        nullable=True,
+    )
+
     lineage_name: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
@@ -71,5 +76,12 @@ class ProjectVersion(Base):
 
     parent_version = relationship(
         "ProjectVersion",
+        foreign_keys=[parent_version_id],
+        remote_side=[id],
+    )
+
+    restored_from_version = relationship(
+        "ProjectVersion",
+        foreign_keys=[restored_from_version_id],
         remote_side=[id],
     )

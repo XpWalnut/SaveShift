@@ -33,3 +33,12 @@ class ProjectVersionRepository:
                 .where(ProjectVersion.project_id == project_id)
                 .order_by(ProjectVersion.version_number.desc())
             )
+
+    @staticmethod
+    def get_by_id(project_version_id: int) -> ProjectVersion | None:
+        with SessionLocal() as session:
+            return (
+                session.query(ProjectVersion)
+                .filter(ProjectVersion.id == project_version_id)
+                .first()
+            )
