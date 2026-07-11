@@ -71,7 +71,9 @@ class ProjectCard(QFrame):
             lambda: on_host(project)
         )
 
-        self.import_button.clicked.connect(on_import)
+        self.import_button.clicked.connect(
+            lambda checked=False: on_import()
+        )
 
         self.export_button.clicked.connect(
             lambda: on_export(project)
