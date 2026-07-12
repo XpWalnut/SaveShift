@@ -9,6 +9,18 @@ Write-Host " Building Save Shift"
 Write-Host "============================="
 Write-Host ""
 
+Write-Host ""
+Write-Host "============================="
+Write-Host " Running Regression Tests"
+Write-Host "============================="
+Write-Host ""
+
+python -m pytest .\tests -q
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Regression tests failed. Release build aborted."
+}
+
 Remove-Item ".\build" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item ".\dist\SaveShift" -Recurse -Force -ErrorAction SilentlyContinue
 
