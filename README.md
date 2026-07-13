@@ -2,100 +2,83 @@
 
 > Seamlessly hand off self-hosted co-op game worlds between friends.
 
-Save Shift is an open-source desktop application that makes sharing locally hosted game worlds simple, safe, and reliable.
+Save Shift is an open-source Windows desktop application for sharing and managing locally hosted co-op game worlds. It packages a project's save files, tracks version history, and helps a group safely rotate who hosts the world.
 
-Instead of paying for a dedicated server, your group can rotate who hosts the world while Save Shift keeps everyone synchronized, maintains version history, prevents conflicting saves, and makes switching hosts effortless.
+[Download the latest release](https://github.com/XpWalnut/SaveShift/releases/latest)
 
----
+> [!WARNING]
+> Save Shift is alpha software. Back up important saves before testing it. The installer is currently unsigned, so Windows SmartScreen may show an "Unknown publisher" warning. Only install releases downloaded from this repository.
 
 ## Features
 
-### Current
+- Automatic game save-folder detection and project discovery
+- Hosting a tracked project and launching its Steam game
+- Exporting and importing portable `.sspkg` packages
+- Double-click `.sspkg` file associations on Windows
+- Version history and restoration of previous saves
+- Backup of an existing local save before an imported version is synchronized
+- Automatic update checks through GitHub Releases, with an opt-out setting and manual checks
+- Per-user Windows installer
 
-- Desktop application built with PySide6
-- SQLite project database
-- Automatic project discovery
-- Multi-game architecture
-- Logging system
-- Extensible game SDK
+## Supported games
 
-### Planned
-
-- One-click host handoff
-- Automatic backups
-- Save version history
-- Host locking
-- Save Shift package format
-- Discord bot integration
-- Automatic game detection
-- Project history
-- Restore previous versions
-- Multiple backup strategies
-
----
-
-## Supported Games
-
-Current support:
-
-- Valheim
 - Abiotic Factor
+- Valheim
+- V Rising
 
-Planned:
+## Installation
 
-- Project Zomboid
-- Palworld
-- Satisfactory
-- Minecraft
-- More...
+1. Open the [latest GitHub release](https://github.com/XpWalnut/SaveShift/releases/latest).
+2. Download the `SaveShiftSetup-<version>.exe` asset.
+3. Compare its SHA-256 checksum with the value in the release notes.
+4. Run the installer. If SmartScreen appears, confirm the installer came from this repository before selecting **More info** and **Run anyway**.
 
----
+Save Shift installs for the current Windows user and does not require administrator privileges.
 
-## Why Save Shift?
+## Local data
 
-Many co-op survival games allow one player to host the world locally.
+Application data is stored under `%USERPROFILE%\.saveshift`:
 
-That works well—until someone else wants to host.
+- `data/saveshift.sqlite3` stores tracked games, projects, and version history.
+- `data/settings.json` stores application settings.
+- `backups/` stores save backups.
+- `packages/` stores generated packages.
+- `logs/` stores application logs.
+- `temp/` stores temporary working files.
 
-Save Shift removes the manual work by:
+Uninstalling the application does not remove this data directory. Back it up before manually deleting it.
 
-- Tracking project versions
-- Preventing save conflicts
-- Organizing backups
-- Making host rotation simple
-- Keeping everyone on the latest version
+## Development
 
----
+Save Shift targets Python 3.11 on Windows.
 
-## Project Status
-
-Save Shift is currently in active development.
-
-The project is focused on building a robust architecture first before implementing synchronization and sharing features.
-
----
-
-## Technology
-
-- Python 3.13
-- PySide6
-- SQLAlchemy
-- SQLite
-
----
-
-## Roadmap
-
-See:
-
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+python -m pytest .\tests -q
+python .\run_saveshift.py
 ```
 
-docs/ROADMAP.md
+The test configuration uses a temporary SQLite database, disables live update checks, and runs Qt with the offscreen platform. Tests must never access a user's real Save Shift database or game saves.
 
+To create a release installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run:
+
+```powershell
+.\tools\build_release.ps1
 ```
 
----
+The build script runs the complete regression suite before PyInstaller and Inno Setup. Output is written to `dist/installer/`.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Package format decision](docs/decisions/ADR-0001-package-format.md)
+- [Fork behavior decision](docs/decisions/ADR-0002-fork-behavior.md)
 
 ## License
 
-MIT License
+Save Shift is released under the [MIT License](LICENSE).
