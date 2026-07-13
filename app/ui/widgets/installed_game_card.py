@@ -1,5 +1,5 @@
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout
 
 from app.database.models.installed_game import InstalledGame
 from app.ui import theme, styles
@@ -22,6 +22,10 @@ class InstalledGameCard(QFrame):
 
         self.setObjectName("InstalledGameCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         self._apply_style()
 
         title = QLabel(f"🎮 {installed_game.display_name}")

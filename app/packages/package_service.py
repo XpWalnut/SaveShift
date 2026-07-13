@@ -11,6 +11,7 @@ from app.core.logging import logger
 from app.database.models.project import Project
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
+from app.version import APP_VERSION
 
 
 class PackageService:
@@ -23,7 +24,7 @@ class PackageService:
         save_files: list[Path],
         output_path: Path,
         created_by: str = "Unknown",
-        save_shift_version: str = "0.1.0-alpha",
+        save_shift_version: str = APP_VERSION,
         metadata: dict | None = None,
     ) -> Path:
         PackageService._validate_package_inputs(
@@ -72,7 +73,7 @@ class PackageService:
             project_version: int,
             save_files: list[Path],
             created_by: str,
-            save_shift_version: str = "0.1.0-alpha",
+            save_shift_version: str = APP_VERSION,
             metadata: dict | None = None,
     ) -> Path:
         root_path = Path(project.local_path)

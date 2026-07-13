@@ -9,3 +9,4 @@ class AppResources:
     BACKUPS: Final[str] = "backups"
     PACKAGES: Final[str] = "packages"
     DATABASE_FILE: Final[str] = "saveshift.sqlite3"
+    SETTINGS_FILE: Final[str] = "settings.json"

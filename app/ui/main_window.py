@@ -1,7 +1,10 @@
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -9,6 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -17,6 +21,8 @@ from PySide6.QtWidgets import (
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.core.logging import logger
+from app.core.settings import AppSettings, SettingsService
 from app.games.registry import GameRegistry
 from app.services.export_service import ExportService
 from app.services.restore_service import RestoreService
@@ -29,6 +35,11 @@ from app.ui import styles, theme
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
 from app.ui.dialogs.history_dialog import HistoryDialog
+from app.ui.dialogs.settings_dialog import SettingsDialog
+from app.ui.dialogs.update_dialog import UpdateAvailableDialog
+from app.updates.controller import UpdateController
+from app.updates.models import UpdateRelease
+from app.updates.service import UpdateService
 
 
 def discover_all_projects() -> None:
@@ -49,6 +60,29 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Save Shift")
         self.setMinimumSize(950, 650)
 
+        self.startup_package_path = startup_package_path
+        self.settings = SettingsService.load()
+        self.update_controller = UpdateController(self)
+        self.update_controller.update_available.connect(
+            self._update_available
+        )
+        self.update_controller.no_update_available.connect(
+            self._no_update_available
+        )
+        self.update_controller.check_failed.connect(
+            self._update_check_failed
+        )
+        self.update_controller.download_progress.connect(
+            self._update_download_progress
+        )
+        self.update_controller.download_completed.connect(
+            self._update_download_completed
+        )
+        self.update_controller.download_failed.connect(
+            self._update_download_failed
+        )
+        self.update_progress_dialog: QProgressDialog | None = None
+
         self.selected_installed_game_id: int | None = None
 
         self.title = QLabel("Save Shift")
@@ -64,6 +98,9 @@ class MainWindow(QMainWindow):
         self.installed_game_scroll.setWidgetResizable(True)
         self.installed_game_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.installed_game_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.installed_game_scroll.setMinimumHeight(220)
         self.installed_game_scroll.setStyleSheet(
@@ -81,7 +118,12 @@ class MainWindow(QMainWindow):
 
         self.installed_game_container = QWidget()
         self.installed_game_layout = QVBoxLayout()
-        self.installed_game_layout.setContentsMargins(0, 0, 0, 0)
+        self.installed_game_layout.setContentsMargins(
+            0,
+            0,
+            theme.SPACING,
+            0,
+        )
         self.installed_game_layout.setSpacing(theme.SPACING)
         self.installed_game_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -114,8 +156,15 @@ class MainWindow(QMainWindow):
         self.remove_button = QPushButton("Remove Game")
         self.remove_button.clicked.connect(self.remove_selected_game)
 
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.clicked.connect(self.show_settings)
 
-        for button in (self.add_button, self.remove_button):
+
+        for button in (
+            self.add_button,
+            self.remove_button,
+            self.settings_button,
+        ):
             button.setStyleSheet(styles.secondary_button_style())
 
         left_panel = QVBoxLayout()
@@ -124,6 +173,7 @@ class MainWindow(QMainWindow):
         left_panel.addSpacing(theme.SPACING)
         left_panel.addWidget(self.add_button)
         left_panel.addWidget(self.remove_button)
+        left_panel.addWidget(self.settings_button)
         left_panel.addStretch()
 
         left_container = QWidget()
@@ -165,6 +215,170 @@ class MainWindow(QMainWindow):
                 0,
                 lambda: self.import_package(startup_package_path),
             )
+        else:
+            QTimer.singleShot(0, self._start_automatic_update_check)
+
+    def show_settings(self) -> None:
+        dialog = SettingsDialog(
+            settings=self.settings,
+            parent=self,
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.settings = AppSettings(
+            automatic_update_checks=dialog.automatic_update_checks,
+        )
+        SettingsService.save(self.settings)
+
+        if dialog.check_requested:
+            self.check_for_updates(manual=True)
+
+    def check_for_updates(self, *, manual: bool = True) -> None:
+        started = self.update_controller.check_for_updates(manual=manual)
+
+        if started:
+            self.statusBar().showMessage("Checking for Save Shift updates…")
+            return
+
+        if manual:
+            QMessageBox.information(
+                self,
+                "Update Check in Progress",
+                "Save Shift is already checking for updates.",
+            )
+
+    def _start_automatic_update_check(self) -> None:
+        if os.environ.get("SAVESHIFT_DISABLE_UPDATE_CHECKS") == "1":
+            return
+
+        if self.startup_package_path is not None:
+            return
+
+        if not self.settings.automatic_update_checks:
+            return
+
+        self.check_for_updates(manual=False)
+
+    def _update_available(
+        self,
+        release: UpdateRelease,
+        _manual: bool,
+    ) -> None:
+        self.statusBar().clearMessage()
+        dialog = UpdateAvailableDialog(
+            release=release,
+            automatic_update_checks=self.settings.automatic_update_checks,
+            parent=self,
+        )
+        result = dialog.exec()
+        self.settings = AppSettings(
+            automatic_update_checks=dialog.automatic_update_checks,
+        )
+        SettingsService.save(self.settings)
+
+        if result != QDialog.DialogCode.Accepted:
+            return
+
+        self._begin_update_download(release)
+
+    def _no_update_available(self, manual: bool) -> None:
+        self.statusBar().clearMessage()
+
+        if manual:
+            QMessageBox.information(
+                self,
+                "No Updates Available",
+                "You are using the latest available version of Save Shift.",
+            )
+
+    def _update_check_failed(self, message: str, manual: bool) -> None:
+        self.statusBar().clearMessage()
+
+        if manual:
+            QMessageBox.warning(
+                self,
+                "Update Check Failed",
+                message,
+            )
+            return
+
+        logger.warning("Automatic update check failed: %s", message)
+
+    def _begin_update_download(self, release: UpdateRelease) -> None:
+        progress_dialog = QProgressDialog(
+            f"Downloading Save Shift {release.version}…",
+            "",
+            0,
+            100,
+            self,
+        )
+        progress_dialog.setWindowTitle("Downloading Update")
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        self.update_progress_dialog = progress_dialog
+
+        if self.update_controller.download_update(release):
+            progress_dialog.show()
+            return
+
+        progress_dialog.close()
+        self.update_progress_dialog = None
+        QMessageBox.information(
+            self,
+            "Update Download in Progress",
+            "Save Shift is already downloading an update.",
+        )
+
+    def _update_download_progress(self, progress: int) -> None:
+        if self.update_progress_dialog is not None:
+            self.update_progress_dialog.setValue(progress)
+
+    def _update_download_completed(self, installer_path: Path) -> None:
+        self._close_update_progress_dialog()
+
+        try:
+            UpdateService.launch_installer(Path(installer_path))
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Update Launch Failed",
+                (
+                    "The update was downloaded, but Save Shift could not "
+                    f"start the installer.\n\n{error}"
+                ),
+            )
+            return
+
+        self._quit_application()
+
+    def _update_download_failed(self, message: str) -> None:
+        self._close_update_progress_dialog()
+        QMessageBox.critical(
+            self,
+            "Update Download Failed",
+            (
+                f"Save Shift could not download the update.\n\n{message}\n\n"
+                "You can continue using the current version."
+            ),
+        )
+
+    def _close_update_progress_dialog(self) -> None:
+        if self.update_progress_dialog is None:
+            return
+
+        self.update_progress_dialog.close()
+        self.update_progress_dialog = None
+
+    @staticmethod
+    def _quit_application() -> None:
+        application = QApplication.instance()
+
+        if application is not None:
+            application.quit()
 
     def load_installed_games(self) -> None:
         self._clear_installed_game_cards()
