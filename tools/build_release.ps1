@@ -32,6 +32,13 @@ if ($LASTEXITCODE -ne 0) {
 
 $InnoCompiler = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 $InstallerScript = Join-Path $ProjectRoot "installer\SaveShift.iss"
+$VersionValues = python -c "from app.version import APP_VERSION, APP_VERSION_INFO; print(f'{APP_VERSION}|{APP_VERSION_INFO}')"
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not read the Save Shift version."
+}
+
+$AppVersion, $AppVersionInfo = $VersionValues.Trim().Split("|")
 
 if (-not (Test-Path $InnoCompiler)) {
     throw "Inno Setup compiler was not found at: $InnoCompiler"
@@ -41,7 +48,7 @@ if (-not (Test-Path $InstallerScript)) {
     throw "Installer script was not found at: $InstallerScript"
 }
 
-& $InnoCompiler $InstallerScript
+& $InnoCompiler "/DAppVersion=$AppVersion" "/DAppVersionInfo=$AppVersionInfo" $InstallerScript
 
 if ($LASTEXITCODE -ne 0) {
     throw "Inno Setup failed."
@@ -53,4 +60,4 @@ Write-Host " Build Complete!"
 Write-Host "============================="
 Write-Host ""
 Write-Host "Installer:"
-Write-Host "$ProjectRoot\dist\installer\SaveShiftSetup-0.1.0-alpha.exe"
+Write-Host "$ProjectRoot\dist\installer\SaveShiftSetup-$AppVersion.exe"

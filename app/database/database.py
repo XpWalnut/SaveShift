@@ -1,4 +1,5 @@
 import os
+import sys
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -6,10 +7,23 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.core.config import AppConfig
 
 
-database_path = os.environ.get(
-    "SAVESHIFT_DATABASE_PATH",
-    str(AppConfig.get_database_path()),
-)
+def _resolve_database_path() -> str:
+    configured_path = os.environ.get("SAVESHIFT_DATABASE_PATH")
+
+    if configured_path:
+        return configured_path
+
+    if "pytest" in sys.modules:
+        raise RuntimeError(
+            "Refusing to use the application database from pytest. "
+            "Set SAVESHIFT_DATABASE_PATH to an isolated test database "
+            "before importing app.database.database."
+        )
+
+    return str(AppConfig.get_database_path())
+
+
+database_path = _resolve_database_path()
 
 engine = create_engine(f"sqlite:///{database_path}", echo=False)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)

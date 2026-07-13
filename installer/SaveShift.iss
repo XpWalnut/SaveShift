@@ -1,5 +1,10 @@
 #define AppName "Save Shift"
-#define AppVersion "0.1.0-alpha.2"
+#ifndef AppVersion
+  #define AppVersion "0.1.0-alpha.2"
+#endif
+#ifndef AppVersionInfo
+  #define AppVersionInfo "0.1.0.2"
+#endif
 #define AppPublisher "Jacob Bourcy"
 #define AppExeName "SaveShift.exe"
 #define AppIcon "..\assets\icons\SaveShift.ico"
@@ -25,11 +30,11 @@ WizardStyle=modern
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExeName}
 
-VersionInfoVersion=0.1.0.2
+VersionInfoVersion={#AppVersionInfo}
 VersionInfoCompany={#AppPublisher}
 VersionInfoDescription=Save Shift Installer
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion=0.1.0.2
+VersionInfoProductVersion={#AppVersionInfo}
 
 SetupLogging=yes
 CloseApplications=yes
