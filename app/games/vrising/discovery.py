@@ -48,7 +48,7 @@ class VRisingDiscovery(GameDiscovery):
                         save_files=save_files,
                         metadata={
                             "steam_user_id": steam_user_folder.name,
-                            "v_rising_save_id": world_folder.name,
+                            "world_uuid": world_folder.name,
                             "file_count": len(save_files),
                         },
                     )
