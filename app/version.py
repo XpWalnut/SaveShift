@@ -1,2 +1,2 @@
-APP_VERSION = "0.1.0-alpha.2"
-APP_VERSION_INFO = "0.1.0.2"
+APP_VERSION = "0.1.0-alpha.3"
+APP_VERSION_INFO = "0.1.0.3"
