@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.database.database import SessionLocal
 from app.database.models.project import Project
 from app.games.project_discovery import DiscoveredProject
@@ -9,6 +11,20 @@ class ProjectRepository:
     def get_all() -> list[Project]:
         with SessionLocal() as session:
             return session.query(Project).order_by(Project.name).all()
+
+    @staticmethod
+    def get_by_id(project_id: int) -> Project | None:
+        with SessionLocal() as session:
+            return session.get(Project, project_id)
+
+    @staticmethod
+    def get_by_uuid(project_uuid: str) -> Project | None:
+        with SessionLocal() as session:
+            return (
+                session.query(Project)
+                .filter(Project.uuid == project_uuid)
+                .first()
+            )
 
     @staticmethod
     def get_for_installed_game(installed_game_id: int) -> list[Project]:
@@ -72,3 +88,24 @@ class ProjectRepository:
                 session.refresh(project)
 
             return tracked_projects
+
+    @staticmethod
+    def create(
+            installed_game_id: int,
+            project_uuid: str,
+            name: str,
+            local_path: Path,
+    ) -> Project:
+        with SessionLocal() as session:
+            project = Project(
+                installed_game_id=installed_game_id,
+                uuid=project_uuid,
+                name=name,
+                local_path=str(local_path),
+            )
+
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+
+            return project

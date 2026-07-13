@@ -1,10 +1,8 @@
-from pathlib import Path
 import logging
 
-LOG_DIR = Path.home() / ".saveshift" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+from app.core.config import AppConfig
 
-LOG_FILE = LOG_DIR / "SaveShift.log"
+LOG_FILE = AppConfig.get_logs_directory() / "SaveShift.log"
 
 logging.basicConfig(
     filename=LOG_FILE,

@@ -1,5 +1,6 @@
 from sqlalchemy import ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
+import uuid
 
 from app.database.database import Base
 
@@ -11,3 +12,9 @@ class Project(Base):
     installed_game_id: Mapped[int] = mapped_column(ForeignKey("installed_games.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     local_path: Mapped[str] = mapped_column(String, nullable=False)
+    uuid: Mapped[str] = mapped_column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid.uuid4()),
+    )

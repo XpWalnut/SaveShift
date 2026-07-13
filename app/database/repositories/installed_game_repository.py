@@ -18,6 +18,15 @@ class InstalledGameRepository:
             )
 
     @staticmethod
+    def get_by_game_id(game_id: str) -> InstalledGame | None:
+        with SessionLocal() as session:
+            return (
+                session.query(InstalledGame)
+                .filter(InstalledGame.game_id == game_id)
+                .first()
+            )
+
+    @staticmethod
     def add(game_id: str, display_name: str, save_path: str) -> InstalledGame:
         with SessionLocal() as session:
             installed_game = InstalledGame(

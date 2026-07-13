@@ -1,5 +1,8 @@
-.venv/
+# Python
 __pycache__/
+*.py[cod]
+*.pyo
+.venv/
 *.pyc
 *.db
 *.sqlite
@@ -7,4 +10,19 @@ __pycache__/
 dist/
 build/
 *.spec
+
+# IDE
 .idea/
+.vscode/
+
+# Local database
+.saveshift/
+
+# Generated test output
+tests/output/
+
+# Temporary package output
+*.sspkg
+
+# Logs
+*.log
