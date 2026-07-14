@@ -1,7 +1,11 @@
+from contextlib import contextmanager
+from collections.abc import Generator
+from dataclasses import replace
 import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +27,15 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.core.logging import logger
 from app.core.settings import AppSettings, SettingsService
+from app.coordination.errors import (
+    CoordinationConfigurationError,
+    CoordinationError,
+    CoordinationUnavailableError,
+    LockConflictError,
+    LockOwnershipError,
+)
+from app.coordination.http_provider import HttpCoordinationProvider
+from app.coordination.manager import CoordinationManager
 from app.games.registry import GameRegistry
 from app.services.export_service import ExportService
 from app.services.restore_service import RestoreService
@@ -62,6 +75,18 @@ class MainWindow(QMainWindow):
 
         self.startup_package_path = startup_package_path
         self.settings = SettingsService.load()
+        self.coordination_manager = self._create_coordination_manager(
+            self.settings
+        )
+        self.coordination_renewal_timer = QTimer(self)
+        self.coordination_renewal_timer.setInterval(5 * 60 * 1000)
+        self.coordination_renewal_timer.timeout.connect(
+            self._renew_coordination_leases
+        )
+
+        if self.coordination_manager is not None:
+            self.coordination_renewal_timer.start()
+
         self.update_controller = UpdateController(self)
         self.update_controller.update_available.connect(
             self._update_available
@@ -227,10 +252,113 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        self.settings = AppSettings(
+        if (
+            self.coordination_manager is not None
+            and self.coordination_manager.active_leases
+            and (
+                not dialog.coordination_enabled
+                or dialog.coordination_server_url
+                != self.settings.coordination_server_url
+            )
+        ):
+            QMessageBox.warning(
+                self,
+                "Project Lock Active",
+                (
+                    "Export the hosted project or close Save Shift before "
+                    "disabling or changing its coordination provider."
+                ),
+            )
+            return
+
+        candidate = replace(
+            self.settings,
             automatic_update_checks=dialog.automatic_update_checks,
+            coordination_enabled=dialog.coordination_enabled,
+            coordination_server_url=dialog.coordination_server_url,
+            coordination_device_name=dialog.coordination_device_name,
         )
-        SettingsService.save(self.settings)
+
+        if candidate.coordination_enabled:
+            if not candidate.coordination_server_url:
+                QMessageBox.warning(
+                    self,
+                    "Provider URL Required",
+                    "Enter the HTTPS URL for the coordination provider.",
+                )
+                return
+
+            if not candidate.coordination_device_name:
+                QMessageBox.warning(
+                    self,
+                    "Computer Name Required",
+                    "Enter a name for this computer.",
+                )
+                return
+
+            provider_changed = (
+                candidate.coordination_server_url
+                != self.settings.coordination_server_url
+            )
+            needs_pairing = (
+                provider_changed
+                or not candidate.coordination_device_token
+                or bool(dialog.coordination_pairing_code)
+            )
+
+            if needs_pairing:
+                if not dialog.coordination_pairing_code:
+                    QMessageBox.warning(
+                        self,
+                        "Pairing Code Required",
+                        (
+                            "Enter the provider pairing code to connect "
+                            "this computer."
+                        ),
+                    )
+                    return
+
+                try:
+                    provider = HttpCoordinationProvider(
+                        candidate.coordination_server_url
+                    )
+                    device = provider.pair(
+                        pairing_code=dialog.coordination_pairing_code,
+                        device_name=candidate.coordination_device_name,
+                    )
+                except CoordinationError as error:
+                    QMessageBox.warning(
+                        self,
+                        "Pairing Failed",
+                        f"Save Shift could not pair this computer.\n\n{error}",
+                    )
+                    return
+
+                candidate = replace(
+                    candidate,
+                    coordination_device_id=device.device_id,
+                    coordination_device_token=device.device_token,
+                )
+
+        try:
+            SettingsService.save(candidate)
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Settings Not Saved",
+                f"Save Shift could not save its settings.\n\n{error}",
+            )
+            return
+
+        self.settings = candidate
+        self.coordination_manager = self._create_coordination_manager(
+            self.settings
+        )
+
+        if self.coordination_manager is not None:
+            self.coordination_renewal_timer.start()
+        else:
+            self.coordination_renewal_timer.stop()
 
         if dialog.check_requested:
             self.check_for_updates(manual=True)
@@ -273,7 +401,8 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         result = dialog.exec()
-        self.settings = AppSettings(
+        self.settings = replace(
+            self.settings,
             automatic_update_checks=dialog.automatic_update_checks,
         )
         SettingsService.save(self.settings)
@@ -608,6 +737,26 @@ class MainWindow(QMainWindow):
         if not ok or not hosted_by.strip():
             return
 
+        if (
+            self.coordination_manager is not None
+            and self.coordination_manager.has_active_lease(project.uuid)
+        ):
+            QMessageBox.information(
+                self,
+                "Already Hosting",
+                (
+                    "This computer already owns the project lock. "
+                    "Export the project when you are ready to hand it off."
+                ),
+            )
+            return
+
+        try:
+            self._acquire_hosting_lease(project.uuid, hosted_by.strip())
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
+
         try:
             version = HostingService.host_project(
                 project_id=project.id,
@@ -615,6 +764,7 @@ class MainWindow(QMainWindow):
                 hosted_by=hosted_by.strip(),
             )
         except Exception as error:
+            self._release_coordination_lease(project.uuid, report_error=False)
             QMessageBox.critical(
                 self,
                 "Hosting Failed",
@@ -702,7 +852,7 @@ class MainWindow(QMainWindow):
             package_path = Path(selected_path)
 
         try:
-            ImportService.validate_import_package(package_path)
+            package_info = ImportService.validate_import_package(package_path)
         except ValueError as error:
             QMessageBox.warning(self, "Import Not Allowed", str(error))
             return
@@ -727,10 +877,17 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            version = ImportService.import_package(
-                package_path=package_path,
-                imported_by=imported_by.strip(),
-            )
+            with self._temporary_coordination_lease(
+                package_info.project_uuid,
+                imported_by.strip(),
+            ):
+                version = ImportService.import_package(
+                    package_path=package_path,
+                    imported_by=imported_by.strip(),
+                )
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
         except Exception as error:
             QMessageBox.critical(
                 self,
@@ -781,14 +938,39 @@ class MainWindow(QMainWindow):
         if destination.suffix.lower() != ".sspkg":
             destination = destination.with_suffix(".sspkg")
 
+        lease_acquired_here = False
+
         try:
+            if self.settings.coordination_enabled:
+                manager = self._require_coordination_manager()
+
+                if not manager.has_active_lease(project.uuid):
+                    manager.acquire_hosting_lease(
+                        project.uuid,
+                        exported_by.strip(),
+                    )
+                    lease_acquired_here = True
+
             version = ExportService.export_project(
                 project=project,
                 game_id=installed_game.game_id,
                 exported_by=exported_by.strip(),
                 destination_path=destination,
             )
+        except CoordinationError as error:
+            if lease_acquired_here:
+                self._release_coordination_lease(
+                    project.uuid,
+                    report_error=False,
+                )
+            self._show_coordination_error(error)
+            return
         except Exception as error:
+            if lease_acquired_here:
+                self._release_coordination_lease(
+                    project.uuid,
+                    report_error=False,
+                )
             QMessageBox.critical(
                 self,
                 "Export Failed",
@@ -799,6 +981,11 @@ class MainWindow(QMainWindow):
             )
             return
 
+        release_error = self._release_coordination_lease(
+            project.uuid,
+            report_error=False,
+        )
+
         QMessageBox.information(
             self,
             "Package Exported",
@@ -806,6 +993,12 @@ class MainWindow(QMainWindow):
                 f"{project.name} was exported successfully.\n\n"
                 f"Version: {version.version_number}\n"
                 f"Saved to:\n{destination}"
+                + (
+                    "\n\nWarning: Save Shift could not release the project "
+                    f"lock. It will expire automatically.\n\n{release_error}"
+                    if release_error is not None
+                    else ""
+                )
             ),
         )
 
@@ -839,10 +1032,17 @@ class MainWindow(QMainWindow):
             return None
 
         try:
-            restored_version = RestoreService.restore(
-                project_version=version,
-                restored_by=restored_by.strip(),
-            )
+            with self._temporary_coordination_lease(
+                project.uuid,
+                restored_by.strip(),
+            ):
+                restored_version = RestoreService.restore(
+                    project_version=version,
+                    restored_by=restored_by.strip(),
+                )
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return None
         except FileNotFoundError as error:
             QMessageBox.critical(
                 self,
@@ -926,3 +1126,189 @@ class MainWindow(QMainWindow):
                 return installed_game
 
         raise ValueError(f"Installed game not found for project: {project.name}")
+
+    @staticmethod
+    def _create_coordination_manager(
+        settings: AppSettings,
+    ) -> CoordinationManager | None:
+        if (
+            not settings.coordination_enabled
+            or not settings.coordination_server_url
+            or not settings.coordination_device_id
+            or not settings.coordination_device_token
+        ):
+            return None
+
+        try:
+            provider = HttpCoordinationProvider(
+                base_url=settings.coordination_server_url,
+                device_token=settings.coordination_device_token,
+            )
+        except CoordinationConfigurationError as error:
+            logger.warning("Coordination is not configured correctly: %s", error)
+            return None
+
+        return CoordinationManager(provider)
+
+    def _require_coordination_manager(self) -> CoordinationManager:
+        if self.coordination_manager is None:
+            raise CoordinationConfigurationError(
+                "Project coordination is enabled, but this computer is not "
+                "paired. Open Settings and pair it with the provider."
+            )
+
+        return self.coordination_manager
+
+    def _acquire_hosting_lease(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+    ) -> None:
+        if not self.settings.coordination_enabled:
+            return
+
+        self._require_coordination_manager().acquire_hosting_lease(
+            project_uuid,
+            owner_display_name,
+        )
+
+    @contextmanager
+    def _temporary_coordination_lease(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+    ) -> Generator[None, None, None]:
+        if not self.settings.coordination_enabled:
+            yield
+            return
+
+        manager = self._require_coordination_manager()
+
+        with manager.temporary_lease(project_uuid, owner_display_name):
+            yield
+
+    def _release_coordination_lease(
+        self,
+        project_uuid: str,
+        *,
+        report_error: bool,
+    ) -> Exception | None:
+        if self.coordination_manager is None:
+            return None
+
+        try:
+            self.coordination_manager.release_lease(project_uuid)
+        except Exception as error:
+            logger.warning(
+                "Could not release coordination lease for %s: %s",
+                project_uuid,
+                error,
+            )
+
+            if report_error:
+                QMessageBox.warning(
+                    self,
+                    "Project Lock Not Released",
+                    (
+                        "Save Shift could not release the project lock. "
+                        "It will expire automatically.\n\n"
+                        f"{error}"
+                    ),
+                )
+
+            return error
+
+        return None
+
+    def _renew_coordination_leases(self) -> None:
+        if self.coordination_manager is None:
+            return
+
+        for lease, error in self.coordination_manager.renew_active_leases():
+            if isinstance(error, (LockConflictError, LockOwnershipError)):
+                self.coordination_manager.forget_lease(lease.project_uuid)
+                QMessageBox.critical(
+                    self,
+                    "Project Lock Lost",
+                    (
+                        "This computer no longer owns a project lock. Stop "
+                        "the game now to avoid conflicting save changes.\n\n"
+                        f"{error}"
+                    ),
+                )
+                continue
+
+            logger.warning(
+                "Could not renew coordination lease for %s: %s",
+                lease.project_uuid,
+                error,
+            )
+            self.statusBar().showMessage(
+                "Could not renew a project lock; Save Shift will retry.",
+                15_000,
+            )
+
+    def _show_coordination_error(self, error: CoordinationError) -> None:
+        if isinstance(error, LockConflictError):
+            details = "Another computer currently owns this project lock."
+
+            if error.lock is not None:
+                expires_at = error.lock.expires_at_utc.strftime(
+                    "%Y-%m-%d %H:%M UTC"
+                )
+                details = (
+                    f"{error.lock.owner_display_name} currently owns this "
+                    "project lock.\n\n"
+                    f"The lock expires at {expires_at} unless it is renewed."
+                )
+
+            QMessageBox.warning(self, "Project In Use", details)
+            return
+
+        if isinstance(error, CoordinationUnavailableError):
+            QMessageBox.warning(
+                self,
+                "Coordination Unavailable",
+                (
+                    "Save Shift could not verify that this project is free. "
+                    "No save files were changed. Check your connection and "
+                    "try again.\n\n"
+                    f"{error}"
+                ),
+            )
+            return
+
+        QMessageBox.warning(self, "Project Coordination", str(error))
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        manager = self.coordination_manager
+
+        if manager is not None and manager.active_leases:
+            response = QMessageBox.question(
+                self,
+                "Release Project Locks?",
+                (
+                    "Save Shift is holding one or more project locks. Close "
+                    "the game before exiting.\n\n"
+                    "Exit and release the locks now?"
+                ),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if response != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
+            failures = manager.release_all()
+
+            if failures:
+                logger.warning(
+                    "Could not release %s coordination lease(s) on exit.",
+                    len(failures),
+                )
+
+        self.coordination_renewal_timer.stop()
+        event.accept()
+        super().closeEvent(event)

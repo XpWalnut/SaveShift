@@ -32,6 +32,12 @@ SQLAlchemy models and repositories backed by SQLite. Repositories own database q
 
 The update service reads GitHub Releases, compares semantic versions, selects the versioned installer asset, downloads it, and validates available size and SHA-256 metadata. The controller runs network and download work away from the UI thread and launches the installer only after validation.
 
+### Coordination (`app/coordination`)
+
+The desktop coordinates project leases through a provider-neutral protocol and a versioned HTTPS adapter. Hosting retains and renews a lease until export or application exit. Import and restore use temporary leases. Every local destructive workflow also takes an operating-system file lock so concurrent Save Shift processes cannot mutate the same project simultaneously.
+
+The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with a SQLite-backed Durable Object. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
+
 ### Core (`app/core`)
 
 Paths, settings, constants, logging, and other cross-cutting application configuration. `app/version.py` is the single source for application and Windows installer versions.
@@ -40,6 +46,9 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 
 - Import backs up an existing project directory before synchronization.
 - Restore creates a safety backup before replacing current files.
+- Hosting, import, and restore take a cross-process local project lock.
+- When remote coordination is enabled, write workflows fail closed if lease ownership cannot be confirmed.
+- Device tokens are protected at rest with Windows Data Protection API and are never written to settings as plaintext.
 - Package versions are checked to prevent duplicate or older imports.
 - Checksums are recorded for imported and hosted versions.
 - Pytest sets `SAVESHIFT_DATABASE_PATH` before importing database code, and database initialization refuses to run under pytest without an explicit override.
@@ -53,3 +62,4 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 
 - [ADR-0001: Package format](decisions/ADR-0001-package-format.md)
 - [ADR-0002: Fork behavior](decisions/ADR-0002-fork-behavior.md)
+- [ADR-0003: Provider-neutral project coordination](decisions/ADR-0003-provider-neutral-coordination.md)

@@ -9,6 +9,7 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 - Improve error reporting and recovery for interrupted package operations.
 - Keep the regression suite and Windows release build green.
 - Resolve issues found by early testers without expanding the core feature set.
+- Exercise coordinated handoffs with multiple physical computers and provider outages.
 
 ## Beta readiness
 
@@ -21,7 +22,7 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 ## Later possibilities
 
 - Package signing and a signed Windows installer.
-- Optional coordination features for groups that rotate hosts frequently.
+- Alternative coordination adapters implementing the stable `/api/v1` contract.
 - Additional backup strategies and retention policies.
 - Additional operating-system support.
 

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.core.settings import AppSettings, SettingsService
+from app.core.secrets import SecretProtector
 
 
 def test_missing_settings_file_uses_automatic_update_defaults(tmp_path: Path) -> None:
@@ -21,6 +22,38 @@ def test_settings_are_saved_and_loaded(tmp_path: Path) -> None:
         automatic_update_checks=False
     )
     assert not settings_path.with_suffix(".json.tmp").exists()
+
+
+def test_coordination_credential_is_protected_at_rest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        SecretProtector,
+        "protect",
+        lambda value: f"protected:{value}",
+    )
+    monkeypatch.setattr(
+        SecretProtector,
+        "unprotect",
+        lambda value: value.removeprefix("protected:"),
+    )
+    settings = AppSettings(
+        automatic_update_checks=False,
+        coordination_enabled=True,
+        coordination_server_url="https://locks.example.com",
+        coordination_device_id="device-123",
+        coordination_device_name="Gaming PC",
+        coordination_device_token="plain-secret-token",
+    )
+
+    SettingsService.save(settings, settings_path)
+
+    stored = settings_path.read_text(encoding="utf-8")
+    assert '"coordination_device_token_protected": "protected:plain-secret-token"' in stored
+    assert '"coordination_device_token":' not in stored
+    assert SettingsService.load(settings_path) == settings
 
 
 def test_invalid_settings_file_falls_back_to_defaults(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ Save Shift is an open-source Windows desktop application for sharing and managin
 - Version history and restoration of previous saves
 - Backup of an existing local save before an imported version is synchronized
 - Automatic update checks through GitHub Releases, with an opt-out setting and manual checks
+- Optional cross-device project locking through a self-deployed coordination provider
 - Per-user Windows installer
 
 ## Supported games
@@ -45,6 +46,7 @@ Application data is stored under `%USERPROFILE%\.saveshift`:
 - `packages/` stores generated packages.
 - `logs/` stores application logs.
 - `temp/` stores temporary working files.
+- `locks/` stores operating-system lock files used to prevent concurrent local writes.
 
 Uninstalling the application does not remove this data directory. Back it up before manually deleting it.
 
@@ -71,6 +73,12 @@ To create a release installer, install [Inno Setup 6](https://jrsoftware.org/isi
 
 The build script runs the complete regression suite before PyInstaller and Inno Setup. Output is written to `dist/installer/`.
 
+### Optional project coordination
+
+Groups that rotate hosts can deploy the included Cloudflare adapter on the Workers free plan, then pair each Save Shift computer from **Settings → Project Coordination**. Save Shift acquires a renewable lease while a project is hosted and short-lived leases around import and restore. If the provider cannot confirm ownership, the destructive operation is stopped before save files are changed.
+
+Cloudflare is not embedded in the desktop application. The desktop uses the provider-neutral [coordination API contract](coordination/openapi.yaml), so another HTTPS service can replace the included adapter without rewriting application workflows. Deployment instructions are in the [Cloudflare adapter README](coordination/cloudflare/README.md).
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
@@ -78,6 +86,7 @@ The build script runs the complete regression suite before PyInstaller and Inno 
 - [Changelog](docs/CHANGELOG.md)
 - [Package format decision](docs/decisions/ADR-0001-package-format.md)
 - [Fork behavior decision](docs/decisions/ADR-0002-fork-behavior.md)
+- [Provider-neutral coordination decision](docs/decisions/ADR-0003-provider-neutral-coordination.md)
 
 ## License
 

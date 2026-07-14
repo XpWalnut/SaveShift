@@ -1,8 +1,12 @@
+import platform
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -18,10 +22,10 @@ class SettingsDialog(QDialog):
         self.check_requested = False
 
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(540)
 
-        heading = QLabel("Update Settings")
-        heading.setStyleSheet("font-size: 20px; font-weight: bold;")
+        update_heading = QLabel("Update Settings")
+        update_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
 
         version_label = QLabel(f"Installed version: {APP_VERSION}")
         version_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
@@ -32,6 +36,57 @@ class SettingsDialog(QDialog):
         self.automatic_update_checkbox.setChecked(
             settings.automatic_update_checks
         )
+
+        coordination_heading = QLabel("Project Coordination")
+        coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
+
+        coordination_description = QLabel(
+            "Coordinate project leases through any Save Shift-compatible HTTPS provider."
+        )
+        coordination_description.setWordWrap(True)
+        coordination_description.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY};"
+        )
+
+        self.coordination_enabled_checkbox = QCheckBox(
+            "Enable coordinated project locking"
+        )
+        self.coordination_enabled_checkbox.setChecked(
+            settings.coordination_enabled
+        )
+
+        self.coordination_server_input = QLineEdit(
+            settings.coordination_server_url
+        )
+        self.coordination_server_input.setPlaceholderText(
+            "https://saveshift-coordination.example.workers.dev"
+        )
+
+        self.coordination_device_name_input = QLineEdit(
+            settings.coordination_device_name or platform.node() or "Windows PC"
+        )
+
+        self.coordination_pairing_code_input = QLineEdit()
+        self.coordination_pairing_code_input.setEchoMode(
+            QLineEdit.EchoMode.Password
+        )
+        self.coordination_pairing_code_input.setPlaceholderText(
+            "Required when pairing or changing providers"
+        )
+
+        paired_text = (
+            f"Paired device: {settings.coordination_device_id}"
+            if settings.coordination_device_id
+            else "This computer is not paired yet."
+        )
+        paired_label = QLabel(paired_text)
+        paired_label.setWordWrap(True)
+        paired_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+
+        coordination_form = QFormLayout()
+        coordination_form.addRow("Provider URL", self.coordination_server_input)
+        coordination_form.addRow("Computer name", self.coordination_device_name_input)
+        coordination_form.addRow("Pairing code", self.coordination_pairing_code_input)
 
         self.check_now_button = QPushButton("Check for Updates")
         self.check_now_button.setStyleSheet(styles.secondary_button_style())
@@ -54,10 +109,15 @@ class SettingsDialog(QDialog):
             theme.SPACING_LARGE,
         )
         layout.setSpacing(theme.SPACING)
-        layout.addWidget(heading)
+        layout.addWidget(update_heading)
         layout.addWidget(version_label)
-        layout.addSpacing(theme.SPACING_SMALL)
         layout.addWidget(self.automatic_update_checkbox)
+        layout.addSpacing(theme.SPACING)
+        layout.addWidget(coordination_heading)
+        layout.addWidget(coordination_description)
+        layout.addWidget(self.coordination_enabled_checkbox)
+        layout.addLayout(coordination_form)
+        layout.addWidget(paired_label)
         layout.addSpacing(theme.SPACING)
         layout.addLayout(button_row)
         self.setLayout(layout)
@@ -68,6 +128,22 @@ class SettingsDialog(QDialog):
     @property
     def automatic_update_checks(self) -> bool:
         return self.automatic_update_checkbox.isChecked()
+
+    @property
+    def coordination_enabled(self) -> bool:
+        return self.coordination_enabled_checkbox.isChecked()
+
+    @property
+    def coordination_server_url(self) -> str:
+        return self.coordination_server_input.text().strip()
+
+    @property
+    def coordination_device_name(self) -> str:
+        return self.coordination_device_name_input.text().strip()
+
+    @property
+    def coordination_pairing_code(self) -> str:
+        return self.coordination_pairing_code_input.text().strip()
 
     def _request_check(self) -> None:
         self.check_requested = True
