@@ -4,6 +4,7 @@ from app.ui import theme, styles
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.coordination.models import LockLease
 
 
 class ProjectCard(QFrame):
@@ -47,6 +48,11 @@ class ProjectCard(QFrame):
         updated_by_label = QLabel(updated_by_text)
         updated_by_label.setObjectName("SecondaryText")
 
+        self.lock_status_label = QLabel()
+        self.lock_status_label.setWordWrap(True)
+        self.lock_status_label.setObjectName("SecondaryText")
+        self.show_coordination_disabled()
+
         self.host_button = QPushButton("Host")
         self.import_button = QPushButton("Import")
         self.export_button = QPushButton("Export")
@@ -89,6 +95,7 @@ class ProjectCard(QFrame):
         layout.addSpacing(8)
         layout.addWidget(version_label)
         layout.addWidget(updated_by_label)
+        layout.addWidget(self.lock_status_label)
         layout.addSpacing(12)
         layout.addLayout(button_row)
 
@@ -102,3 +109,41 @@ class ProjectCard(QFrame):
         layout.setSpacing(theme.SPACING_SMALL)
 
         self.setLayout(layout)
+
+    def show_coordination_disabled(self) -> None:
+        self.lock_status_label.setText(
+            "Project lock: Local protection only — coordination disabled"
+        )
+        self.lock_status_label.setStyleSheet("")
+
+    def show_lock_checking(self) -> None:
+        self.lock_status_label.setText("Project lock: Checking…")
+        self.lock_status_label.setStyleSheet("")
+
+    def show_lock_available(self) -> None:
+        self.lock_status_label.setText("Project lock: Available")
+        self.lock_status_label.setStyleSheet(f"color: {theme.SUCCESS};")
+
+    def show_lock_unavailable(self) -> None:
+        self.lock_status_label.setText("Project lock: Status unavailable")
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
+
+    def show_lock(
+        self,
+        lease: LockLease,
+        *,
+        local_device_id: str,
+    ) -> None:
+        owner_suffix = (
+            " (this computer)"
+            if lease.owner_device_id == local_device_id
+            else ""
+        )
+        expires_at = lease.expires_at_utc.astimezone().strftime(
+            "%b %d, %Y at %I:%M:%S %p %Z"
+        )
+        self.lock_status_label.setText(
+            f"Project lock: Locked by {lease.owner_display_name}"
+            f"{owner_suffix} · Expires {expires_at} unless renewed"
+        )
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")

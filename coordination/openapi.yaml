@@ -1,0 +1,226 @@
+openapi: 3.1.0
+info:
+  title: Save Shift Coordination API
+  version: 1.0.0
+  description: Provider-neutral device pairing and project lease contract.
+servers:
+  - url: https://coordination.example.com/api/v1
+paths:
+  /devices/pair:
+    post:
+      summary: Pair a device
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairRequest"
+      responses:
+        "201":
+          description: Device paired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    get:
+      summary: Read the current project lease
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Current lease, or null when unlocked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lock]
+                properties:
+                  lock:
+                    oneOf:
+                      - $ref: "#/components/schemas/LockLease"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}/acquire:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Atomically acquire an unlocked or expired project lease
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner_display_name]
+              properties:
+                owner_display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "200":
+          $ref: "#/components/responses/Lease"
+        "409":
+          description: An unexpired lease already exists; error code is lock_conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /locks/{project_uuid}/renew:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Renew an owned lease
+      security:
+        - deviceToken: []
+      requestBody:
+        $ref: "#/components/requestBodies/LeaseIdentity"
+      responses:
+        "200":
+          $ref: "#/components/responses/Lease"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}/release:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Release an owned lease
+      security:
+        - deviceToken: []
+      requestBody:
+        $ref: "#/components/requestBodies/LeaseIdentity"
+      responses:
+        "200":
+          description: Lease released or already expired
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    deviceToken:
+      type: http
+      scheme: bearer
+  parameters:
+    ProjectUuid:
+      name: project_uuid
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  requestBodies:
+    LeaseIdentity:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [lease_id]
+            properties:
+              lease_id:
+                type: string
+                minLength: 1
+  responses:
+    Lease:
+      description: Current owned lease
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [lock]
+            properties:
+              lock:
+                $ref: "#/components/schemas/LockLease"
+    Error:
+      description: Provider-neutral error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    PairRequest:
+      type: object
+      required: [pairing_code, device_name]
+      properties:
+        pairing_code:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PairResponse:
+      type: object
+      required: [device]
+      properties:
+        device:
+          type: object
+          required: [device_id, device_token]
+          properties:
+            device_id:
+              type: string
+              minLength: 1
+            device_token:
+              type: string
+              minLength: 1
+    LockLease:
+      type: object
+      required:
+        - project_uuid
+        - lease_id
+        - fencing_token
+        - owner_device_id
+        - owner_display_name
+        - acquired_at_utc
+        - expires_at_utc
+      properties:
+        project_uuid:
+          type: string
+        lease_id:
+          type: string
+        fencing_token:
+          type: integer
+          minimum: 1
+        owner_device_id:
+          type: string
+        owner_display_name:
+          type: string
+        acquired_at_utc:
+          type: string
+          format: date-time
+        expires_at_utc:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            lock:
+              $ref: "#/components/schemas/LockLease"

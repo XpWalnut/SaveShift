@@ -1,0 +1,14 @@
+name = "saveshift-coordination"
+main = "src/index.ts"
+compatibility_date = "2026-07-13"
+
+[[durable_objects.bindings]]
+name = "COORDINATION"
+class_name = "CoordinationGroup"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CoordinationGroup"]
+
+[vars]
+LEASE_SECONDS = "900"

@@ -51,6 +51,21 @@ def test_settings_dialog_check_now_preserves_checkbox_and_requests_check(
     assert dialog.automatic_update_checks
 
 
+def test_settings_dialog_makes_disabled_and_unpaired_coordination_clear(
+    qtbot,
+) -> None:
+    dialog = SettingsDialog(settings=AppSettings())
+    qtbot.addWidget(dialog)
+
+    assert "Status: Disabled" in dialog.coordination_status_label.text()
+    assert not dialog.coordination_server_input.isEnabled()
+
+    dialog.coordination_enabled_checkbox.setChecked(True)
+
+    assert "Status: Not paired" in dialog.coordination_status_label.text()
+    assert dialog.coordination_server_input.isEnabled()
+
+
 def test_automatic_check_is_skipped_for_package_launch(
     qtbot,
     tmp_path: Path,

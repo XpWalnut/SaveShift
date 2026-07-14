@@ -34,7 +34,7 @@ The update service reads GitHub Releases, compares semantic versions, selects th
 
 ### Coordination (`app/coordination`)
 
-The desktop coordinates project leases through a provider-neutral protocol and a versioned HTTPS adapter. Hosting retains and renews a lease until export or application exit. Import and restore use temporary leases. Every local destructive workflow also takes an operating-system file lock so concurrent Save Shift processes cannot mutate the same project simultaneously.
+The desktop coordinates project leases through a provider-neutral protocol and a versioned HTTPS adapter. Hosting retains and renews a lease until export or application exit. Import and restore use temporary leases. Project lock status is read in a background worker and refreshed on project cards without blocking the Qt UI. Every local destructive workflow also takes an operating-system file lock so concurrent Save Shift processes cannot mutate the same project simultaneously.
 
 The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with a SQLite-backed Durable Object. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
 

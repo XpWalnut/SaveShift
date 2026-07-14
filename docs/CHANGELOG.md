@@ -11,6 +11,8 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Self-deployable Cloudflare Worker and SQLite-backed Durable Object adapter.
 - Cross-process operating-system locks for destructive local save operations.
 - Settings controls for provider URL, device pairing, and coordination opt-in.
+- Project-card lock status showing owner, local ownership, and lease expiration.
+- Persistent profile name used for history and coordination attribution.
 - Windows DPAPI protection for stored device credentials.
 - Python regression tests and Cloudflare contract tests for lock behavior.
 
@@ -18,6 +20,7 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 - Hosting retains and renews its project lease until export or application exit.
 - Import and restore fail before touching save files when a remote lock cannot be verified.
+- Host, import, export, and restore reuse the saved profile name instead of prompting for every operation.
 
 ## [0.1.0-alpha.3] - 2026-07-13
 

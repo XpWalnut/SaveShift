@@ -30,6 +30,24 @@ class SettingsDialog(QDialog):
         version_label = QLabel(f"Installed version: {APP_VERSION}")
         version_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
 
+        profile_heading = QLabel("Profile")
+        profile_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
+
+        profile_description = QLabel(
+            "This name is recorded in project history and shown to friends "
+            "when you hold a project lock."
+        )
+        profile_description.setWordWrap(True)
+        profile_description.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+
+        self.player_display_name_input = QLineEdit(
+            settings.player_display_name
+        )
+        self.player_display_name_input.setPlaceholderText("Your name")
+
+        profile_form = QFormLayout()
+        profile_form.addRow("Display name", self.player_display_name_input)
+
         self.automatic_update_checkbox = QCheckBox(
             "Automatically check for Save Shift updates"
         )
@@ -54,6 +72,7 @@ class SettingsDialog(QDialog):
         self.coordination_enabled_checkbox.setChecked(
             settings.coordination_enabled
         )
+        self._paired_device_id = settings.coordination_device_id
 
         self.coordination_server_input = QLineEdit(
             settings.coordination_server_url
@@ -74,14 +93,15 @@ class SettingsDialog(QDialog):
             "Required when pairing or changing providers"
         )
 
-        paired_text = (
-            f"Paired device: {settings.coordination_device_id}"
-            if settings.coordination_device_id
-            else "This computer is not paired yet."
+        self.coordination_status_label = QLabel()
+        self.coordination_status_label.setWordWrap(True)
+        self.coordination_status_label.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY};"
         )
-        paired_label = QLabel(paired_text)
-        paired_label.setWordWrap(True)
-        paired_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+        self.coordination_enabled_checkbox.toggled.connect(
+            self._coordination_enabled_changed
+        )
+        self._coordination_enabled_changed(settings.coordination_enabled)
 
         coordination_form = QFormLayout()
         coordination_form.addRow("Provider URL", self.coordination_server_input)
@@ -109,6 +129,10 @@ class SettingsDialog(QDialog):
             theme.SPACING_LARGE,
         )
         layout.setSpacing(theme.SPACING)
+        layout.addWidget(profile_heading)
+        layout.addWidget(profile_description)
+        layout.addLayout(profile_form)
+        layout.addSpacing(theme.SPACING)
         layout.addWidget(update_heading)
         layout.addWidget(version_label)
         layout.addWidget(self.automatic_update_checkbox)
@@ -117,7 +141,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(coordination_description)
         layout.addWidget(self.coordination_enabled_checkbox)
         layout.addLayout(coordination_form)
-        layout.addWidget(paired_label)
+        layout.addWidget(self.coordination_status_label)
         layout.addSpacing(theme.SPACING)
         layout.addLayout(button_row)
         self.setLayout(layout)
@@ -128,6 +152,10 @@ class SettingsDialog(QDialog):
     @property
     def automatic_update_checks(self) -> bool:
         return self.automatic_update_checkbox.isChecked()
+
+    @property
+    def player_display_name(self) -> str:
+        return self.player_display_name_input.text().strip()
 
     @property
     def coordination_enabled(self) -> bool:
@@ -148,3 +176,22 @@ class SettingsDialog(QDialog):
     def _request_check(self) -> None:
         self.check_requested = True
         self.accept()
+
+    def _coordination_enabled_changed(self, enabled: bool) -> None:
+        for control in (
+            self.coordination_server_input,
+            self.coordination_device_name_input,
+            self.coordination_pairing_code_input,
+        ):
+            control.setEnabled(enabled)
+
+        if not enabled:
+            status = (
+                "Status: Disabled. Project cards use local protection only."
+            )
+        elif self._paired_device_id:
+            status = f"Status: Paired device {self._paired_device_id}"
+        else:
+            status = "Status: Not paired. Enter the pairing code before saving."
+
+        self.coordination_status_label.setText(status)

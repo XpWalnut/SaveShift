@@ -36,6 +36,8 @@ from app.coordination.errors import (
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.manager import CoordinationManager
+from app.coordination.models import LockLease
+from app.coordination.status_controller import LockStatusController
 from app.games.registry import GameRegistry
 from app.services.export_service import ExportService
 from app.services.restore_service import RestoreService
@@ -83,9 +85,24 @@ class MainWindow(QMainWindow):
         self.coordination_renewal_timer.timeout.connect(
             self._renew_coordination_leases
         )
+        self.lock_status_controller = LockStatusController(self)
+        self.lock_status_controller.completed.connect(
+            self._lock_statuses_loaded
+        )
+        self.lock_status_controller.failed.connect(
+            self._lock_statuses_failed
+        )
+        self.lock_status_timer = QTimer(self)
+        self.lock_status_timer.setInterval(30 * 1000)
+        self.lock_status_timer.timeout.connect(
+            self._refresh_project_lock_statuses
+        )
+        self.project_cards: dict[str, ProjectCard] = {}
+        self.project_lock_statuses: dict[str, LockLease | None] = {}
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
+            self.lock_status_timer.start()
 
         self.update_controller = UpdateController(self)
         self.update_controller.update_available.connect(
@@ -274,6 +291,7 @@ class MainWindow(QMainWindow):
         candidate = replace(
             self.settings,
             automatic_update_checks=dialog.automatic_update_checks,
+            player_display_name=dialog.player_display_name,
             coordination_enabled=dialog.coordination_enabled,
             coordination_server_url=dialog.coordination_server_url,
             coordination_device_name=dialog.coordination_device_name,
@@ -354,11 +372,16 @@ class MainWindow(QMainWindow):
         self.coordination_manager = self._create_coordination_manager(
             self.settings
         )
+        self.project_lock_statuses.clear()
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
+            self.lock_status_timer.start()
         else:
             self.coordination_renewal_timer.stop()
+            self.lock_status_timer.stop()
+
+        self.load_projects()
 
         if dialog.check_requested:
             self.check_for_updates(manual=True)
@@ -564,9 +587,11 @@ class MainWindow(QMainWindow):
                 project=project,
                 installed_game=selected_game,
             )
+            self.project_cards[project.uuid] = card
             self.project_layout.addWidget(card)
 
         self.project_layout.addStretch()
+        self._refresh_project_lock_statuses()
 
     def select_installed_game(self, installed_game: InstalledGame) -> None:
         self.selected_installed_game_id = installed_game.id
@@ -727,14 +752,9 @@ class MainWindow(QMainWindow):
 
     def host_project(self, project: Project) -> None:
         installed_game = self._get_installed_game_for_project(project)
+        player_name = self._get_player_display_name()
 
-        hosted_by, ok = QInputDialog.getText(
-            self,
-            "Host Project",
-            "Who is hosting this version?",
-        )
-
-        if not ok or not hosted_by.strip():
+        if player_name is None:
             return
 
         if (
@@ -752,7 +772,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self._acquire_hosting_lease(project.uuid, hosted_by.strip())
+            self._acquire_hosting_lease(project.uuid, player_name)
         except CoordinationError as error:
             self._show_coordination_error(error)
             return
@@ -761,7 +781,7 @@ class MainWindow(QMainWindow):
             version = HostingService.host_project(
                 project_id=project.id,
                 game_id=installed_game.game_id,
-                hosted_by=hosted_by.strip(),
+                hosted_by=player_name,
             )
         except Exception as error:
             self._release_coordination_lease(project.uuid, report_error=False)
@@ -867,23 +887,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        imported_by, ok = QInputDialog.getText(
-            self,
-            "Import Package",
-            "Who is importing this package?",
-        )
+        player_name = self._get_player_display_name()
 
-        if not ok or not imported_by.strip():
+        if player_name is None:
             return
 
         try:
             with self._temporary_coordination_lease(
                 package_info.project_uuid,
-                imported_by.strip(),
+                player_name,
             ):
                 version = ImportService.import_package(
                     package_path=package_path,
-                    imported_by=imported_by.strip(),
+                    imported_by=player_name,
                 )
         except CoordinationError as error:
             self._show_coordination_error(error)
@@ -911,14 +927,9 @@ class MainWindow(QMainWindow):
 
     def export_project(self, project: Project) -> None:
         installed_game = self._get_installed_game_for_project(project)
+        player_name = self._get_player_display_name()
 
-        exported_by, ok = QInputDialog.getText(
-            self,
-            "Export Package",
-            "Who is exporting this project?",
-        )
-
-        if not ok or not exported_by.strip():
+        if player_name is None:
             return
 
         suggested_name = f"{project.name}.sspkg"
@@ -945,16 +956,16 @@ class MainWindow(QMainWindow):
                 manager = self._require_coordination_manager()
 
                 if not manager.has_active_lease(project.uuid):
-                    manager.acquire_hosting_lease(
+                    self._acquire_hosting_lease(
                         project.uuid,
-                        exported_by.strip(),
+                        player_name,
                     )
                     lease_acquired_here = True
 
             version = ExportService.export_project(
                 project=project,
                 game_id=installed_game.game_id,
-                exported_by=exported_by.strip(),
+                exported_by=player_name,
                 destination_path=destination,
             )
         except CoordinationError as error:
@@ -1022,23 +1033,19 @@ class MainWindow(QMainWindow):
             project: Project,
             version: ProjectVersion,
     ) -> ProjectVersion | None:
-        restored_by, ok = QInputDialog.getText(
-            self,
-            "Restore Version",
-            "Who is restoring this project?",
-        )
+        player_name = self._get_player_display_name()
 
-        if not ok or not restored_by.strip():
+        if player_name is None:
             return None
 
         try:
             with self._temporary_coordination_lease(
                 project.uuid,
-                restored_by.strip(),
+                player_name,
             ):
                 restored_version = RestoreService.restore(
                     project_version=version,
-                    restored_by=restored_by.strip(),
+                    restored_by=player_name,
                 )
         except CoordinationError as error:
             self._show_coordination_error(error)
@@ -1084,7 +1091,7 @@ class MainWindow(QMainWindow):
     ) -> ProjectCard:
         latest_version = ProjectVersionService.get_latest_version(project.id)
 
-        return ProjectCard(
+        card = ProjectCard(
             project=project,
             installed_game=installed_game,
             latest_version=latest_version,
@@ -1093,6 +1100,8 @@ class MainWindow(QMainWindow):
             on_export=self.export_project,
             on_history=self.show_history,
         )
+        self._apply_project_lock_status(project.uuid, card)
+        return card
 
     def _clear_installed_game_cards(self) -> None:
         while self.installed_game_layout.count():
@@ -1103,6 +1112,8 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
     def _clear_project_cards(self) -> None:
+        self.project_cards.clear()
+
         while self.project_layout.count():
             item = self.project_layout.takeAt(0)
             widget = item.widget()
@@ -1126,6 +1137,125 @@ class MainWindow(QMainWindow):
                 return installed_game
 
         raise ValueError(f"Installed game not found for project: {project.name}")
+
+    def _get_player_display_name(self) -> str | None:
+        if self.settings.player_display_name:
+            return self.settings.player_display_name
+
+        display_name, ok = QInputDialog.getText(
+            self,
+            "Your Name",
+            (
+                "What name should Save Shift use for project history and "
+                "locks? You can change it later in Settings."
+            ),
+        )
+        display_name = display_name.strip()
+
+        if not ok or not display_name:
+            return None
+
+        candidate = replace(
+            self.settings,
+            player_display_name=display_name,
+        )
+
+        try:
+            SettingsService.save(candidate)
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Name Not Saved",
+                f"Save Shift could not save your display name.\n\n{error}",
+            )
+            return None
+
+        self.settings = candidate
+        return display_name
+
+    def _refresh_project_lock_statuses(self) -> None:
+        if not self.project_cards:
+            return
+
+        if not self.settings.coordination_enabled:
+            for project_uuid, card in self.project_cards.items():
+                self._apply_project_lock_status(project_uuid, card)
+            return
+
+        if self.coordination_manager is None:
+            for card in self.project_cards.values():
+                card.show_lock_unavailable()
+            return
+
+        for project_uuid, card in self.project_cards.items():
+            if (
+                project_uuid not in self.project_lock_statuses
+                and not self.coordination_manager.has_active_lease(
+                    project_uuid
+                )
+            ):
+                card.show_lock_checking()
+
+        self.lock_status_controller.refresh(
+            self.coordination_manager.provider,
+            list(self.project_cards),
+        )
+
+    def _lock_statuses_loaded(
+        self,
+        statuses: dict[str, LockLease | None],
+    ) -> None:
+        self.project_lock_statuses.update(statuses)
+
+        for project_uuid, card in self.project_cards.items():
+            self._apply_project_lock_status(project_uuid, card)
+
+    def _lock_statuses_failed(self, message: str) -> None:
+        logger.warning("Could not refresh project lock status: %s", message)
+
+        for project_uuid, card in self.project_cards.items():
+            if (
+                self.coordination_manager is not None
+                and self.coordination_manager.has_active_lease(project_uuid)
+            ):
+                self._apply_project_lock_status(project_uuid, card)
+            else:
+                card.show_lock_unavailable()
+
+    def _apply_project_lock_status(
+        self,
+        project_uuid: str,
+        card: ProjectCard,
+    ) -> None:
+        if not self.settings.coordination_enabled:
+            card.show_coordination_disabled()
+            return
+
+        if self.coordination_manager is None:
+            card.show_lock_unavailable()
+            return
+
+        lease = self.coordination_manager.active_leases.get(project_uuid)
+
+        if lease is None and project_uuid in self.project_lock_statuses:
+            lease = self.project_lock_statuses[project_uuid]
+
+        if lease is not None:
+            card.show_lock(
+                lease,
+                local_device_id=self.settings.coordination_device_id,
+            )
+        elif project_uuid in self.project_lock_statuses:
+            card.show_lock_available()
+        else:
+            card.show_lock_checking()
+
+    def _set_project_lock_status(self, lease: LockLease) -> None:
+        self.project_lock_statuses[lease.project_uuid] = lease
+        card = self.project_cards.get(lease.project_uuid)
+
+        if card is not None:
+            self._apply_project_lock_status(lease.project_uuid, card)
 
     @staticmethod
     def _create_coordination_manager(
@@ -1167,10 +1297,16 @@ class MainWindow(QMainWindow):
         if not self.settings.coordination_enabled:
             return
 
-        self._require_coordination_manager().acquire_hosting_lease(
+        lease = self._require_coordination_manager().acquire_hosting_lease(
             project_uuid,
             owner_display_name,
         )
+        logger.info(
+            "Acquired project lease for %s as %s.",
+            project_uuid,
+            owner_display_name,
+        )
+        self._set_project_lock_status(lease)
 
     @contextmanager
     def _temporary_coordination_lease(
@@ -1184,8 +1320,24 @@ class MainWindow(QMainWindow):
 
         manager = self._require_coordination_manager()
 
-        with manager.temporary_lease(project_uuid, owner_display_name):
-            yield
+        try:
+            with manager.temporary_lease(
+                project_uuid,
+                owner_display_name,
+            ) as lease:
+                self._set_project_lock_status(lease)
+                yield
+        finally:
+            active_lease = manager.active_leases.get(project_uuid)
+
+            if active_lease is not None:
+                self._set_project_lock_status(active_lease)
+            else:
+                self.project_lock_statuses[project_uuid] = None
+                card = self.project_cards.get(project_uuid)
+
+                if card is not None:
+                    self._apply_project_lock_status(project_uuid, card)
 
     def _release_coordination_lease(
         self,
@@ -1218,6 +1370,14 @@ class MainWindow(QMainWindow):
 
             return error
 
+        self.project_lock_statuses[project_uuid] = None
+        card = self.project_cards.get(project_uuid)
+
+        if card is not None:
+            self._apply_project_lock_status(project_uuid, card)
+
+        logger.info("Released project lease for %s.", project_uuid)
+
         return None
 
     def _renew_coordination_leases(self) -> None:
@@ -1227,6 +1387,7 @@ class MainWindow(QMainWindow):
         for lease, error in self.coordination_manager.renew_active_leases():
             if isinstance(error, (LockConflictError, LockOwnershipError)):
                 self.coordination_manager.forget_lease(lease.project_uuid)
+                self.project_lock_statuses.pop(lease.project_uuid, None)
                 QMessageBox.critical(
                     self,
                     "Project Lock Lost",
@@ -1248,11 +1409,17 @@ class MainWindow(QMainWindow):
                 15_000,
             )
 
+        for lease in self.coordination_manager.active_leases.values():
+            self._set_project_lock_status(lease)
+
+        self._refresh_project_lock_statuses()
+
     def _show_coordination_error(self, error: CoordinationError) -> None:
         if isinstance(error, LockConflictError):
             details = "Another computer currently owns this project lock."
 
             if error.lock is not None:
+                self._set_project_lock_status(error.lock)
                 expires_at = error.lock.expires_at_utc.strftime(
                     "%Y-%m-%d %H:%M UTC"
                 )
@@ -1310,5 +1477,6 @@ class MainWindow(QMainWindow):
                 )
 
         self.coordination_renewal_timer.stop()
+        self.lock_status_timer.stop()
         event.accept()
         super().closeEvent(event)

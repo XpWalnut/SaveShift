@@ -19,6 +19,8 @@ Save Shift is an open-source Windows desktop application for sharing and managin
 - Backup of an existing local save before an imported version is synchronized
 - Automatic update checks through GitHub Releases, with an opt-out setting and manual checks
 - Optional cross-device project locking through a self-deployed coordination provider
+- Project-card lock status with current owner and lease expiration
+- A reusable profile name for history and lock attribution
 - Per-user Windows installer
 
 ## Supported games
@@ -75,7 +77,7 @@ The build script runs the complete regression suite before PyInstaller and Inno 
 
 ### Optional project coordination
 
-Groups that rotate hosts can deploy the included Cloudflare adapter on the Workers free plan, then pair each Save Shift computer from **Settings → Project Coordination**. Save Shift acquires a renewable lease while a project is hosted and short-lived leases around import and restore. If the provider cannot confirm ownership, the destructive operation is stopped before save files are changed.
+Groups that rotate hosts can deploy the included Cloudflare adapter on the Workers free plan, then pair each Save Shift computer from **Settings → Project Coordination**. Save Shift acquires a renewable lease while a project is hosted and short-lived leases around import and restore. Project cards show the current owner and lease expiration. If the provider cannot confirm ownership, the destructive operation is stopped before save files are changed.
 
 Cloudflare is not embedded in the desktop application. The desktop uses the provider-neutral [coordination API contract](coordination/openapi.yaml), so another HTTPS service can replace the included adapter without rewriting application workflows. Deployment instructions are in the [Cloudflare adapter README](coordination/cloudflare/README.md).
 

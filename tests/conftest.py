@@ -53,10 +53,12 @@ def clean_database() -> Generator[None, None, None]:
     """
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    _test_settings_path.unlink(missing_ok=True)
 
     yield
 
     Base.metadata.drop_all(bind=engine)
+    _test_settings_path.unlink(missing_ok=True)
 
 
 @pytest.fixture

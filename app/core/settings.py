@@ -10,6 +10,7 @@ from app.core.secrets import SecretProtectionError, SecretProtector
 @dataclass(frozen=True)
 class AppSettings:
     automatic_update_checks: bool = True
+    player_display_name: str = ""
     coordination_enabled: bool = False
     coordination_server_url: str = ""
     coordination_device_id: str = ""
@@ -65,6 +66,10 @@ class SettingsService:
 
         return AppSettings(
             automatic_update_checks=automatic_update_checks,
+            player_display_name=SettingsService._string(
+                data,
+                "player_display_name",
+            ),
             coordination_enabled=coordination_enabled,
             coordination_server_url=SettingsService._string(
                 data,
@@ -95,6 +100,7 @@ class SettingsService:
         )
         data = {
             "automatic_update_checks": settings.automatic_update_checks,
+            "player_display_name": settings.player_display_name,
             "coordination_enabled": settings.coordination_enabled,
             "coordination_server_url": settings.coordination_server_url,
             "coordination_device_id": settings.coordination_device_id,

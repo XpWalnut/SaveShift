@@ -41,6 +41,7 @@ def test_coordination_credential_is_protected_at_rest(
     )
     settings = AppSettings(
         automatic_update_checks=False,
+        player_display_name="Jake",
         coordination_enabled=True,
         coordination_server_url="https://locks.example.com",
         coordination_device_id="device-123",
