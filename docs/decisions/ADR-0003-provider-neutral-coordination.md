@@ -20,6 +20,13 @@ The desktop depends on a Python `CoordinationProvider` protocol containing only 
 - Release an owned lease.
 - Read current project lock status.
 
+Modern providers may additionally implement the provider-neutral group administration contract:
+
+- Bootstrap the first administrator after provisioning.
+- Join with a short-lived, single-use invitation.
+- Create invitations.
+- List and revoke paired devices.
+
 All remote providers implement the versioned `/api/v1` HTTP contract in [`coordination/openapi.yaml`](../../coordination/openapi.yaml). Requests and responses use provider-neutral JSON models. Provider-specific deployment code, bindings, storage APIs, and dependencies live outside the desktop application.
 
 Every lease contains a monotonically increasing fencing token. Lease IDs prove ownership for renewal and release; device credentials authenticate the caller. Expired leases may be replaced atomically.
@@ -37,4 +44,5 @@ Coordination deliberately does not upload or download save packages. A future cl
 - Cloudflare types and packages never enter the PyInstaller dependency graph.
 - Coordination can be disabled without disabling local operation locks.
 - API evolution must remain backward compatible within `/api/v1` or introduce a new version.
+- Provider-specific account provisioning remains separate from both runtime locking and group administration.
 - Remote coordination depends on network availability, so UI workflows must report unavailable and conflicting states explicitly.

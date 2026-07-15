@@ -1,11 +1,51 @@
 openapi: 3.1.0
 info:
   title: Save Shift Coordination API
-  version: 1.0.0
-  description: Provider-neutral device pairing and project lease contract.
+  version: 1.2.0
+  description: Provider-neutral group onboarding, device management, and project lease contract.
 servers:
   - url: https://coordination.example.com/api/v1
 paths:
+  /devices/bootstrap:
+    post:
+      summary: Create the first group administrator after provider provisioning
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BootstrapRequest"
+      responses:
+        "201":
+          description: Administrator device created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices/join:
+    post:
+      summary: Join a group with a single-use invitation
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinRequest"
+      responses:
+        "201":
+          description: Member device created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
   /devices/pair:
     post:
       summary: Pair a device
@@ -23,6 +63,135 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+  /devices/claim-administrator:
+    post:
+      summary: Migrate one legacy paired device to administrator access
+      description: Available only when the provider has an existing pairing code and no administrator has been established.
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pairing_code]
+              properties:
+                pairing_code:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Administrator access granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [administrator]
+                properties:
+                  administrator:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices/leave:
+    post:
+      summary: Remove the authenticated device from the group
+      description: Administrators must revoke all other active devices before leaving. The provider deletes all group storage when the final device leaves.
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Device left the group
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [left, group_empty]
+                properties:
+                  left:
+                    type: boolean
+                    const: true
+                  group_empty:
+                    type: boolean
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices:
+    get:
+      summary: List group devices; administrator only
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Group device list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Device"
+        "403":
+          $ref: "#/components/responses/Error"
+  /devices/{device_id}/revoke:
+    parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+    post:
+      summary: Revoke another group device; administrator only
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Device revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /invitations:
+    post:
+      summary: Create a single-use invitation; administrator only
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_in_seconds:
+                  type: integer
+                  minimum: 300
+                  maximum: 604800
+                  default: 86400
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationResponse"
         "403":
           $ref: "#/components/responses/Error"
   /locks/{project_uuid}:
@@ -157,6 +326,28 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    BootstrapRequest:
+      type: object
+      required: [bootstrap_token, device_name]
+      properties:
+        bootstrap_token:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    JoinRequest:
+      type: object
+      required: [invitation_token, device_name]
+      properties:
+        invitation_token:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
     PairRequest:
       type: object
       required: [pairing_code, device_name]
@@ -182,6 +373,43 @@ components:
             device_token:
               type: string
               minLength: 1
+            administrator:
+              type: boolean
+    Device:
+      type: object
+      required:
+        - device_id
+        - device_name
+        - created_at_utc
+        - revoked
+        - administrator
+      properties:
+        device_id:
+          type: string
+        device_name:
+          type: string
+        created_at_utc:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        administrator:
+          type: boolean
+    InvitationResponse:
+      type: object
+      required: [invitation]
+      properties:
+        invitation:
+          type: object
+          required: [invitation_id, invitation_token, expires_at_utc]
+          properties:
+            invitation_id:
+              type: string
+            invitation_token:
+              type: string
+            expires_at_utc:
+              type: string
+              format: date-time
     LockLease:
       type: object
       required:

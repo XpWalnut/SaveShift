@@ -70,3 +70,9 @@ jobs:
 
       - name: Run coordination contract tests
         run: pnpm test
+
+      - name: Build bundled coordination provider
+        run: pnpm run bundle
+
+      - name: Verify bundled provider is current
+        run: git diff --exit-code ../../app/resources/cloudflare/index.js

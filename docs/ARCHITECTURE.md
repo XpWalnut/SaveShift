@@ -38,6 +38,8 @@ The desktop coordinates project leases through a provider-neutral protocol and a
 
 The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with a SQLite-backed Durable Object. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
 
+The normal onboarding path uses single-use group invitations and administrator-managed devices. Cloudflare account provisioning is a separate adapter in `app/coordination/cloudflare_provisioning.py`: it uses browser OAuth with PKCE, uploads the bundled Worker, bootstraps the first administrator, and discards its temporary account access. The setup controller runs authorization, provisioning, invitation joins, departure, and owner-authorized Worker removal outside the Qt UI thread. Runtime lease operations never call Cloudflare's account API. The provider-neutral leave operation revokes the departing device and clears all Durable Object storage when the group becomes empty.
+
 ### Core (`app/core`)
 
 Paths, settings, constants, logging, and other cross-cutting application configuration. `app/version.py` is the single source for application and Windows installer versions.
@@ -56,10 +58,11 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 
 ## Packaging and releases
 
-`tools/build_release.ps1` runs tests, builds `SaveShift.spec` with PyInstaller, reads version values from `app/version.py`, and invokes `installer/SaveShift.iss`. GitHub prereleases publish the resulting versioned installer. The updater requires the asset name to match `SaveShiftSetup-<version>.exe`.
+`tools/build_release.ps1` runs Python and Cloudflare tests, regenerates the bundled coordination Worker, builds `SaveShift.spec` with PyInstaller, reads version values from `app/version.py`, and invokes `installer/SaveShift.iss`. GitHub prereleases publish the resulting versioned installer. The updater requires the asset name to match `SaveShiftSetup-<version>.exe`.
 
 ## Architectural decisions
 
 - [ADR-0001: Package format](decisions/ADR-0001-package-format.md)
 - [ADR-0002: Fork behavior](decisions/ADR-0002-fork-behavior.md)
 - [ADR-0003: Provider-neutral project coordination](decisions/ADR-0003-provider-neutral-coordination.md)
+- [ADR-0004: Cloudflare OAuth provider provisioning](decisions/ADR-0004-cloudflare-oauth-provisioning.md)

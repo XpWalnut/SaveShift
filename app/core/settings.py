@@ -16,6 +16,10 @@ class AppSettings:
     coordination_device_id: str = ""
     coordination_device_name: str = ""
     coordination_device_token: str = ""
+    coordination_is_administrator: bool = False
+    coordination_provider_kind: str = ""
+    coordination_cloudflare_account_id: str = ""
+    coordination_cloudflare_script_name: str = ""
 
 
 class SettingsService:
@@ -45,6 +49,12 @@ class SettingsService:
         coordination_enabled = SettingsService._boolean(
             data,
             "coordination_enabled",
+            False,
+            path,
+        )
+        coordination_is_administrator = SettingsService._boolean(
+            data,
+            "coordination_is_administrator",
             False,
             path,
         )
@@ -84,6 +94,19 @@ class SettingsService:
                 "coordination_device_name",
             ),
             coordination_device_token=device_token,
+            coordination_is_administrator=coordination_is_administrator,
+            coordination_provider_kind=SettingsService._string(
+                data,
+                "coordination_provider_kind",
+            ),
+            coordination_cloudflare_account_id=SettingsService._string(
+                data,
+                "coordination_cloudflare_account_id",
+            ),
+            coordination_cloudflare_script_name=SettingsService._string(
+                data,
+                "coordination_cloudflare_script_name",
+            ),
         )
 
     @staticmethod
@@ -106,6 +129,14 @@ class SettingsService:
             "coordination_device_id": settings.coordination_device_id,
             "coordination_device_name": settings.coordination_device_name,
             "coordination_device_token_protected": protected_token,
+            "coordination_is_administrator": settings.coordination_is_administrator,
+            "coordination_provider_kind": settings.coordination_provider_kind,
+            "coordination_cloudflare_account_id": (
+                settings.coordination_cloudflare_account_id
+            ),
+            "coordination_cloudflare_script_name": (
+                settings.coordination_cloudflare_script_name
+            ),
         }
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         temporary_path.write_text(

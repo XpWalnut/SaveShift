@@ -47,6 +47,10 @@ def test_coordination_credential_is_protected_at_rest(
         coordination_device_id="device-123",
         coordination_device_name="Gaming PC",
         coordination_device_token="plain-secret-token",
+        coordination_is_administrator=True,
+        coordination_provider_kind="cloudflare",
+        coordination_cloudflare_account_id="account-123",
+        coordination_cloudflare_script_name="saveshift-coordination-123",
     )
 
     SettingsService.save(settings, settings_path)
@@ -54,6 +58,7 @@ def test_coordination_credential_is_protected_at_rest(
     stored = settings_path.read_text(encoding="utf-8")
     assert '"coordination_device_token_protected": "protected:plain-secret-token"' in stored
     assert '"coordination_device_token":' not in stored
+    assert '"coordination_is_administrator": true' in stored
     assert SettingsService.load(settings_path) == settings
 
 

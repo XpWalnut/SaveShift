@@ -12,14 +12,23 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.settings import AppSettings
+from app.coordination.cloudflare_provisioning import CloudflareOAuthConfig
 from app.ui import styles, theme
 from app.version import APP_VERSION
 
 
 class SettingsDialog(QDialog):
+    ACTION_CREATE_GROUP = "create_group"
+    ACTION_JOIN_GROUP = "join_group"
+    ACTION_CREATE_INVITATION = "create_invitation"
+    ACTION_MANAGE_DEVICES = "manage_devices"
+    ACTION_CLAIM_ADMINISTRATOR = "claim_administrator"
+    ACTION_LEAVE_GROUP = "leave_group"
+
     def __init__(self, settings: AppSettings, parent=None) -> None:
         super().__init__(parent)
         self.check_requested = False
+        self.coordination_action: str | None = None
 
         self.setWindowTitle("Settings")
         self.setMinimumWidth(540)
@@ -59,7 +68,9 @@ class SettingsDialog(QDialog):
         coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
 
         coordination_description = QLabel(
-            "Coordinate project leases through any Save Shift-compatible HTTPS provider."
+            "Create or join a group so Save Shift can prevent two friends from "
+            "changing the same world at the same time. Save files are still "
+            "shared through .sspkg packages."
         )
         coordination_description.setWordWrap(True)
         coordination_description.setStyleSheet(
@@ -73,6 +84,7 @@ class SettingsDialog(QDialog):
             settings.coordination_enabled
         )
         self._paired_device_id = settings.coordination_device_id
+        self._is_administrator = settings.coordination_is_administrator
 
         self.coordination_server_input = QLineEdit(
             settings.coordination_server_url
@@ -108,6 +120,92 @@ class SettingsDialog(QDialog):
         coordination_form.addRow("Computer name", self.coordination_device_name_input)
         coordination_form.addRow("Pairing code", self.coordination_pairing_code_input)
 
+        self.create_group_button = QPushButton("Create Group")
+        self.create_group_button.setStyleSheet(styles.primary_button_style())
+        self.create_group_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_CREATE_GROUP)
+        )
+        oauth_available = CloudflareOAuthConfig.from_environment().available
+        self.create_group_button.setEnabled(oauth_available)
+
+        self.join_group_button = QPushButton("Join Group")
+        self.join_group_button.setStyleSheet(styles.secondary_button_style())
+        self.join_group_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_JOIN_GROUP)
+        )
+
+        self.create_invitation_button = QPushButton("Invite a Friend")
+        self.create_invitation_button.setStyleSheet(styles.primary_button_style())
+        self.create_invitation_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_CREATE_INVITATION
+            )
+        )
+
+        self.manage_devices_button = QPushButton("Manage Computers")
+        self.manage_devices_button.setStyleSheet(styles.secondary_button_style())
+        self.manage_devices_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_MANAGE_DEVICES)
+        )
+
+        self.claim_administrator_button = QPushButton("Claim Administrator")
+        self.claim_administrator_button.setStyleSheet(
+            styles.secondary_button_style()
+        )
+        self.claim_administrator_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_CLAIM_ADMINISTRATOR
+            )
+        )
+
+        self.leave_group_button = QPushButton("Leave Group")
+        self.leave_group_button.setStyleSheet(styles.secondary_button_style())
+        self.leave_group_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_LEAVE_GROUP)
+        )
+
+        coordination_action_row = QHBoxLayout()
+        coordination_action_row.addWidget(self.create_group_button)
+        coordination_action_row.addWidget(self.join_group_button)
+        coordination_action_row.addWidget(self.create_invitation_button)
+        coordination_action_row.addWidget(self.manage_devices_button)
+        coordination_action_row.addWidget(self.claim_administrator_button)
+        coordination_action_row.addWidget(self.leave_group_button)
+
+        self.coordination_setup_note = QLabel()
+        self.coordination_setup_note.setWordWrap(True)
+        self.coordination_setup_note.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY};"
+        )
+
+        if not oauth_available and not self._paired_device_id:
+            self.coordination_setup_note.setText(
+                "Creating a group is unavailable until this Save Shift build "
+                "is registered with Cloudflare. You can still join a group or "
+                "configure a custom provider."
+            )
+
+        paired = bool(self._paired_device_id)
+        self.create_group_button.setVisible(not paired)
+        self.join_group_button.setVisible(not paired)
+        self.create_invitation_button.setVisible(
+            paired and self._is_administrator
+        )
+        self.manage_devices_button.setVisible(
+            paired and self._is_administrator
+        )
+        self.claim_administrator_button.setVisible(False)
+        self.leave_group_button.setVisible(paired)
+
+        self.advanced_coordination_checkbox = QCheckBox(
+            "Advanced custom provider setup"
+        )
+        self.advanced_coordination_checkbox.toggled.connect(
+            self._advanced_coordination_changed
+        )
+        self._coordination_form = coordination_form
+        self._advanced_coordination_changed(False)
+
         self.check_now_button = QPushButton("Check for Updates")
         self.check_now_button.setStyleSheet(styles.secondary_button_style())
         self.check_now_button.clicked.connect(self._request_check)
@@ -140,6 +238,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)
         layout.addWidget(self.coordination_enabled_checkbox)
+        layout.addLayout(coordination_action_row)
+        layout.addWidget(self.coordination_setup_note)
+        layout.addWidget(self.advanced_coordination_checkbox)
         layout.addLayout(coordination_form)
         layout.addWidget(self.coordination_status_label)
         layout.addSpacing(theme.SPACING)
@@ -177,6 +278,26 @@ class SettingsDialog(QDialog):
         self.check_requested = True
         self.accept()
 
+    def _request_coordination_action(self, action: str) -> None:
+        self.coordination_action = action
+        self.accept()
+
+    def _advanced_coordination_changed(self, visible: bool) -> None:
+        for field in (
+            self.coordination_server_input,
+            self.coordination_device_name_input,
+            self.coordination_pairing_code_input,
+        ):
+            field.setVisible(visible)
+            label = self._coordination_form.labelForField(field)
+
+            if label is not None:
+                label.setVisible(visible)
+
+        self.claim_administrator_button.setVisible(
+            visible and bool(self._paired_device_id) and not self._is_administrator
+        )
+
     def _coordination_enabled_changed(self, enabled: bool) -> None:
         for control in (
             self.coordination_server_input,
@@ -190,7 +311,8 @@ class SettingsDialog(QDialog):
                 "Status: Disabled. Project cards use local protection only."
             )
         elif self._paired_device_id:
-            status = f"Status: Paired device {self._paired_device_id}"
+            role = "group administrator" if self._is_administrator else "group member"
+            status = f"Status: Connected as a {role}."
         else:
             status = "Status: Not paired. Enter the pairing code before saving."
 

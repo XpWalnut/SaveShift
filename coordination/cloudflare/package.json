@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "scripts": {
+    "bundle": "wrangler deploy --dry-run --minify --outdir ../../app/resources/cloudflare",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "test": "vitest run",

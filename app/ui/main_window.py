@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from collections.abc import Generator
 from dataclasses import replace
+from datetime import UTC, datetime
 import os
 from pathlib import Path
 
@@ -36,7 +37,9 @@ from app.coordination.errors import (
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.manager import CoordinationManager
-from app.coordination.models import LockLease
+from app.coordination.models import GroupInvitation, LockLease, PairedDevice
+from app.coordination.cloudflare_provisioning import CreatedGroup
+from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
 from app.coordination.status_controller import LockStatusController
 from app.games.registry import GameRegistry
 from app.services.export_service import ExportService
@@ -99,6 +102,23 @@ class MainWindow(QMainWindow):
         )
         self.project_cards: dict[str, ProjectCard] = {}
         self.project_lock_statuses: dict[str, LockLease | None] = {}
+        self.group_setup_controller = GroupSetupController(self)
+        self.group_setup_controller.create_completed.connect(
+            self._group_created
+        )
+        self.group_setup_controller.join_completed.connect(
+            self._group_joined
+        )
+        self.group_setup_controller.leave_completed.connect(
+            self._group_left
+        )
+        self.group_setup_controller.failed.connect(
+            self._group_setup_failed
+        )
+        self._group_setup_progress: QProgressDialog | None = None
+        self._pending_coordination_profile_name = ""
+        self._pending_coordination_device_name = ""
+        self._leaving_group = False
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -269,6 +289,38 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
+        coordination_action = getattr(dialog, "coordination_action", None)
+
+        if coordination_action == "create_group":
+            self._begin_create_group(
+                dialog.coordination_device_name,
+                dialog.player_display_name,
+            )
+            return
+
+        if coordination_action == "join_group":
+            self._begin_join_group(
+                dialog.coordination_device_name,
+                dialog.player_display_name,
+            )
+            return
+
+        if coordination_action == "create_invitation":
+            self._create_group_invitation()
+            return
+
+        if coordination_action == "manage_devices":
+            self._manage_group_devices()
+            return
+
+        if coordination_action == "claim_administrator":
+            self._claim_group_administrator(dialog.coordination_pairing_code)
+            return
+
+        if coordination_action == "leave_group":
+            self._begin_leave_group()
+            return
+
         if (
             self.coordination_manager is not None
             and self.coordination_manager.active_leases
@@ -318,6 +370,15 @@ class MainWindow(QMainWindow):
                 candidate.coordination_server_url
                 != self.settings.coordination_server_url
             )
+
+            if provider_changed:
+                candidate = replace(
+                    candidate,
+                    coordination_is_administrator=False,
+                    coordination_provider_kind="custom",
+                    coordination_cloudflare_account_id="",
+                    coordination_cloudflare_script_name="",
+                )
             needs_pairing = (
                 provider_changed
                 or not candidate.coordination_device_token
@@ -356,6 +417,7 @@ class MainWindow(QMainWindow):
                     candidate,
                     coordination_device_id=device.device_id,
                     coordination_device_token=device.device_token,
+                    coordination_is_administrator=device.administrator,
                 )
 
         try:
@@ -385,6 +447,426 @@ class MainWindow(QMainWindow):
 
         if dialog.check_requested:
             self.check_for_updates(manual=True)
+
+    def _begin_create_group(
+        self,
+        device_name: str,
+        profile_name: str,
+    ) -> None:
+        if not device_name:
+            QMessageBox.warning(
+                self,
+                "Computer Name Required",
+                "Enter a name for this computer before creating a group.",
+            )
+            return
+
+        self._pending_coordination_profile_name = profile_name
+        self._pending_coordination_device_name = device_name
+        self._show_group_setup_progress(
+            "Sign in to Cloudflare in your browser. Save Shift will create "
+            "and verify the group automatically."
+        )
+
+        if not self.group_setup_controller.create_group(device_name):
+            self._close_group_setup_progress()
+
+    def _begin_join_group(
+        self,
+        device_name: str,
+        profile_name: str,
+    ) -> None:
+        if not device_name:
+            QMessageBox.warning(
+                self,
+                "Computer Name Required",
+                "Enter a name for this computer before joining a group.",
+            )
+            return
+        invitation_text, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Join Save Shift Group",
+            "Paste the invitation from your friend:",
+        )
+
+        if not accepted:
+            return
+
+        try:
+            invitation = GroupInvitation.from_text(invitation_text)
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid Invitation", str(error))
+            return
+
+        if invitation.expires_at_utc <= datetime.now(UTC):
+            QMessageBox.warning(
+                self,
+                "Invitation Expired",
+                "Ask the group administrator to create another invitation.",
+            )
+            return
+
+        self._pending_coordination_profile_name = profile_name
+        self._pending_coordination_device_name = device_name
+        self._show_group_setup_progress("Connecting this computer to the group…")
+
+        if not self.group_setup_controller.join_group(invitation, device_name):
+            self._close_group_setup_progress()
+
+    def _group_created(self, created: CreatedGroup) -> None:
+        self._close_group_setup_progress()
+        settings = replace(
+            self.settings,
+            player_display_name=self._pending_coordination_profile_name,
+            coordination_enabled=True,
+            coordination_server_url=created.provider_url,
+            coordination_device_id=created.device.device_id,
+            coordination_device_name=self._pending_coordination_device_name,
+            coordination_device_token=created.device.device_token,
+            coordination_is_administrator=True,
+            coordination_provider_kind="cloudflare",
+            coordination_cloudflare_account_id=created.account_id,
+            coordination_cloudflare_script_name=created.script_name,
+        )
+        if not self._apply_coordination_settings(settings):
+            return
+        QMessageBox.information(
+            self,
+            "Group Created",
+            "Your group is ready. Open Settings and choose Invite a Friend "
+            "to connect another computer.",
+        )
+
+    def _group_joined(
+        self,
+        invitation: GroupInvitation,
+        device: PairedDevice,
+    ) -> None:
+        self._close_group_setup_progress()
+        settings = replace(
+            self.settings,
+            player_display_name=self._pending_coordination_profile_name,
+            coordination_enabled=True,
+            coordination_server_url=invitation.provider_url,
+            coordination_device_id=device.device_id,
+            coordination_device_name=self._pending_coordination_device_name,
+            coordination_device_token=device.device_token,
+            coordination_is_administrator=device.administrator,
+            coordination_provider_kind="",
+            coordination_cloudflare_account_id="",
+            coordination_cloudflare_script_name="",
+        )
+        if not self._apply_coordination_settings(settings):
+            return
+        QMessageBox.information(
+            self,
+            "Group Joined",
+            "This computer is now connected to the Save Shift group.",
+        )
+
+    def _begin_leave_group(self) -> None:
+        if self.coordination_manager is not None and self.coordination_manager.active_leases:
+            QMessageBox.warning(
+                self,
+                "Project Lock Active",
+                "Export the hosted project or close the game before leaving the group.",
+            )
+            return
+
+        owner_cleanup = bool(
+            self.settings.coordination_provider_kind == "cloudflare"
+            and self.settings.coordination_cloudflare_account_id
+            and self.settings.coordination_cloudflare_script_name
+        )
+        detail = (
+            " If this is the final computer, your browser will open so Save Shift "
+            "can remove the provider from your Cloudflare account."
+            if owner_cleanup
+            else ""
+        )
+        confirmed = QMessageBox.question(
+            self,
+            "Leave Group",
+            "Remove this computer from the Save Shift group?" + detail,
+        )
+
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        self._show_group_setup_progress("Removing this computer from the group…")
+        started = self.group_setup_controller.leave_group(
+            self.settings.coordination_server_url,
+            self.settings.coordination_device_token,
+            account_id=(
+                self.settings.coordination_cloudflare_account_id
+                if owner_cleanup
+                else ""
+            ),
+            script_name=(
+                self.settings.coordination_cloudflare_script_name
+                if owner_cleanup
+                else ""
+            ),
+        )
+
+        if not started:
+            self._close_group_setup_progress()
+            return
+
+        self._leaving_group = True
+
+    def _group_left(self, outcome: GroupLeaveOutcome) -> None:
+        self._close_group_setup_progress()
+        self._leaving_group = False
+
+        if not self._clear_local_group_settings():
+            return
+
+        if outcome.cleanup_warning:
+            QMessageBox.warning(
+                self,
+                "Group Left",
+                "This computer left the group and its remote group data was cleared, "
+                "but Save Shift could not remove the Worker from Cloudflare. Delete "
+                "the Worker from the Cloudflare dashboard when convenient.\n\n"
+                f"{outcome.cleanup_warning}",
+            )
+            return
+
+        message = "This computer is no longer connected to the group."
+        if outcome.cloudflare_worker_removed:
+            message = "The empty group and its Cloudflare provider were removed."
+        elif outcome.group_empty:
+            message = "The final computer left and the group data was removed."
+
+        QMessageBox.information(self, "Group Left", message)
+
+    def _clear_local_group_settings(self) -> bool:
+        settings = replace(
+            self.settings,
+            coordination_enabled=False,
+            coordination_server_url="",
+            coordination_device_id="",
+            coordination_device_name="",
+            coordination_device_token="",
+            coordination_is_administrator=False,
+            coordination_provider_kind="",
+            coordination_cloudflare_account_id="",
+            coordination_cloudflare_script_name="",
+        )
+        return self._apply_coordination_settings(settings)
+
+    def _group_setup_failed(self, message: str) -> None:
+        self._close_group_setup_progress()
+        was_leaving = self._leaving_group
+        self._leaving_group = False
+
+        if was_leaving and not self.settings.coordination_is_administrator:
+            confirmed = QMessageBox.question(
+                self,
+                "Could Not Contact Group",
+                "Save Shift could not remove this computer from the provider. "
+                "Forget the group on this computer anyway? The group administrator "
+                "can revoke this computer later.\n\n"
+                f"{message}",
+            )
+
+            if confirmed == QMessageBox.StandardButton.Yes:
+                if self._clear_local_group_settings():
+                    QMessageBox.information(
+                        self,
+                        "Group Forgotten",
+                        "This computer is no longer configured to use the group.",
+                    )
+                return
+
+        QMessageBox.warning(
+            self,
+            "Group Operation Failed",
+            message or "Save Shift could not finish the group operation.",
+        )
+
+    def _show_group_setup_progress(self, message: str) -> None:
+        progress = QProgressDialog(message, "", 0, 0, self)
+        progress.setWindowTitle("Save Shift Group Setup")
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        self._group_setup_progress = progress
+
+    def _close_group_setup_progress(self) -> None:
+        if self._group_setup_progress is not None:
+            self._group_setup_progress.close()
+            self._group_setup_progress.deleteLater()
+            self._group_setup_progress = None
+
+    def _apply_coordination_settings(self, settings: AppSettings) -> bool:
+        try:
+            SettingsService.save(settings)
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Settings Error",
+                f"Save Shift could not save the group settings.\n\n{error}",
+            )
+            return False
+
+        self.settings = settings
+        self.coordination_manager = self._create_coordination_manager(settings)
+
+        if self.coordination_manager is not None:
+            self.coordination_renewal_timer.start()
+            self.lock_status_timer.start()
+            self._refresh_project_lock_statuses()
+        else:
+            self.coordination_renewal_timer.stop()
+            self.lock_status_timer.stop()
+
+        self.load_projects()
+        return True
+
+    def _create_group_invitation(self) -> None:
+        if not self.settings.coordination_is_administrator:
+            QMessageBox.warning(
+                self,
+                "Administrator Required",
+                "Only the group administrator can create invitations.",
+            )
+            return
+
+        try:
+            provider = HttpCoordinationProvider(
+                self.settings.coordination_server_url,
+                device_token=self.settings.coordination_device_token,
+            )
+            invitation = provider.create_invitation()
+        except CoordinationError as error:
+            QMessageBox.warning(self, "Invitation Failed", str(error))
+            return
+
+        invitation_text = invitation.to_text()
+        QApplication.clipboard().setText(invitation_text)
+        QMessageBox.information(
+            self,
+            "Invitation Copied",
+            "A single-use invitation valid for 24 hours was copied to the "
+            "clipboard. Send it to one friend through a trusted channel.",
+        )
+
+    def _manage_group_devices(self) -> None:
+        if not self.settings.coordination_is_administrator:
+            QMessageBox.warning(
+                self,
+                "Administrator Required",
+                "Only the group administrator can manage computers.",
+            )
+            return
+
+        provider = HttpCoordinationProvider(
+            self.settings.coordination_server_url,
+            device_token=self.settings.coordination_device_token,
+        )
+
+        try:
+            devices = provider.list_devices()
+        except CoordinationError as error:
+            QMessageBox.warning(self, "Computer List Failed", str(error))
+            return
+
+        candidates = [
+            device
+            for device in devices
+            if not device.revoked
+            and device.device_id != self.settings.coordination_device_id
+        ]
+
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "Group Computers",
+                "There are no other active computers to revoke.",
+            )
+            return
+
+        labels = [
+            f"{device.device_name} — paired {device.created_at_utc:%Y-%m-%d}"
+            for device in candidates
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Manage Group Computers",
+            "Choose a computer to revoke:",
+            labels,
+            0,
+            False,
+        )
+
+        if not accepted:
+            return
+
+        target = candidates[labels.index(selected)]
+        confirmed = QMessageBox.question(
+            self,
+            "Revoke Computer",
+            f"Revoke {target.device_name}? It will need a new invitation to reconnect.",
+        )
+
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            provider.revoke_device(target.device_id)
+        except CoordinationError as error:
+            QMessageBox.warning(self, "Revocation Failed", str(error))
+            return
+
+        QMessageBox.information(
+            self,
+            "Computer Revoked",
+            f"{target.device_name} can no longer use this group.",
+        )
+
+    def _claim_group_administrator(self, pairing_code: str) -> None:
+        if self.settings.coordination_is_administrator:
+            return
+
+        if not pairing_code:
+            QMessageBox.warning(
+                self,
+                "Pairing Code Required",
+                "Enter the provider's existing pairing code first.",
+            )
+            return
+
+        provider = HttpCoordinationProvider(
+            self.settings.coordination_server_url,
+            device_token=self.settings.coordination_device_token,
+        )
+
+        try:
+            provider.claim_administrator(pairing_code)
+        except CoordinationError as error:
+            QMessageBox.warning(
+                self,
+                "Administrator Migration Failed",
+                str(error),
+            )
+            return
+
+        settings = replace(
+            self.settings,
+            coordination_is_administrator=True,
+        )
+
+        if not self._apply_coordination_settings(settings):
+            return
+
+        QMessageBox.information(
+            self,
+            "Administrator Access Enabled",
+            "This computer can now invite friends and manage group computers.",
+        )
 
     def check_for_updates(self, *, manual: bool = True) -> None:
         started = self.update_controller.check_for_updates(manual=manual)

@@ -80,6 +80,136 @@ def test_pair_uses_versioned_contract_and_returns_device(
     assert device.device_token == "secret-token"
 
 
+def test_bootstrap_and_join_use_separate_unauthenticated_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response(
+            {
+                "device": {
+                    "device_id": "device-123",
+                    "device_token": "secret-token",
+                    "administrator": len(requests) == 1,
+                }
+            }
+        )
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider("https://locks.example.com")
+
+    administrator = provider.bootstrap("bootstrap-secret", "Owner PC")
+    member = provider.join("invitation-secret", "Friend PC")
+
+    assert administrator.administrator is True
+    assert member.administrator is False
+    assert requests[0].full_url.endswith("/api/v1/devices/bootstrap")
+    assert requests[1].full_url.endswith("/api/v1/devices/join")
+    assert all(request.get_header("Authorization") is None for request in requests)
+
+
+def test_leave_group_uses_authenticated_endpoint_and_reports_empty_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response({"left": True, "group_empty": True})
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-secret",
+    )
+
+    result = provider.leave_group()
+
+    assert result.group_empty is True
+    assert requests[0].full_url.endswith("/api/v1/devices/leave")
+    assert requests[0].method == "POST"
+    assert requests[0].get_header("Authorization") == "Bearer device-secret"
+
+
+def test_administrator_can_create_invitation_list_and_revoke_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+    responses = [
+        {
+            "invitation": {
+                "invitation_id": "invite-123",
+                "invitation_token": "invite-secret",
+                "expires_at_utc": "2026-07-15T12:00:00Z",
+            }
+        },
+        {
+            "devices": [
+                {
+                    "device_id": "device-123",
+                    "device_name": "Owner PC",
+                    "created_at_utc": "2026-07-14T12:00:00Z",
+                    "revoked": False,
+                    "administrator": True,
+                }
+            ]
+        },
+        {"revoked": True},
+    ]
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+
+    invitation = provider.create_invitation(3600)
+    devices = provider.list_devices()
+    provider.revoke_device("device-123")
+
+    assert invitation.provider_url == "https://locks.example.com"
+    assert invitation.invitation_token == "invite-secret"
+    assert invitation.expires_at_utc == datetime(2026, 7, 15, 12, tzinfo=UTC)
+    assert devices[0].administrator is True
+    assert requests[2].full_url.endswith("/api/v1/devices/device-123/revoke")
+    assert all(
+        request.get_header("Authorization") == "Bearer device-token"
+        for request in requests
+    )
+
+
+def test_legacy_device_can_claim_administrator_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response({"administrator": True})
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+
+    provider.claim_administrator("  legacy-pair-code  ")
+
+    assert requests[0].full_url.endswith(
+        "/api/v1/devices/claim-administrator"
+    )
+    assert requests[0].get_header("Authorization") == "Bearer device-token"
+    assert json.loads(requests[0].data) == {
+        "pairing_code": "legacy-pair-code"
+    }
+
+
 def test_acquire_renew_status_and_release_use_bearer_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

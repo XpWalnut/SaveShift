@@ -10,7 +10,14 @@ from app.coordination.errors import (
     LockConflictError,
     LockOwnershipError,
 )
-from app.coordination.models import LockLease, PairedDevice
+from app.coordination.models import (
+    CoordinationDevice,
+    GroupInvitation,
+    GroupLeaveResult,
+    LockLease,
+    PairedDevice,
+    parse_utc_datetime,
+)
 
 
 class HttpCoordinationProvider:
@@ -36,6 +43,153 @@ class HttpCoordinationProvider:
             },
             authenticated=False,
         )
+        return self._parse_paired_device(data)
+
+    def bootstrap(
+        self,
+        bootstrap_token: str,
+        device_name: str,
+    ) -> PairedDevice:
+        data = self._request_json(
+            method="POST",
+            path=f"{self.API_PREFIX}/devices/bootstrap",
+            payload={
+                "bootstrap_token": bootstrap_token.strip(),
+                "device_name": device_name.strip(),
+            },
+            authenticated=False,
+        )
+        return self._parse_paired_device(data)
+
+    def join(
+        self,
+        invitation_token: str,
+        device_name: str,
+    ) -> PairedDevice:
+        data = self._request_json(
+            method="POST",
+            path=f"{self.API_PREFIX}/devices/join",
+            payload={
+                "invitation_token": invitation_token.strip(),
+                "device_name": device_name.strip(),
+            },
+            authenticated=False,
+        )
+        return self._parse_paired_device(data)
+
+    def claim_administrator(self, pairing_code: str) -> None:
+        data = self._request_json(
+            method="POST",
+            path=f"{self.API_PREFIX}/devices/claim-administrator",
+            payload={"pairing_code": pairing_code.strip()},
+        )
+
+        if data.get("administrator") is not True:
+            raise CoordinationUnavailableError(
+                "The coordination provider did not grant administrator access."
+            )
+
+    def create_invitation(
+        self,
+        expires_in_seconds: int = 86400,
+    ) -> GroupInvitation:
+        data = self._request_json(
+            method="POST",
+            path=f"{self.API_PREFIX}/invitations",
+            payload={"expires_in_seconds": expires_in_seconds},
+        )
+        invitation = data.get("invitation")
+
+        if not isinstance(invitation, dict):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid invitation."
+            )
+
+        token = invitation.get("invitation_token")
+        expires_at = invitation.get("expires_at_utc")
+
+        if not isinstance(token, str) or not token:
+            raise CoordinationUnavailableError(
+                "The coordination provider did not return an invitation token."
+            )
+        if not isinstance(expires_at, str):
+            raise CoordinationUnavailableError(
+                "The coordination provider did not return an invitation expiration."
+            )
+
+        try:
+            parsed_expiration = parse_utc_datetime(expires_at)
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid invitation expiration."
+            ) from error
+
+        return GroupInvitation(
+            provider_url=self.base_url,
+            invitation_token=token,
+            expires_at_utc=parsed_expiration,
+        )
+
+    def list_devices(self) -> list[CoordinationDevice]:
+        data = self._request_json(
+            method="GET",
+            path=f"{self.API_PREFIX}/devices",
+        )
+        devices = data.get("devices")
+
+        if not isinstance(devices, list):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid device list."
+            )
+
+        parsed: list[CoordinationDevice] = []
+
+        try:
+            for device in devices:
+                if not isinstance(device, dict):
+                    raise ValueError("Invalid device record.")
+                parsed.append(CoordinationDevice.from_dict(device))
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid device data."
+            ) from error
+
+        return parsed
+
+    def revoke_device(self, device_id: str) -> None:
+        self._request_json(
+            method="POST",
+            path=(
+                f"{self.API_PREFIX}/devices/"
+                f"{quote(device_id.strip(), safe='')}/revoke"
+            ),
+            payload={},
+        )
+
+    def leave_group(self) -> GroupLeaveResult:
+        data = self._request_json(
+            method="POST",
+            path=f"{self.API_PREFIX}/devices/leave",
+            payload={},
+        )
+        group_empty = data.get("group_empty")
+
+        if not isinstance(group_empty, bool):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid leave response."
+            )
+
+        return GroupLeaveResult(group_empty=group_empty)
+
+    def health(self) -> dict[str, Any]:
+        return self._request_json(
+            method="GET",
+            path="/health",
+            authenticated=False,
+        )
+
+    @staticmethod
+    def _parse_paired_device(data: dict[str, Any]) -> PairedDevice:
         device = data.get("device")
 
         if not isinstance(device, dict):
@@ -56,7 +210,18 @@ class HttpCoordinationProvider:
                 "The coordination provider did not return a device token."
             )
 
-        return PairedDevice(device_id=device_id, device_token=device_token)
+        administrator = device.get("administrator", False)
+
+        if not isinstance(administrator, bool):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid device access."
+            )
+
+        return PairedDevice(
+            device_id=device_id,
+            device_token=device_token,
+            administrator=administrator,
+        )
 
     def acquire_lock(
         self,

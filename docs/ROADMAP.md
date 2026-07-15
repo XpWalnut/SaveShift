@@ -10,6 +10,8 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 - Keep the regression suite and Windows release build green.
 - Resolve issues found by early testers without expanding the core feature set.
 - Exercise coordinated handoffs with multiple physical computers and provider outages.
+- Verify the Save Shift publisher domain and promote the registered Cloudflare OAuth client to public visibility.
+- Exercise Create Group and invitation onboarding against a clean Cloudflare account.
 
 ## Beta readiness
 

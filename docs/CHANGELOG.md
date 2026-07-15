@@ -15,12 +15,20 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Persistent profile name used for history and coordination attribution.
 - Windows DPAPI protection for stored device credentials.
 - Python regression tests and Cloudflare contract tests for lock behavior.
+- Browser-based Cloudflare OAuth provisioning with PKCE and temporary account access.
+- Create Group and Join Group settings workflows.
+- Short-lived, single-use group invitations.
+- Group computer listing and administrator revocation.
+- One-time administrator migration for providers deployed by earlier alphas.
+- A release-bundled coordination Worker generated and verified during builds.
+- Group departure, legacy local disconnect, final-device storage cleanup, and owner-authorized Cloudflare Worker deletion.
 
 ### Changed
 
 - Hosting retains and renews its project lease until export or application exit.
 - Import and restore fail before touching save files when a remote lock cannot be verified.
 - Host, import, export, and restore reuse the saved profile name instead of prompting for every operation.
+- Raw provider URL and reusable pairing-code controls now live under Advanced setup.
 
 ## [0.1.0-alpha.3] - 2026-07-13
 
