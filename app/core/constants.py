@@ -8,5 +8,6 @@ class AppResources:
     TEMP: Final[str] = "temp"
     BACKUPS: Final[str] = "backups"
     PACKAGES: Final[str] = "packages"
+    LOCKS: Final[str] = "locks"
     DATABASE_FILE: Final[str] = "saveshift.sqlite3"
     SETTINGS_FILE: Final[str] = "settings.json"

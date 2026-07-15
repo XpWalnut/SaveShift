@@ -14,6 +14,7 @@ from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
+from app.coordination.local_lock import ProjectOperationLock
 
 
 class ImportService:
@@ -35,6 +36,23 @@ class ImportService:
             project=project,
         )
 
+        with ProjectOperationLock(project.uuid, "importing into it"):
+            return ImportService._synchronize_package(
+                package_path=package_path,
+                package_info=package_info,
+                project=project,
+                imported_by=imported_by,
+                notes=notes,
+            )
+
+    @staticmethod
+    def _synchronize_package(
+        package_path: Path,
+        package_info: PackageInfo,
+        project: Project,
+        imported_by: str,
+        notes: str | None,
+    ):
         extracted_path = PackageExtractor.extract(package_path)
 
         project_root = Path(project.local_path)
@@ -66,17 +84,19 @@ class ImportService:
         )
 
     @staticmethod
-    def validate_import_package(package_path: Path) -> None:
+    def validate_import_package(package_path: Path) -> PackageInfo:
         package_info = PackageReader.read(package_path)
         project = ProjectRepository.get_by_uuid(package_info.project_uuid)
 
         if project is None:
-            return
+            return package_info
 
         ImportService._validate_import_version(
             package_info=package_info,
             project=project,
         )
+
+        return package_info
 
     @staticmethod
     def _validate_import_version(

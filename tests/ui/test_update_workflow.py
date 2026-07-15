@@ -51,6 +51,77 @@ def test_settings_dialog_check_now_preserves_checkbox_and_requests_check(
     assert dialog.automatic_update_checks
 
 
+def test_settings_dialog_makes_disabled_and_unpaired_coordination_clear(
+    qtbot,
+) -> None:
+    dialog = SettingsDialog(settings=AppSettings())
+    qtbot.addWidget(dialog)
+
+    assert "Status: Disabled" in dialog.coordination_status_label.text()
+    assert not dialog.coordination_server_input.isEnabled()
+
+    dialog.coordination_enabled_checkbox.setChecked(True)
+
+    assert "Status: Not paired" in dialog.coordination_status_label.text()
+    assert dialog.coordination_server_input.isEnabled()
+
+
+def test_settings_dialog_presents_create_and_join_group_actions(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SAVESHIFT_CLOUDFLARE_OAUTH_CLIENT_ID", raising=False)
+    dialog = SettingsDialog(settings=AppSettings())
+    qtbot.addWidget(dialog)
+
+    assert dialog.create_group_button.isVisible() is False
+    dialog.show()
+    assert dialog.create_group_button.isVisible()
+    assert dialog.join_group_button.isVisible()
+    assert dialog.create_group_button.isEnabled()
+
+    dialog.create_group_button.click()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.coordination_action == "create_group"
+
+
+def test_settings_dialog_shows_administrator_actions_after_pairing(qtbot) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings(
+            coordination_enabled=True,
+            coordination_device_id="device-123",
+            coordination_is_administrator=True,
+        )
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.create_invitation_button.isVisible()
+    assert dialog.manage_devices_button.isVisible()
+    assert dialog.leave_group_button.isVisible()
+    assert not dialog.create_group_button.isVisible()
+    assert "group administrator" in dialog.coordination_status_label.text()
+
+
+def test_legacy_administrator_migration_is_kept_in_advanced_settings(qtbot) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings(
+            coordination_enabled=True,
+            coordination_device_id="legacy-device",
+            coordination_is_administrator=False,
+        )
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert not dialog.claim_administrator_button.isVisible()
+
+    dialog.advanced_coordination_checkbox.setChecked(True)
+
+    assert dialog.claim_administrator_button.isVisible()
+
+
 def test_automatic_check_is_skipped_for_package_launch(
     qtbot,
     tmp_path: Path,

@@ -40,3 +40,39 @@ jobs:
 
       - name: Run regression suite
         run: python -m pytest tests -q
+
+  coordination:
+    name: Coordination contract / Cloudflare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: coordination/cloudflare
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install coordination dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check coordination adapter
+        run: pnpm run typecheck
+
+      - name: Run coordination contract tests
+        run: pnpm test
+
+      - name: Build bundled coordination provider
+        run: pnpm run bundle
+
+      - name: Verify bundled provider is current
+        run: git diff --exit-code ../../app/resources/cloudflare/index.js

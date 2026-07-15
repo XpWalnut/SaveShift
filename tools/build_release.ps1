@@ -21,6 +21,42 @@ if ($LASTEXITCODE -ne 0) {
     throw "Regression tests failed. Release build aborted."
 }
 
+Write-Host ""
+Write-Host "============================="
+Write-Host " Bundling Coordination Provider"
+Write-Host "============================="
+Write-Host ""
+
+Push-Location ".\coordination\cloudflare"
+try {
+    pnpm install --frozen-lockfile
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination dependencies could not be installed."
+    }
+
+    pnpm run typecheck
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider type-check failed."
+    }
+
+    pnpm test
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider tests failed."
+    }
+
+    pnpm run bundle
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider bundle failed."
+    }
+}
+finally {
+    Pop-Location
+}
+
 Remove-Item ".\build" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item ".\dist\SaveShift" -Recurse -Force -ErrorAction SilentlyContinue
 

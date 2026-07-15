@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.packages.package_info import PackageInfo
+from app.coordination.models import LockLease
 from app.services.import_service import ImportService
 from app.ui.main_window import MainWindow
 from app.ui.widgets.project_card import ProjectCard
@@ -50,6 +52,21 @@ def _imported_version(package_path: Path) -> ProjectVersion:
     )
 
 
+def _package_info(project_uuid: str) -> PackageInfo:
+    return PackageInfo(
+        package_format_version=1,
+        project_uuid=project_uuid,
+        project_version=4,
+        game_id="abiotic_factor",
+        project_name="Regression Test World",
+        created_at_utc="2026-07-13T12:00:00Z",
+        created_by="Exporting Player",
+        save_shift_version="0.1.0-alpha.3",
+        file_count=2,
+        verified=True,
+    )
+
+
 def test_project_card_import_button_opens_global_import_workflow(
     qtbot,
     tmp_path: Path,
@@ -72,6 +89,68 @@ def test_project_card_import_button_opens_global_import_workflow(
     assert import_calls == [True]
 
 
+def test_project_card_displays_lock_owner_and_expiration(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    card = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+    )
+    qtbot.addWidget(card)
+    lease = LockLease(
+        project_uuid=card.project.uuid,
+        lease_id="lease-123",
+        fencing_token=1,
+        owner_device_id="remote-device",
+        owner_display_name="Alice",
+        acquired_at_utc=now,
+        expires_at_utc=now + timedelta(minutes=15),
+    )
+
+    card.show_lock(lease, local_device_id="local-device")
+
+    assert "Locked by Alice" in card.lock_status_label.text()
+    assert "Expires" in card.lock_status_label.text()
+    assert "unless renewed" in card.lock_status_label.text()
+
+
+def test_project_card_identifies_lock_owned_by_this_computer(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    card = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+    )
+    qtbot.addWidget(card)
+    lease = LockLease(
+        project_uuid=card.project.uuid,
+        lease_id="lease-123",
+        fencing_token=1,
+        owner_device_id="local-device",
+        owner_display_name="Bob",
+        acquired_at_utc=now,
+        expires_at_utc=now + timedelta(minutes=15),
+    )
+
+    card.show_lock(lease, local_device_id="local-device")
+
+    assert "Locked by Bob (this computer)" in card.lock_status_label.text()
+
+
 def test_main_window_import_validates_then_imports_and_refreshes(
     qtbot,
     tmp_path: Path,
@@ -90,7 +169,10 @@ def test_main_window_import_validates_then_imports_and_refreshes(
     monkeypatch.setattr(
         ImportService,
         "validate_import_package",
-        lambda path: validation_calls.append(path),
+        lambda path: (
+            validation_calls.append(path)
+            or _package_info("12345678-1234-5678-1234-567812345678")
+        ),
     )
 
     def fake_import_package(**kwargs: object) -> ProjectVersion:

@@ -8,6 +8,7 @@ from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
+from app.coordination.local_lock import ProjectOperationLock
 
 
 class HostingService:
@@ -23,6 +24,21 @@ class HostingService:
         if project is None:
             raise ValueError(f"Project not found: {project_id}")
 
+        with ProjectOperationLock(project.uuid, "hosting it"):
+            return HostingService._create_hosted_version(
+                project=project,
+                game_id=game_id,
+                hosted_by=hosted_by,
+                notes=notes,
+            )
+
+    @staticmethod
+    def _create_hosted_version(
+        project,
+        game_id: str,
+        hosted_by: str,
+        notes: str | None,
+    ):
         save_files = SaveFileService.list_project_files(project)
 
         project_version_number = ProjectVersionService.get_next_version_number(project.id)

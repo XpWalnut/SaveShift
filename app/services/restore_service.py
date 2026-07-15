@@ -14,6 +14,7 @@ from app.services.project_version_service import (
     ProjectVersionSource,
 )
 from app.services.save_file_service import SaveFileService
+from app.coordination.local_lock import ProjectOperationLock
 
 
 class RestoreService:
@@ -24,6 +25,19 @@ class RestoreService:
     ) -> ProjectVersion:
         project = RestoreService._get_project(project_version)
 
+        with ProjectOperationLock(project.uuid, "restoring it"):
+            return RestoreService._restore_project(
+                project=project,
+                project_version=project_version,
+                restored_by=restored_by,
+            )
+
+    @staticmethod
+    def _restore_project(
+        project: Project,
+        project_version: ProjectVersion,
+        restored_by: str,
+    ) -> ProjectVersion:
         installed_game = InstalledGameRepository.get_by_id(
             project.installed_game_id
         )

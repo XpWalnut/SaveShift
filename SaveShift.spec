@@ -7,6 +7,10 @@ a = Analysis(
     binaries=[],
     datas=[
         ('assets/icons/SaveShift.ico', 'assets/icons'),
+        (
+            'app/resources/cloudflare/index.js',
+            'app/resources/cloudflare',
+        ),
     ],
     hiddenimports=[],
     hookspath=[],
