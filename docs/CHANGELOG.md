@@ -22,6 +22,9 @@ All notable changes to Save Shift are documented here. The project is currently 
 - One-time administrator migration for providers deployed by earlier alphas.
 - A release-bundled coordination Worker generated and verified during builds.
 - Group departure, legacy local disconnect, final-device storage cleanup, and owner-authorized Cloudflare Worker deletion.
+- Versioned SQLite schema migrations with legacy alpha schema detection.
+- Automatic pre-migration database backups and failure restoration.
+- Regression coverage for fresh, legacy, incomplete, current, and newer database schemas.
 
 ### Changed
 

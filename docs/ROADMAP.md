@@ -15,8 +15,9 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 
 ## Beta readiness
 
-- Define and test database and `.sspkg` compatibility guarantees.
-- Add migrations for persistent application data when the schema changes.
+- Validate versioned database migrations against databases produced by every published alpha release.
+- Define and test `.sspkg` compatibility guarantees.
+- Add optional Session Journal entries and carry them through project history and package handoffs.
 - Improve onboarding, empty states, and troubleshooting guidance.
 - Review backup retention and storage-management controls.
 - Add more supported games only after their discovery and synchronization behavior can be covered deterministically.
