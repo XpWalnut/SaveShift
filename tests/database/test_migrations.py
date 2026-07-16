@@ -380,3 +380,45 @@ def test_backup_failure_prevents_migration(
     assert _schema_version(database_path) == 0
     assert list(backup_directory.iterdir()) == []
     local_engine.dispose()
+
+
+def test_invalid_migration_result_restores_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "invalid-result.sqlite3"
+    backup_directory = tmp_path / "backups"
+    _create_legacy_v1_database(database_path)
+    local_engine = create_engine(f"sqlite:///{database_path}")
+
+    monkeypatch.setattr(
+        runner,
+        "MIGRATIONS",
+        (
+            runner.Migration(
+                target_version=CURRENT_SCHEMA_VERSION,
+                name="invalid no-op migration",
+                apply=lambda _connection: None,
+            ),
+        ),
+    )
+
+    with pytest.raises(DatabaseMigrationError, match="restored automatically"):
+        initialize_database(
+            engine=local_engine,
+            metadata=Base.metadata,
+            database_path=database_path,
+            backup_directory=backup_directory,
+        )
+
+    columns = {
+        column["name"]
+        for column in inspect(local_engine).get_columns("project_versions")
+    }
+    backups = list(backup_directory.glob("*.sqlite3"))
+
+    assert "restored_from_version_id" not in columns
+    assert _schema_version(database_path) == 0
+    assert len(backups) == 1
+    assert _schema_version(backups[0]) == 0
+    local_engine.dispose()

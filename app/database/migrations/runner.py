@@ -175,6 +175,9 @@ def initialize_database(
                 connection.execute(
                     text(f"PRAGMA user_version = {migration.target_version}")
                 )
+
+        _validate_schema(engine, CURRENT_SCHEMA_VERSION)
+        metadata.create_all(bind=engine)
     except Exception as error:
         engine.dispose()
 
@@ -192,8 +195,6 @@ def initialize_database(
             f"restored automatically. Its backup remains at {backup_path}."
         ) from error
 
-    _validate_schema(engine, CURRENT_SCHEMA_VERSION)
-    metadata.create_all(bind=engine)
     return MigrationResult(
         previous_version=stored_version,
         current_version=CURRENT_SCHEMA_VERSION,
