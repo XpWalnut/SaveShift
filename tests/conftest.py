@@ -11,10 +11,14 @@ import pytest
 # or Qt. This guarantees tests never connect to the user's real database.
 _test_root = Path(tempfile.mkdtemp(prefix="saveshift-tests-"))
 _test_database_path = _test_root / "saveshift-test.sqlite3"
+_test_database_backups_path = _test_root / "database-backups"
 _test_settings_path = _test_root / "settings.json"
 _test_locks_path = _test_root / "locks"
 
 os.environ["SAVESHIFT_DATABASE_PATH"] = str(_test_database_path)
+os.environ["SAVESHIFT_DATABASE_BACKUPS_PATH"] = str(
+    _test_database_backups_path
+)
 os.environ["SAVESHIFT_SETTINGS_PATH"] = str(_test_settings_path)
 os.environ["SAVESHIFT_LOCKS_PATH"] = str(_test_locks_path)
 os.environ["SAVESHIFT_DISABLE_UPDATE_CHECKS"] = "1"

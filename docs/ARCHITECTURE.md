@@ -28,6 +28,8 @@ Creation, manifest serialization, reading, validation, extraction, and checksum 
 
 SQLAlchemy models and repositories backed by SQLite. Repositories own database queries; services own workflow rules. The production database defaults to `%USERPROFILE%\.saveshift\data\saveshift.sqlite3`.
 
+Startup runs the versioned migration registry in `app/database/migrations` before repositories are used. SQLite `PRAGMA user_version` records the schema version without adding an application model. Fresh databases are created directly at the current version; unversioned alpha databases are identified by their known table and column shape. Before any schema-changing migration, SQLite's online backup API writes a consistent copy under `%USERPROFILE%\.saveshift\backups\database`. A failed migration restores that copy automatically. Databases from newer application versions and unknown or incomplete schemas are rejected instead of being modified speculatively.
+
 ### Updates (`app/updates`)
 
 The update service reads GitHub Releases, compares semantic versions, selects the versioned installer asset, downloads it, and validates available size and SHA-256 metadata. The controller runs network and download work away from the UI thread and launches the installer only after validation.
@@ -53,6 +55,8 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 - Device tokens are protected at rest with Windows Data Protection API and are never written to settings as plaintext.
 - Package versions are checked to prevent duplicate or older imports.
 - Checksums are recorded for imported and hosted versions.
+- Schema-changing database migrations create a consistent backup first and automatically restore it if migration fails.
+- Unknown, incomplete, and newer-than-supported database schemas fail closed before repositories are used.
 - Pytest sets `SAVESHIFT_DATABASE_PATH` before importing database code, and database initialization refuses to run under pytest without an explicit override.
 - Filesystem and package boundaries are mocked where isolation matters; repositories use the temporary real SQLite database where meaningful.
 
@@ -66,3 +70,4 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 - [ADR-0002: Fork behavior](decisions/ADR-0002-fork-behavior.md)
 - [ADR-0003: Provider-neutral project coordination](decisions/ADR-0003-provider-neutral-coordination.md)
 - [ADR-0004: Cloudflare OAuth provider provisioning](decisions/ADR-0004-cloudflare-oauth-provisioning.md)
+- [ADR-0005: Embedded database migrations](decisions/ADR-0005-embedded-database-migrations.md)
