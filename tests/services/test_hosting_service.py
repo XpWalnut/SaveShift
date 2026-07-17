@@ -12,6 +12,7 @@ from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
+from app.services.session_journal_service import SessionJournalService
 
 
 def _create_project(tmp_path: Path, *, create_directory: bool = True):
@@ -162,3 +163,53 @@ def test_package_creation_failure_does_not_record_hosted_version(
         )
 
     assert ProjectVersionService.get_versions_for_project(project.id) == []
+
+
+def test_hosting_includes_existing_and_new_journal_entries_in_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    (Path(project.local_path) / "world.sav").write_bytes(b"world")
+    existing = SessionJournalService.create_entry(
+        project_id=project.id,
+        entry_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        title="The first night",
+        body="We built a shelter before dark.",
+        created_by="Alice",
+    )
+    package_path = tmp_path / "packages" / "journal.sspkg"
+    package_path.parent.mkdir()
+    package_path.write_bytes(b"package")
+    package_calls: list[dict[str, object]] = []
+
+    def fake_create_package(**kwargs: object) -> Path:
+        package_calls.append(kwargs)
+        return package_path
+
+    monkeypatch.setattr(PackageService, "create_project_package", fake_create_package)
+    monkeypatch.setattr(
+        "app.services.hosting_service.calculate_sha256",
+        lambda _path: "c" * 64,
+    )
+
+    version = HostingService.host_project(
+        project_id=project.id,
+        game_id=GameId.VALHEIM.value,
+        hosted_by="Bob",
+        journal_title="Boss defeated",
+        journal_body="The group defeated the first boss.",
+    )
+
+    packaged_entries = package_calls[0]["journal_entries"]
+    assert len(packaged_entries) == 2
+    assert packaged_entries[0].entry_uuid == existing.entry_uuid
+    assert packaged_entries[1].title == "Boss defeated"
+    assert packaged_entries[1].project_version_number == version.version_number
+
+    stored_entries = SessionJournalService.get_entries_for_project(project.id)
+    assert [entry.title for entry in stored_entries] == [
+        "The first night",
+        "Boss defeated",
+    ]
+    assert stored_entries[-1].project_version_number == version.version_number

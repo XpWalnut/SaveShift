@@ -9,6 +9,8 @@ from app.services.project_version_service import (
     ProjectVersionSource,
 )
 from app.coordination.local_lock import ProjectOperationLock
+from app.packages.package_journal_entry import PackageJournalEntry
+from app.services.session_journal_service import SessionJournalService
 
 
 class HostingService:
@@ -18,6 +20,8 @@ class HostingService:
         game_id: str,
         hosted_by: str,
         notes: str | None = None,
+        journal_title: str | None = None,
+        journal_body: str | None = None,
     ):
         project = ProjectRepository.get_by_id(project_id)
 
@@ -30,6 +34,8 @@ class HostingService:
                 game_id=game_id,
                 hosted_by=hosted_by,
                 notes=notes,
+                journal_title=journal_title,
+                journal_body=journal_body,
             )
 
     @staticmethod
@@ -38,10 +44,29 @@ class HostingService:
         game_id: str,
         hosted_by: str,
         notes: str | None,
+        journal_title: str | None,
+        journal_body: str | None,
     ):
         save_files = SaveFileService.list_project_files(project)
 
         project_version_number = ProjectVersionService.get_next_version_number(project.id)
+
+        pending_journal = None
+
+        if journal_title is not None or journal_body is not None:
+            pending_journal = PackageJournalEntry.create(
+                title=journal_title or "",
+                body=journal_body or "",
+                created_by=hosted_by,
+                project_version_number=project_version_number,
+            )
+
+        journal_entries = list(
+            SessionJournalService.package_entries_for_project(project.id)
+        )
+
+        if pending_journal is not None:
+            journal_entries.append(pending_journal)
 
         package_path = PackageService.create_project_package(
             game_id=game_id,
@@ -49,11 +74,12 @@ class HostingService:
             project_version=project_version_number,
             save_files=save_files,
             created_by=hosted_by,
+            journal_entries=tuple(journal_entries),
         )
 
         package_checksum = calculate_sha256(package_path)
 
-        return ProjectVersionService.create_version(
+        version = ProjectVersionService.create_version(
             project_id=project.id,
             created_by=hosted_by,
             source_type=ProjectVersionSource.HOSTED,
@@ -62,3 +88,18 @@ class HostingService:
             package_checksum=package_checksum,
             notes=notes,
         )
+
+        if pending_journal is not None:
+            SessionJournalService.create_entry(
+                project_id=project.id,
+                entry_uuid=pending_journal.entry_uuid,
+                title=pending_journal.title,
+                body=pending_journal.body,
+                created_by=pending_journal.created_by,
+                created_at_utc=SessionJournalService.parse_package_timestamp(
+                    pending_journal.created_at_utc
+                ),
+                project_version_number=project_version_number,
+            )
+
+        return version

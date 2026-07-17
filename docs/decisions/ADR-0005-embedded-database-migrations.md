@@ -29,7 +29,7 @@ Save Shift will use a small embedded migration registry under `app/database/migr
 - All pending migrations are attempted in order during startup before repositories are used.
 - If a migration fails, Save Shift restores the pre-migration backup automatically and retains the backup for diagnosis.
 
-The current migration history defines schema version 1 as the early alpha schema without `project_versions.restored_from_version_id` and schema version 2 as the current schema containing that column.
+The current migration history defines schema version 1 as the early alpha schema without `project_versions.restored_from_version_id`, schema version 2 as the published alpha schema containing that column, and schema version 3 as the schema adding `session_journal_entries`.
 
 ## Consequences
 

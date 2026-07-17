@@ -14,7 +14,7 @@ PySide6 windows, dialogs, cards, styles, and user interaction. UI handlers call 
 
 ### Services (`app/services`)
 
-Application workflows for installed games, projects, hosting, export, import, history, and restore. Services coordinate repositories, game implementations, package operations, checksums, and save-file operations.
+Application workflows for installed games, projects, hosting, export, import, version history, World Journals, and restore. Services coordinate repositories, game implementations, package operations, checksums, and save-file operations.
 
 ### Games (`app/games`)
 
@@ -22,13 +22,15 @@ The game registry maps stable game IDs to implementations. Each supported game s
 
 ### Packages (`app/packages`)
 
-Creation, manifest serialization, reading, validation, extraction, and checksum support for `.sspkg` files. Package boundaries are intentionally mockable in service tests so workflow tests remain fast and deterministic.
+Creation, manifest serialization, reading, validation, extraction, and checksum support for `.sspkg` files. The version 1 manifest may include additive `journal_entries` metadata; older version 1 packages without that field remain readable. Stable journal-entry UUIDs make repeated handoffs idempotent. Package boundaries are intentionally mockable in service tests so workflow tests remain fast and deterministic.
 
 ### Persistence (`app/database`)
 
 SQLAlchemy models and repositories backed by SQLite. Repositories own database queries; services own workflow rules. The production database defaults to `%USERPROFILE%\.saveshift\data\saveshift.sqlite3`.
 
 Startup runs the versioned migration registry in `app/database/migrations` before repositories are used. SQLite `PRAGMA user_version` records the schema version without adding an application model. Fresh databases are created directly at the current version; unversioned alpha databases are identified by their known table and column shape. Before any schema-changing migration, SQLite's online backup API writes a consistent copy under `%USERPROFILE%\.saveshift\backups\database`. A failed migration restores that copy automatically. Databases from newer application versions and unknown or incomplete schemas are rejected instead of being modified speculatively.
+
+Schema version 3 adds `session_journal_entries`. A journal entry belongs to a project, has a globally stable UUID for package deduplication, and may reference a project version number without becoming part of version lineage.
 
 ### Updates (`app/updates`)
 

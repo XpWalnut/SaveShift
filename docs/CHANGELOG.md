@@ -25,6 +25,11 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Versioned SQLite schema migrations with legacy alpha schema detection.
 - Automatic pre-migration database backups and failure restoration.
 - Regression coverage for fresh, legacy, incomplete, current, and newer database schemas.
+- Optional World Journal entries with author, timestamp, title, body, and version association.
+- Latest journal-entry previews on project cards and a full World Journal tab in project history.
+- Additive journal metadata in `.sspkg` files with stable UUID-based import deduplication and backward compatibility for existing packages.
+- Schema version 3 and migration coverage for persisted journal entries.
+- Service, package, integration, and UI regression coverage for journal workflows.
 
 ### Changed
 

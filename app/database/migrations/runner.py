@@ -7,13 +7,24 @@ import sqlite3
 from sqlalchemy import Connection, Engine, MetaData, inspect, text
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 LEGACY_SCHEMA_VERSION = 1
 
 _APPLICATION_TABLES = {
     "installed_games",
     "projects",
     "project_versions",
+}
+
+_JOURNAL_COLUMNS = {
+    "id",
+    "entry_uuid",
+    "project_id",
+    "project_version_number",
+    "title",
+    "body",
+    "created_by",
+    "created_at_utc",
 }
 
 _BASELINE_COLUMNS = {
@@ -87,11 +98,42 @@ def _add_restored_from_version_id(connection: Connection) -> None:
     )
 
 
+def _create_session_journal_entries(connection: Connection) -> None:
+    connection.execute(
+        text(
+            """
+            CREATE TABLE session_journal_entries (
+                id INTEGER NOT NULL PRIMARY KEY,
+                entry_uuid VARCHAR(36) NOT NULL UNIQUE,
+                project_id INTEGER NOT NULL
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                project_version_number INTEGER,
+                title VARCHAR(120) NOT NULL,
+                body TEXT NOT NULL,
+                created_by VARCHAR(100) NOT NULL,
+                created_at_utc DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX ix_session_journal_entries_project_id "
+            "ON session_journal_entries (project_id)"
+        )
+    )
+
+
 MIGRATIONS = (
     Migration(
         target_version=2,
         name="add restored version lineage",
         apply=_add_restored_from_version_id,
+    ),
+    Migration(
+        target_version=3,
+        name="create session journal entries",
+        apply=_create_session_journal_entries,
     ),
 )
 
@@ -216,10 +258,13 @@ def _detect_unversioned_schema(engine: Engine) -> int:
     _validate_baseline_columns(engine)
     columns = _column_names(engine, "project_versions")
 
-    if "restored_from_version_id" in columns:
+    if "restored_from_version_id" not in columns:
+        return LEGACY_SCHEMA_VERSION
+
+    if "session_journal_entries" in inspect(engine).get_table_names():
         return CURRENT_SCHEMA_VERSION
 
-    return LEGACY_SCHEMA_VERSION
+    return 2
 
 
 def _validate_schema(engine: Engine, version: int) -> None:
@@ -243,6 +288,34 @@ def _validate_schema(engine: Engine, version: int) -> None:
             "The database reports schema version 1 but already contains "
             "version 2 project history columns."
         )
+
+    table_names = set(inspect(engine).get_table_names())
+    journal_table_exists = "session_journal_entries" in table_names
+
+    if version >= 3 and not journal_table_exists:
+        raise UnknownDatabaseSchemaError(
+            "The database schema version does not contain the Session Journal "
+            "table required by that version."
+        )
+
+    if version < 3 and journal_table_exists:
+        raise UnknownDatabaseSchemaError(
+            "The database contains Session Journal data newer than its "
+            "reported schema version."
+        )
+
+    if journal_table_exists:
+        missing = _JOURNAL_COLUMNS - _column_names(
+            engine,
+            "session_journal_entries",
+        )
+
+        if missing:
+            missing_names = ", ".join(sorted(missing))
+            raise UnknownDatabaseSchemaError(
+                "The session_journal_entries table is missing required "
+                f"columns: {missing_names}."
+            )
 
 
 def _validate_baseline_columns(engine: Engine) -> None:

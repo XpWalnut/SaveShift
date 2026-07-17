@@ -13,12 +13,16 @@ class ExportService:
         game_id: str,
         exported_by: str,
         destination_path: Path,
+        journal_title: str | None = None,
+        journal_body: str | None = None,
     ) -> ProjectVersion:
         version = HostingService.host_project(
             project_id=project.id,
             game_id=game_id,
             hosted_by=exported_by,
             notes="Exported manually from Save Shift",
+            journal_title=journal_title,
+            journal_body=journal_body,
         )
 
         if not version.package_path:

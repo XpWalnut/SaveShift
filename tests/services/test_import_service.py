@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from app.games.project_discovery import ImportTarget
 from app.games.registry import GameRegistry
 from app.packages.package_extractor import PackageExtractor
 from app.packages.package_info import PackageInfo
+from app.packages.package_journal_entry import PackageJournalEntry
 from app.packages.package_reader import PackageReader
 from app.services.import_service import ImportService
 from app.services.project_service import ProjectService
@@ -20,6 +22,7 @@ from app.services.project_version_service import (
     ProjectVersionSource,
 )
 from app.services.save_file_service import SaveFileService
+from app.services.session_journal_service import SessionJournalService
 
 
 PROJECT_UUID = "12345678-1234-5678-1234-567812345678"
@@ -31,6 +34,7 @@ def _package_info(
     project_version: int = 2,
     game_id: str = GameId.ABIOTIC_FACTOR.value,
     project_name: str = "Regression Test World",
+    journal_entries: tuple[PackageJournalEntry, ...] = (),
 ) -> PackageInfo:
     return PackageInfo(
         package_format_version=1,
@@ -43,6 +47,7 @@ def _package_info(
         save_shift_version="0.1.0-alpha.2",
         file_count=2,
         verified=True,
+        journal_entries=journal_entries,
     )
 
 
@@ -368,3 +373,48 @@ def test_new_project_import_rejects_unsupported_game_id(
         )
 
     assert ProjectRepository.get_by_uuid(package_info.project_uuid) is None
+
+
+def test_import_stores_package_journal_entries_for_the_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    extracted_path = tmp_path / "extracted"
+    extracted_path.mkdir()
+    journal_entry = PackageJournalEntry.create(
+        entry_uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        title="A narrow escape",
+        body="Everyone made it back to the base.",
+        created_by="Package Host",
+        created_at_utc=datetime(2026, 7, 13, 12, tzinfo=UTC),
+        project_version_number=2,
+    )
+    _mock_package_read(
+        monkeypatch,
+        _package_info(journal_entries=(journal_entry,)),
+    )
+    _mock_import_boundaries(monkeypatch, extracted_path)
+    monkeypatch.setattr(
+        SaveFileService,
+        "backup_project",
+        lambda **_kwargs: tmp_path / "backup",
+    )
+    monkeypatch.setattr(
+        SaveFileService,
+        "synchronize_project",
+        lambda **_kwargs: None,
+    )
+
+    ImportService.import_package(
+        package_path=tmp_path / "incoming.sspkg",
+        imported_by="Receiving Player",
+    )
+
+    stored = SessionJournalService.get_entries_for_project(project.id)
+    assert len(stored) == 1
+    assert stored[0].entry_uuid == journal_entry.entry_uuid
+    assert stored[0].title == journal_entry.title
+    assert stored[0].body == journal_entry.body
+    assert stored[0].created_by == journal_entry.created_by
+    assert stored[0].project_version_number == 2

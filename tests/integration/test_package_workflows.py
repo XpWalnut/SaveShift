@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from app.database.repositories.project_repository import ProjectRepository
 from app.games.game_id import GameId
 from app.packages.checksum import calculate_sha256
 from app.packages.package_service import PackageService
+from app.packages.package_journal_entry import PackageJournalEntry
 from app.services.hosting_service import HostingService
 from app.services.import_service import ImportService
 from app.services.project_service import ProjectService
@@ -17,6 +19,7 @@ from app.services.project_version_service import (
     ProjectVersionSource,
 )
 from app.services.restore_service import RestoreService
+from app.services.session_journal_service import SessionJournalService
 
 
 PROJECT_UUID = "12345678-1234-5678-1234-567812345678"
@@ -72,6 +75,16 @@ def test_verified_package_import_creates_discovered_project_and_history(
         save_files=[world_file, settings_file],
         output_path=package_path,
         created_by="Original Host",
+        journal_entries=(
+            PackageJournalEntry.create(
+                entry_uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                title="Power restored",
+                body="The group brought the facility generators online.",
+                created_by="Original Host",
+                created_at_utc=datetime(2026, 7, 13, 12, tzinfo=UTC),
+                project_version_number=7,
+            ),
+        ),
     )
 
     abiotic_save_root = tmp_path / "abiotic-saves"
@@ -108,6 +121,14 @@ def test_verified_package_import_creates_discovered_project_and_history(
     assert imported_version.package_checksum == calculate_sha256(package_path)
     assert imported_version.backup_path is None
     assert imported_version.notes == "Received through integration test"
+
+    journal_entries = SessionJournalService.get_entries_for_project(
+        imported_project.id
+    )
+    assert len(journal_entries) == 1
+    assert journal_entries[0].entry_uuid == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    assert journal_entries[0].title == "Power restored"
+    assert journal_entries[0].project_version_number == 7
 
 
 def test_host_modify_and_restore_round_trip_preserves_history_and_backup(

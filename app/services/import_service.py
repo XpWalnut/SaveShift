@@ -15,6 +15,7 @@ from app.services.project_version_service import (
     ProjectVersionSource,
 )
 from app.coordination.local_lock import ProjectOperationLock
+from app.services.session_journal_service import SessionJournalService
 
 
 class ImportService:
@@ -72,7 +73,7 @@ class ImportService:
 
         package_checksum = calculate_sha256(package_path)
 
-        return ProjectVersionService.create_version(
+        version = ProjectVersionService.create_version(
             project_id=project.id,
             created_by=imported_by,
             source_type=ProjectVersionSource.IMPORTED,
@@ -82,6 +83,13 @@ class ImportService:
             package_checksum=package_checksum,
             notes=notes,
         )
+
+        SessionJournalService.import_entries(
+            project.id,
+            package_info.journal_entries,
+        )
+
+        return version
 
     @staticmethod
     def validate_import_package(package_path: Path) -> PackageInfo:

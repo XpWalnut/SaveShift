@@ -170,7 +170,7 @@ def test_legacy_pre_versioned_database_is_backed_up_and_migrated(
     local_engine.dispose()
 
 
-def test_unversioned_current_database_is_adopted_without_backup(
+def test_unversioned_published_alpha_database_is_backed_up_and_migrated(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "current-unversioned.sqlite3"
@@ -179,6 +179,7 @@ def test_unversioned_current_database_is_adopted_without_backup(
     Base.metadata.create_all(bind=local_engine)
 
     with local_engine.begin() as connection:
+        connection.execute(text("DROP TABLE session_journal_entries"))
         connection.execute(
             text(
                 "INSERT INTO installed_games "
@@ -209,11 +210,13 @@ def test_unversioned_current_database_is_adopted_without_backup(
 
     local_engine, result = _initialize(database_path, backup_directory)
 
-    assert result.previous_version == 0
+    assert result.previous_version == 2
     assert result.current_version == CURRENT_SCHEMA_VERSION
-    assert result.backup_path is None
+    assert result.backup_path is not None
+    assert result.backup_path.is_file()
     assert _schema_version(database_path) == CURRENT_SCHEMA_VERSION
-    assert not backup_directory.exists()
+    assert "session_journal_entries" in inspect(local_engine).get_table_names()
+    assert _schema_version(result.backup_path) == 0
 
     with local_engine.connect() as connection:
         row = connection.execute(

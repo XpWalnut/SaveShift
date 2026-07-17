@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from app.packages.package_journal_entry import PackageJournalEntry
+
 
 @dataclass(frozen=True)
 class PackageInfo:
@@ -13,3 +15,4 @@ class PackageInfo:
     save_shift_version: str
     file_count: int
     verified: bool
+    journal_entries: tuple[PackageJournalEntry, ...] = ()
