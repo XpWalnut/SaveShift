@@ -40,6 +40,7 @@ def init_db() -> MigrationResult:
     from app.database.models.installed_game import InstalledGame
     from app.database.models.project import Project
     from app.database.models.project_version import ProjectVersion
+    from app.database.models.session_journal_entry import SessionJournalEntry
 
     return _run_migrations()
 

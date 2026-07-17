@@ -49,10 +49,12 @@ from app.services.import_service import ImportService
 from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
+from app.services.session_journal_service import SessionJournalService
 from app.ui import styles, theme
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
 from app.ui.dialogs.history_dialog import HistoryDialog
+from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.dialogs.update_dialog import UpdateAvailableDialog
 from app.updates.controller import UpdateController
@@ -1431,6 +1433,28 @@ class MainWindow(QMainWindow):
         if destination.suffix.lower() != ".sspkg":
             destination = destination.with_suffix(".sspkg")
 
+        journal_title = None
+        journal_body = None
+        add_journal = QMessageBox.question(
+            self,
+            "Add to World Journal?",
+            (
+                "Would you like to record what happened during this session "
+                "before handing the world off?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+
+        if add_journal == QMessageBox.StandardButton.Yes:
+            journal_dialog = JournalEntryDialog(project.name, self)
+
+            if journal_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            journal_title = journal_dialog.entry_title
+            journal_body = journal_dialog.entry_body
+
         lease_acquired_here = False
 
         try:
@@ -1449,6 +1473,8 @@ class MainWindow(QMainWindow):
                 game_id=installed_game.game_id,
                 exported_by=player_name,
                 destination_path=destination,
+                journal_title=journal_title,
+                journal_body=journal_body,
             )
         except CoordinationError as error:
             if lease_acquired_here:
@@ -1506,9 +1532,59 @@ class MainWindow(QMainWindow):
                 project,
                 version,
             ),
+            on_add_journal=lambda: self.add_journal_entry(project),
             parent=self,
         )
         dialog.exec()
+
+    def show_journal(self, project: Project) -> None:
+        dialog = HistoryDialog(
+            project=project,
+            on_restore=lambda version: self.restore_version(
+                project,
+                version,
+            ),
+            on_add_journal=lambda: self.add_journal_entry(project),
+            initial_tab="journal",
+            parent=self,
+        )
+        dialog.exec()
+
+    def add_journal_entry(self, project: Project):
+        player_name = self._get_player_display_name()
+
+        if player_name is None:
+            return None
+
+        dialog = JournalEntryDialog(project.name, self)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+
+        latest_version = ProjectVersionService.get_latest_version(project.id)
+
+        try:
+            entry = SessionJournalService.create_entry(
+                project_id=project.id,
+                title=dialog.entry_title,
+                body=dialog.entry_body,
+                created_by=player_name,
+                project_version_number=(
+                    latest_version.version_number
+                    if latest_version is not None
+                    else None
+                ),
+            )
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Journal Entry Not Saved",
+                f"Save Shift could not save the journal entry.\n\n{error}",
+            )
+            return None
+
+        self.load_projects()
+        return entry
 
     def restore_version(
             self,
@@ -1572,6 +1648,7 @@ class MainWindow(QMainWindow):
         installed_game: InstalledGame,
     ) -> ProjectCard:
         latest_version = ProjectVersionService.get_latest_version(project.id)
+        latest_journal = SessionJournalService.get_latest_entry(project.id)
 
         card = ProjectCard(
             project=project,
@@ -1581,6 +1658,8 @@ class MainWindow(QMainWindow):
             on_import=self.import_package,
             on_export=self.export_project,
             on_history=self.show_history,
+            latest_journal=latest_journal,
+            on_journal=self.show_journal,
         )
         self._apply_project_lock_status(project.uuid, card)
         return card

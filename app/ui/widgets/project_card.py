@@ -4,6 +4,7 @@ from app.ui import theme, styles
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.database.models.session_journal_entry import SessionJournalEntry
 from app.coordination.models import LockLease
 
 
@@ -17,6 +18,8 @@ class ProjectCard(QFrame):
             on_import,
             on_export,
             on_history,
+            latest_journal: SessionJournalEntry | None = None,
+            on_journal=None,
             parent=None,
     ) -> None:
         super().__init__(parent)
@@ -48,6 +51,18 @@ class ProjectCard(QFrame):
         updated_by_label = QLabel(updated_by_text)
         updated_by_label.setObjectName("SecondaryText")
 
+        if latest_journal is None:
+            journal_text = "World Journal: No entries yet"
+        else:
+            journal_text = (
+                f'World Journal: “{latest_journal.title}” — '
+                f"{latest_journal.created_by}"
+            )
+
+        self.journal_preview_label = QLabel(journal_text)
+        self.journal_preview_label.setWordWrap(True)
+        self.journal_preview_label.setObjectName("SecondaryText")
+
         self.lock_status_label = QLabel()
         self.lock_status_label.setWordWrap(True)
         self.lock_status_label.setObjectName("SecondaryText")
@@ -57,20 +72,23 @@ class ProjectCard(QFrame):
         self.import_button = QPushButton("Import")
         self.export_button = QPushButton("Export")
         self.history_button = QPushButton("History")
+        self.journal_button = QPushButton("Journal")
 
         for button in (
                 self.host_button,
                 self.import_button,
                 self.export_button,
                 self.history_button,
+                self.journal_button,
         ):
-            button.setMinimumWidth(115)
+            button.setMinimumWidth(105)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.host_button)
         button_row.addWidget(self.import_button)
         button_row.addWidget(self.export_button)
         button_row.addWidget(self.history_button)
+        button_row.addWidget(self.journal_button)
         button_row.addStretch()
 
         self.host_button.clicked.connect(
@@ -89,12 +107,20 @@ class ProjectCard(QFrame):
             lambda: on_history(project)
         )
 
+        if on_journal is not None:
+            self.journal_button.clicked.connect(
+                lambda: on_journal(project)
+            )
+        else:
+            self.journal_button.setEnabled(False)
+
         layout = QVBoxLayout()
         layout.addWidget(title)
         layout.addWidget(game_label)
         layout.addSpacing(8)
         layout.addWidget(version_label)
         layout.addWidget(updated_by_label)
+        layout.addWidget(self.journal_preview_label)
         layout.addWidget(self.lock_status_label)
         layout.addSpacing(12)
         layout.addLayout(button_row)

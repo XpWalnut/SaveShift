@@ -16,6 +16,7 @@ Save Shift is a source-available Windows desktop application for sharing and man
 - Exporting and importing portable `.sspkg` packages
 - Double-click `.sspkg` file associations on Windows
 - Version history and restoration of previous saves
+- World Journals for recording shared adventures, shown on project cards and carried in `.sspkg` handoffs
 - Backup of an existing local save before an imported version is synchronized
 - Automatic update checks through GitHub Releases, with an opt-out setting and manual checks
 - Optional cross-device project locking through a user-owned coordination provider
@@ -42,7 +43,7 @@ Save Shift installs for the current Windows user and does not require administra
 
 Application data is stored under `%USERPROFILE%\.saveshift`:
 
-- `data/saveshift.sqlite3` stores tracked games, projects, and version history.
+- `data/saveshift.sqlite3` stores tracked games, projects, version history, and World Journal entries.
 - `data/settings.json` stores application settings.
 - `backups/` stores save backups.
 - `packages/` stores generated packages.

@@ -11,6 +11,7 @@ from app.core.logging import logger
 from app.database.models.project import Project
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
+from app.packages.package_journal_entry import PackageJournalEntry
 from app.version import APP_VERSION
 
 
@@ -26,6 +27,7 @@ class PackageService:
         created_by: str = "Unknown",
         save_shift_version: str = APP_VERSION,
         metadata: dict | None = None,
+        journal_entries: tuple[PackageJournalEntry, ...] = (),
     ) -> Path:
         PackageService._validate_package_inputs(
             root_path=root_path,
@@ -45,6 +47,7 @@ class PackageService:
             files=save_files,
             root_path=root_path,
             metadata=metadata,
+            journal_entries=journal_entries,
         )
 
         checksums = calculate_checksums(save_files, root_path)
@@ -75,6 +78,7 @@ class PackageService:
             created_by: str,
             save_shift_version: str = APP_VERSION,
             metadata: dict | None = None,
+            journal_entries: tuple[PackageJournalEntry, ...] = (),
     ) -> Path:
         root_path = Path(project.local_path)
         safe_game_id = PackageService._sanitize_path_component(game_id)
@@ -100,6 +104,7 @@ class PackageService:
             created_by=created_by,
             save_shift_version=save_shift_version,
             metadata=metadata,
+            journal_entries=journal_entries,
         )
 
     @staticmethod
