@@ -6,6 +6,8 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Schedule I save-folder detection, project discovery, import targeting, and Steam launching.
+- User-initiated Steam scanning across the primary and secondary library folders.
 - Optional cross-device project leases for hosting, import, export, and restore workflows.
 - Provider-neutral `/api/v1` coordination contract and Python HTTP adapter.
 - Self-deployable Cloudflare Worker and SQLite-backed Durable Object adapter.

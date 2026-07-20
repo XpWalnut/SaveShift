@@ -217,6 +217,9 @@ class MainWindow(QMainWindow):
         self.add_button = QPushButton("Add Game")
         self.add_button.clicked.connect(self.add_installed_game)
 
+        self.detect_games_button = QPushButton("Detect Steam Games")
+        self.detect_games_button.clicked.connect(self.detect_steam_games)
+
         self.remove_button = QPushButton("Remove Game")
         self.remove_button.clicked.connect(self.remove_selected_game)
 
@@ -226,6 +229,7 @@ class MainWindow(QMainWindow):
 
         for button in (
             self.add_button,
+            self.detect_games_button,
             self.remove_button,
             self.settings_button,
         ):
@@ -236,6 +240,7 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.installed_game_scroll, 1)
         left_panel.addSpacing(theme.SPACING)
         left_panel.addWidget(self.add_button)
+        left_panel.addWidget(self.detect_games_button)
         left_panel.addWidget(self.remove_button)
         left_panel.addWidget(self.settings_button)
         left_panel.addStretch()
@@ -1584,7 +1589,62 @@ class MainWindow(QMainWindow):
             return None
 
         self.load_projects()
+
         return entry
+
+    def detect_steam_games(self) -> None:
+        try:
+            added_games = InstalledGameService.detect_steam_games()
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "Steam Detection Failed",
+                f"Save Shift could not scan the Steam libraries.\n\n{error}",
+            )
+            return
+
+        if not added_games:
+            QMessageBox.information(
+                self,
+                "No New Games Found",
+                (
+                    "Save Shift did not find any unconfigured supported "
+                    "Steam games with local save data."
+                ),
+            )
+            return
+
+        discovery_errors: list[str] = []
+
+        for installed_game in added_games:
+            try:
+                ProjectService.discover_projects(installed_game.id)
+            except Exception as error:
+                discovery_errors.append(
+                    f"{installed_game.display_name}: {error}"
+                )
+
+        self.selected_installed_game_id = added_games[0].id
+        self.load_installed_games()
+        self.load_projects()
+
+        added_names = ", ".join(
+            installed_game.display_name
+            for installed_game in added_games
+        )
+        message = f"Added: {added_names}"
+
+        if discovery_errors:
+            message += (
+                "\n\nSome save folders could not be scanned:\n"
+                + "\n".join(discovery_errors)
+            )
+
+        QMessageBox.information(
+            self,
+            "Steam Games Detected",
+            message,
+        )
 
     def restore_version(
             self,
