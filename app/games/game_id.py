@@ -5,3 +5,4 @@ class GameId(StrEnum):
     VALHEIM = "valheim"
     V_RISING = "v_rising"
     ABIOTIC_FACTOR = "abiotic_factor"
+    SCHEDULE_I = "schedule_i"

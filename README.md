@@ -12,6 +12,7 @@ Save Shift is a source-available Windows desktop application for sharing and man
 ## Features
 
 - Automatic game save-folder detection and project discovery
+- Multi-library Steam installation detection for supported games
 - Hosting a tracked project and launching its Steam game
 - Exporting and importing portable `.sspkg` packages
 - Double-click `.sspkg` file associations on Windows
@@ -27,6 +28,7 @@ Save Shift is a source-available Windows desktop application for sharing and man
 ## Supported games
 
 - Abiotic Factor
+- Schedule I
 - Valheim
 - V Rising
 

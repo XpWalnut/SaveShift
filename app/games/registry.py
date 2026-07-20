@@ -1,6 +1,7 @@
 from app.games.abiotic_factor.definition import AbioticFactorGame
 from app.games.base import SupportedGame
 from app.games.game_id import GameId
+from app.games.schedule_i.definition import ScheduleIGame
 from app.games.valheim.definition import ValheimGame
 from app.games.vrising.definition import VRisingGame
 
@@ -10,6 +11,7 @@ class GameRegistry:
         ValheimGame.game_id: ValheimGame(),
         VRisingGame.game_id: VRisingGame(),
         AbioticFactorGame.game_id: AbioticFactorGame(),
+        ScheduleIGame.game_id: ScheduleIGame(),
     }
 
     @classmethod
