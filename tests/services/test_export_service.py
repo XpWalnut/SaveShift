@@ -67,6 +67,7 @@ def test_export_project_copies_generated_package_and_returns_version(
         game_id="abiotic_factor",
         exported_by="Test Host",
         destination_path=destination,
+        source_device_name="Test PC",
     )
 
     assert result is version
@@ -80,6 +81,7 @@ def test_export_project_copies_generated_package_and_returns_version(
                 "notes": "Exported manually from Save Shift",
                 "journal_title": None,
                 "journal_body": None,
+                "source_device_name": "Test PC",
             }
     ]
 

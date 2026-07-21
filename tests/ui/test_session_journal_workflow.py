@@ -192,7 +192,8 @@ def test_export_handoff_forwards_optional_journal_entry(
             "game_id": installed_game.game_id,
             "exported_by": "Alice",
             "destination_path": destination,
-            "journal_title": "New outpost",
-            "journal_body": "The group established a mountain base.",
-        }
+                "journal_title": "New outpost",
+                "journal_body": "The group established a mountain base.",
+                "source_device_name": None,
+            }
     ]

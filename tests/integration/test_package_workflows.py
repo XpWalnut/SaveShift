@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from app.database.repositories.project_repository import ProjectRepository
 from app.games.game_id import GameId
 from app.packages.checksum import calculate_sha256
 from app.packages.package_service import PackageService
+from app.packages.package_reader import PackageReader
 from app.packages.package_journal_entry import PackageJournalEntry
 from app.services.hosting_service import HostingService
 from app.services.import_service import ImportService
@@ -202,3 +204,51 @@ def test_host_modify_and_restore_round_trip_preserves_history_and_backup(
         ProjectVersionSource.HOSTED,
         ProjectVersionSource.RESTORED,
     ]
+
+
+def test_hosted_schedule_i_package_includes_safe_game_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _redirect_application_directories(monkeypatch, tmp_path)
+    save_root = tmp_path / "schedule-i-saves"
+    save_folder = save_root / "76561198044844170" / "SaveGame_2"
+    save_folder.mkdir(parents=True)
+    (save_folder / "Game.json").write_text(
+        json.dumps({"OrganisationName": "Metadata Empire"}),
+        encoding="utf-8",
+    )
+    (save_folder / "Metadata.json").write_text(
+        json.dumps({"GameVersion": "0.4.5f2"}),
+        encoding="utf-8",
+    )
+    installed_game = InstalledGameRepository.add(
+        game_id=GameId.SCHEDULE_I.value,
+        display_name="Schedule I",
+        save_path=str(save_root),
+    )
+    project = ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid="87654321-4321-4678-9234-567812345678",
+        name="Metadata Empire",
+        local_path=save_folder,
+    )
+
+    version = HostingService.host_project(
+        project_id=project.id,
+        game_id=GameId.SCHEDULE_I.value,
+        hosted_by="Alice",
+        notes="First successful production run",
+        source_device_name="Alice's PC",
+    )
+
+    assert version.package_path is not None
+    metadata = PackageReader.read(Path(version.package_path)).metadata
+    assert metadata.source_device_name == "Alice's PC"
+    assert metadata.notes == "First successful production run"
+    assert metadata.game_metadata == {
+        "save_slot": 2,
+        "game_version": "0.4.5f2",
+    }
+    assert metadata.parent_project_version is None
+    assert metadata.parent_package_checksum is None

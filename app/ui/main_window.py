@@ -1271,6 +1271,9 @@ class MainWindow(QMainWindow):
                 project_id=project.id,
                 game_id=installed_game.game_id,
                 hosted_by=player_name,
+                source_device_name=(
+                    self.settings.coordination_device_name or None
+                ),
             )
         except Exception as error:
             self._release_coordination_lease(project.uuid, report_error=False)
@@ -1480,6 +1483,9 @@ class MainWindow(QMainWindow):
                 destination_path=destination,
                 journal_title=journal_title,
                 journal_body=journal_body,
+                source_device_name=(
+                    self.settings.coordination_device_name or None
+                ),
             )
         except CoordinationError as error:
             if lease_acquired_here:

@@ -6,6 +6,8 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Backward-compatible package metadata for source devices, timeline ancestry,
+  notes, and safe game-specific details.
 - Schedule I save-folder detection, project discovery, import targeting, and Steam launching.
 - User-initiated Steam scanning across the primary and secondary library folders.
 - Optional cross-device project leases for hosting, import, export, and restore workflows.

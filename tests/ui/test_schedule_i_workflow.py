@@ -23,6 +23,7 @@ def test_hosting_schedule_i_launches_the_steam_game(
     window.settings = AppSettings(
         player_display_name="Bob",
         coordination_enabled=False,
+        coordination_device_name="Bob's PC",
     )
     project = Project(
         id=1,
@@ -41,6 +42,7 @@ def test_hosting_schedule_i_launches_the_steam_game(
     game = GameRegistry.get_by_game_id(GameId.SCHEDULE_I)
     assert game is not None
     launch_calls: list[bool] = []
+    hosting_calls: list[dict[str, object]] = []
     messages: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -50,13 +52,17 @@ def test_hosting_schedule_i_launches_the_steam_game(
     )
     monkeypatch.setattr(window, "load_installed_games", lambda: None)
     monkeypatch.setattr(window, "load_projects", lambda: None)
+    def fake_host_project(**kwargs: object) -> SimpleNamespace:
+        hosting_calls.append(kwargs)
+        return SimpleNamespace(
+            version_number=1,
+            package_path=tmp_path / "schedule-i.sspkg",
+        )
+
     monkeypatch.setattr(
         HostingService,
         "host_project",
-        lambda **_kwargs: SimpleNamespace(
-            version_number=1,
-            package_path=tmp_path / "schedule-i.sspkg",
-        ),
+        fake_host_project,
     )
     monkeypatch.setattr(game, "is_running", lambda: False)
     monkeypatch.setattr(game, "launch", lambda: launch_calls.append(True))
@@ -67,6 +73,7 @@ def test_hosting_schedule_i_launches_the_steam_game(
 
     window.host_project(project)
 
+    assert hosting_calls[0]["source_device_name"] == "Bob's PC"
     assert launch_calls == [True]
     assert len(messages) == 1
     assert messages[0][0] == "Project Hosted"
