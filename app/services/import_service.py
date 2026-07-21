@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.database.models.project import Project
+from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.packages.checksum import calculate_sha256
 from app.packages.package_extractor import PackageExtractor
@@ -72,6 +73,11 @@ class ImportService:
         )
 
         package_checksum = calculate_sha256(package_path)
+        parent_version = ProjectVersionService.get_latest_version(project.id)
+        parent_matches = ImportService._matches_package_parent(
+            package_info,
+            parent_version,
+        )
 
         version = ProjectVersionService.create_version(
             project_id=project.id,
@@ -81,7 +87,17 @@ class ImportService:
             package_path=str(package_path),
             backup_path=str(backup_path) if backup_path is not None else None,
             package_checksum=package_checksum,
-            notes=notes,
+            parent_version_id=(
+                parent_version.id
+                if parent_matches and parent_version is not None
+                else None
+            ),
+            lineage_name=package_info.metadata.lineage_name,
+            notes=(
+                notes
+                if notes is not None
+                else package_info.metadata.notes
+            ),
         )
 
         SessionJournalService.import_entries(
@@ -90,6 +106,27 @@ class ImportService:
         )
 
         return version
+
+    @staticmethod
+    def _matches_package_parent(
+        package_info: PackageInfo,
+        local_version: ProjectVersion | None,
+    ) -> bool:
+        if local_version is None:
+            return False
+
+        metadata = package_info.metadata
+
+        if metadata.parent_project_version != local_version.version_number:
+            return False
+
+        if metadata.parent_package_checksum is None:
+            return True
+
+        return (
+            local_version.package_checksum
+            == metadata.parent_package_checksum
+        )
 
     @staticmethod
     def validate_import_package(package_path: Path) -> PackageInfo:

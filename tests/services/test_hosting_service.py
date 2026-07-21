@@ -88,11 +88,13 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     metadata_file = project_root / "Regression World.fwl"
     world_file.write_bytes(b"world")
     metadata_file.write_bytes(b"metadata")
-    ProjectVersionService.create_version(
+    previous_version = ProjectVersionService.create_version(
         project_id=project.id,
         created_by="Previous Host",
         source_type=ProjectVersionSource.HOSTED,
         version_number=3,
+        package_checksum="a" * 64,
+        lineage_name="friends",
     )
 
     package_path = tmp_path / "packages" / "regression.sspkg"
@@ -113,12 +115,18 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
         "app.services.hosting_service.calculate_sha256",
         lambda path: "b" * 64 if path == package_path else pytest.fail("wrong path"),
     )
+    monkeypatch.setattr(
+        HostingService,
+        "_get_game_metadata",
+        lambda _project, _game_id: {"game_version": "test-version"},
+    )
 
     result = HostingService.host_project(
         project_id=project.id,
         game_id=GameId.VALHEIM.value,
         hosted_by="  Current Host  ",
         notes="Known good version",
+        source_device_name="  Gaming PC  ",
     )
 
     assert len(package_calls) == 1
@@ -127,6 +135,13 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     assert package_calls[0]["project_version"] == 4
     assert set(package_calls[0]["save_files"]) == {world_file, metadata_file}
     assert package_calls[0]["created_by"] == "  Current Host  "
+    metadata = package_calls[0]["metadata"]
+    assert metadata.source_device_name == "Gaming PC"
+    assert metadata.lineage_name == "friends"
+    assert metadata.parent_project_version == 3
+    assert metadata.parent_package_checksum == "a" * 64
+    assert metadata.notes == "Known good version"
+    assert metadata.game_metadata == {"game_version": "test-version"}
 
     recorded = ProjectVersionRepository.get_by_id(result.id)
     assert recorded is not None
@@ -136,6 +151,8 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     assert recorded.source_type == ProjectVersionSource.HOSTED
     assert recorded.package_path == str(package_path)
     assert recorded.package_checksum == "b" * 64
+    assert recorded.parent_version_id == previous_version.id
+    assert recorded.lineage_name == "friends"
     assert recorded.notes == "Known good version"
 
 

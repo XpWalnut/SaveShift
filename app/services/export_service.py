@@ -15,6 +15,7 @@ class ExportService:
         destination_path: Path,
         journal_title: str | None = None,
         journal_body: str | None = None,
+        source_device_name: str | None = None,
     ) -> ProjectVersion:
         version = HostingService.host_project(
             project_id=project.id,
@@ -23,6 +24,7 @@ class ExportService:
             notes="Exported manually from Save Shift",
             journal_title=journal_title,
             journal_body=journal_body,
+            source_device_name=source_device_name,
         )
 
         if not version.package_path:

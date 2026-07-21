@@ -12,6 +12,7 @@ from app.database.models.project import Project
 from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
 from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 from app.version import APP_VERSION
 
 
@@ -26,7 +27,7 @@ class PackageService:
         output_path: Path,
         created_by: str = "Unknown",
         save_shift_version: str = APP_VERSION,
-        metadata: dict | None = None,
+        metadata: PackageMetadata | None = None,
         journal_entries: tuple[PackageJournalEntry, ...] = (),
     ) -> Path:
         PackageService._validate_package_inputs(
@@ -77,7 +78,7 @@ class PackageService:
             save_files: list[Path],
             created_by: str,
             save_shift_version: str = APP_VERSION,
-            metadata: dict | None = None,
+            metadata: PackageMetadata | None = None,
             journal_entries: tuple[PackageJournalEntry, ...] = (),
     ) -> Path:
         root_path = Path(project.local_path)

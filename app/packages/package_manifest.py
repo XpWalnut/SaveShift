@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 
 
 PACKAGE_FORMAT_VERSION = 1
@@ -33,7 +34,7 @@ class PackageManifest:
         save_shift_version: str,
         files: list[Path],
         root_path: Path,
-        metadata: dict[str, Any] | None = None,
+        metadata: PackageMetadata | None = None,
         journal_entries: tuple[PackageJournalEntry, ...] = (),
     ) -> "PackageManifest":
         relative_files = [
@@ -51,7 +52,7 @@ class PackageManifest:
             created_by=created_by,
             save_shift_version=save_shift_version,
             files=relative_files,
-            metadata=metadata or {},
+            metadata=(metadata or PackageMetadata()).to_dict(),
             journal_entries=[entry.to_dict() for entry in journal_entries],
         )
 

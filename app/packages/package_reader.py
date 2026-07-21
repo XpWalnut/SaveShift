@@ -4,6 +4,7 @@ import json
 
 from app.packages.package_info import PackageInfo
 from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 from app.packages.package_service import PackageService
 
 
@@ -36,6 +37,7 @@ class PackageReader:
             PackageJournalEntry.from_dict(entry)
             for entry in journal_data
         )
+        metadata = PackageMetadata.from_dict(manifest.get("metadata", {}))
 
         return PackageInfo(
             package_format_version=manifest["package_format_version"],
@@ -48,5 +50,6 @@ class PackageReader:
             save_shift_version=manifest["save_shift_version"],
             file_count=len(manifest["files"]),
             verified=verify,
+            metadata=metadata,
             journal_entries=journal_entries,
         )
