@@ -6,6 +6,10 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Import previews that distinguish verified continuations, unverified or
+  divergent histories, duplicates, older packages, and version collisions.
+- Explicit backup-and-replace acknowledgement for imports whose ancestry
+  cannot be safely verified.
 - Backward-compatible package metadata for source devices, timeline ancestry,
   notes, and safe game-specific details.
 - Schedule I save-folder detection, project discovery, import targeting, and Steam launching.

@@ -18,6 +18,7 @@ from app.packages.package_journal_entry import PackageJournalEntry
 from app.packages.package_metadata import PackageMetadata
 from app.packages.package_reader import PackageReader
 from app.services.import_service import ImportService
+from app.services.import_conflict import ImportConflictKind
 from app.services.project_service import ProjectService
 from app.services.project_version_service import (
     ProjectVersionService,
@@ -90,12 +91,14 @@ def _create_project(
 def _create_version(
     project: Project,
     version_number: int,
+    package_checksum: str | None = None,
 ) -> ProjectVersion:
     return ProjectVersionService.create_version(
         project_id=project.id,
         created_by="Local Host",
         source_type=ProjectVersionSource.HOSTED,
         version_number=version_number,
+        package_checksum=package_checksum,
     )
 
 
@@ -134,7 +137,9 @@ def test_newer_package_version_is_allowed(
     package_path = tmp_path / "incoming.sspkg"
     _mock_package_read(monkeypatch, _package_info(project_version=3))
 
-    ImportService.validate_import_package(package_path)
+    analysis = ImportService.analyze_import(package_path)
+
+    assert analysis.kind == ImportConflictKind.UNVERIFIED_NEWER
 
 
 def test_older_package_version_is_rejected(
@@ -157,8 +162,16 @@ def test_duplicate_package_version_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _create_project(tmp_path)
-    _create_version(project, version_number=2)
+    _create_version(
+        project,
+        version_number=2,
+        package_checksum="a" * 64,
+    )
     _mock_package_read(monkeypatch, _package_info(project_version=2))
+    monkeypatch.setattr(
+        "app.services.import_service.calculate_sha256",
+        lambda _package_path: "a" * 64,
+    )
 
     with pytest.raises(
         ValueError,
@@ -262,6 +275,7 @@ def test_import_preserves_package_notes_when_no_local_note_is_supplied(
     imported = ImportService.import_package(
         package_path=tmp_path / "incoming.sspkg",
         imported_by="Receiving Player",
+        allow_replace=True,
     )
 
     assert imported.notes == "Shared package note"
@@ -299,6 +313,7 @@ def test_import_does_not_claim_unmatched_package_parent(
     imported = ImportService.import_package(
         package_path=tmp_path / "incoming.sspkg",
         imported_by="Receiving Player",
+        allow_replace=True,
     )
 
     assert imported.parent_version_id is None
@@ -328,6 +343,7 @@ def test_missing_existing_project_directory_skips_backup(
     result = ImportService.import_package(
         package_path=package_path,
         imported_by="Importing Player",
+        allow_replace=True,
     )
 
     assert result.project_id == project.id
@@ -359,6 +375,7 @@ def test_extracted_files_are_synchronized_into_existing_project(
     ImportService.import_package(
         package_path=tmp_path / "incoming.sspkg",
         imported_by="Importing Player",
+        allow_replace=True,
     )
 
     assert not (project_path / "stale.sav").exists()
@@ -496,6 +513,7 @@ def test_import_stores_package_journal_entries_for_the_project(
     ImportService.import_package(
         package_path=tmp_path / "incoming.sspkg",
         imported_by="Receiving Player",
+        allow_replace=True,
     )
 
     stored = SessionJournalService.get_entries_for_project(project.id)

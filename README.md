@@ -16,6 +16,7 @@ Save Shift is a source-available Windows desktop application for sharing and man
 - Hosting a tracked project and launching its Steam game
 - Exporting and importing portable `.sspkg` packages
 - Structured package ancestry, source-device, notes, and game metadata
+- Import previews with ancestry-aware conflict detection and backup confirmation
 - Double-click `.sspkg` file associations on Windows
 - Version history and restoration of previous saves
 - World Journals for recording shared adventures, shown on project cards and carried in `.sspkg` handoffs

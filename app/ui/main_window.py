@@ -55,6 +55,7 @@ from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
 from app.ui.dialogs.history_dialog import HistoryDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
+from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.dialogs.update_dialog import UpdateAvailableDialog
 from app.updates.controller import UpdateController
@@ -1364,7 +1365,7 @@ class MainWindow(QMainWindow):
             package_path = Path(selected_path)
 
         try:
-            package_info = ImportService.validate_import_package(package_path)
+            analysis = ImportService.analyze_import(package_path)
         except ValueError as error:
             QMessageBox.warning(self, "Import Not Allowed", str(error))
             return
@@ -1379,6 +1380,12 @@ class MainWindow(QMainWindow):
             )
             return
 
+        conflict_dialog = ImportConflictDialog(analysis, self)
+
+        if conflict_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        package_info = analysis.package_info
         player_name = self._get_player_display_name()
 
         if player_name is None:
@@ -1392,6 +1399,7 @@ class MainWindow(QMainWindow):
                 version = ImportService.import_package(
                     package_path=package_path,
                     imported_by=player_name,
+                    allow_replace=analysis.requires_replace_confirmation,
                 )
         except CoordinationError as error:
             self._show_coordination_error(error)

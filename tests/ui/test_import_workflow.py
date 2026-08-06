@@ -9,6 +9,7 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.packages.package_info import PackageInfo
 from app.coordination.models import LockLease
+from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
 from app.ui.main_window import MainWindow
 from app.ui.widgets.project_card import ProjectCard
@@ -158,7 +159,7 @@ def test_main_window_import_validates_then_imports_and_refreshes(
 ) -> None:
     package_path = tmp_path / "incoming.sspkg"
     version = _imported_version(package_path)
-    validation_calls: list[Path] = []
+    analysis_calls: list[Path] = []
     import_calls: list[dict[str, object]] = []
     messages: list[tuple[str, str]] = []
 
@@ -168,11 +169,31 @@ def test_main_window_import_validates_then_imports_and_refreshes(
     )
     monkeypatch.setattr(
         ImportService,
-        "validate_import_package",
+        "analyze_import",
         lambda path: (
-            validation_calls.append(path)
-            or _package_info("12345678-1234-5678-1234-567812345678")
+            analysis_calls.append(path)
+            or ImportAnalysis(
+                package_info=_package_info(
+                    "12345678-1234-5678-1234-567812345678"
+                ),
+                project=None,
+                local_version=None,
+                kind=ImportConflictKind.NEW_PROJECT,
+            )
         ),
+    )
+
+    class AcceptedImportDialog:
+        def __init__(self, analysis: ImportAnalysis, parent) -> None:
+            assert analysis.kind == ImportConflictKind.NEW_PROJECT
+            assert parent is window
+
+        def exec(self):
+            return 1
+
+    monkeypatch.setattr(
+        "app.ui.main_window.ImportConflictDialog",
+        AcceptedImportDialog,
     )
 
     def fake_import_package(**kwargs: object) -> ProjectVersion:
@@ -197,11 +218,12 @@ def test_main_window_import_validates_then_imports_and_refreshes(
 
     window.import_package(package_path)
 
-    assert validation_calls == [package_path]
+    assert analysis_calls == [package_path]
     assert import_calls == [
         {
             "package_path": package_path,
             "imported_by": "Importing Player",
+            "allow_replace": False,
         }
     ]
     assert refreshes == ["games", "projects"]
@@ -229,7 +251,7 @@ def test_main_window_rejected_import_stops_before_prompt_or_import(
 
     monkeypatch.setattr(
         ImportService,
-        "validate_import_package",
+        "analyze_import",
         reject_import,
     )
     monkeypatch.setattr(
@@ -257,3 +279,126 @@ def test_main_window_rejected_import_stops_before_prompt_or_import(
             "This package version has already been imported.",
         )
     ]
+
+
+def test_main_window_forwards_confirmed_divergent_replacement(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "diverged.sspkg"
+    package_info = _package_info(
+        "12345678-1234-5678-1234-567812345678"
+    )
+    project = _project(tmp_path)
+    local_version = _imported_version(tmp_path / "current.sspkg")
+    analysis = ImportAnalysis(
+        package_info=package_info,
+        project=project,
+        local_version=local_version,
+        kind=ImportConflictKind.DIVERGED,
+    )
+    import_calls: list[dict[str, object]] = []
+
+    class AcceptedReplacementDialog:
+        def __init__(self, received: ImportAnalysis, parent) -> None:
+            assert received is analysis
+            assert parent is window
+
+        def exec(self):
+            return 1
+
+    monkeypatch.setattr(
+        "app.ui.main_window.discover_all_projects",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "analyze_import",
+        lambda _path: analysis,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.ImportConflictDialog",
+        AcceptedReplacementDialog,
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "import_package",
+        lambda **kwargs: (
+            import_calls.append(kwargs) or _imported_version(package_path)
+        ),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QInputDialog.getText",
+        lambda *_args, **_kwargs: ("Bob", True),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda *_args, **_kwargs: None,
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.load_installed_games = lambda: None
+    window.load_projects = lambda: None
+
+    window.import_package(package_path)
+
+    assert import_calls == [
+        {
+            "package_path": package_path,
+            "imported_by": "Bob",
+            "allow_replace": True,
+        }
+    ]
+
+
+def test_main_window_cancelled_preview_does_not_prompt_or_import(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "cancelled.sspkg"
+    analysis = ImportAnalysis(
+        package_info=_package_info(
+            "12345678-1234-5678-1234-567812345678"
+        ),
+        project=None,
+        local_version=None,
+        kind=ImportConflictKind.NEW_PROJECT,
+    )
+
+    class RejectedImportDialog:
+        def __init__(self, received: ImportAnalysis, _parent) -> None:
+            assert received is analysis
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(
+        "app.ui.main_window.discover_all_projects",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "analyze_import",
+        lambda _path: analysis,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.ImportConflictDialog",
+        RejectedImportDialog,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QInputDialog.getText",
+        lambda *_args, **_kwargs: pytest.fail("name prompt must not open"),
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "import_package",
+        lambda **_kwargs: pytest.fail("package must not be imported"),
+    )
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    window.import_package(package_path)
