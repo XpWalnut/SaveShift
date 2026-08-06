@@ -37,6 +37,38 @@ class ProjectRepository:
             )
 
     @staticmethod
+    def get_by_local_path(local_path: Path) -> Project | None:
+        expected = str(local_path.resolve(strict=False)).casefold()
+
+        for project in ProjectRepository.get_all():
+            actual = str(
+                Path(project.local_path).resolve(strict=False)
+            ).casefold()
+
+            if actual == expected:
+                return project
+
+        return None
+
+    @staticmethod
+    def adopt_identity(
+        project_id: int,
+        project_uuid: str,
+        name: str,
+    ) -> Project:
+        with SessionLocal() as session:
+            project = session.get(Project, project_id)
+
+            if project is None:
+                raise ValueError(f"Project not found: {project_id}")
+
+            project.uuid = project_uuid
+            project.name = name
+            session.commit()
+            session.refresh(project)
+            return project
+
+    @staticmethod
     def synchronize(
         installed_game_id: int,
         discovered_projects: list[DiscoveredProject],

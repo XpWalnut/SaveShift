@@ -13,7 +13,9 @@ from app.packages.checksum import calculate_sha256
 from app.packages.package_service import PackageService
 from app.packages.package_reader import PackageReader
 from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 from app.services.hosting_service import HostingService
+from app.services.import_conflict import ImportConflictKind
 from app.services.import_service import ImportService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import (
@@ -252,3 +254,68 @@ def test_hosted_schedule_i_package_includes_safe_game_metadata(
     }
     assert metadata.parent_project_version is None
     assert metadata.parent_package_checksum is None
+
+
+def test_verified_fast_forward_import_backs_up_and_replaces_local_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _redirect_application_directories(monkeypatch, tmp_path)
+    installed_game = InstalledGameRepository.add(
+        game_id=GameId.ABIOTIC_FACTOR.value,
+        display_name="Abiotic Factor",
+        save_path=str(tmp_path / "abiotic-saves"),
+    )
+    local_root = tmp_path / "abiotic-saves" / "user" / "Worlds" / "Shared"
+    local_root.mkdir(parents=True)
+    local_file = local_root / "world.sav"
+    local_file.write_bytes(b"local-version-one")
+    local_project = ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid=PROJECT_UUID,
+        name="Shared",
+        local_path=local_root,
+    )
+    local_version = ProjectVersionService.create_version(
+        project_id=local_project.id,
+        created_by="Bob",
+        source_type=ProjectVersionSource.HOSTED,
+        version_number=1,
+        package_checksum="a" * 64,
+    )
+    source_root = tmp_path / "incoming-source"
+    source_root.mkdir()
+    source_file = source_root / "world.sav"
+    source_file.write_bytes(b"incoming-version-two")
+    package_path = tmp_path / "incoming.sspkg"
+    PackageService.create_package(
+        game_id=GameId.ABIOTIC_FACTOR.value,
+        project=Project(
+            installed_game_id=0,
+            name="Shared",
+            local_path=str(source_root),
+            uuid=PROJECT_UUID,
+        ),
+        project_version=2,
+        root_path=source_root,
+        save_files=[source_file],
+        output_path=package_path,
+        created_by="Alice",
+        metadata=PackageMetadata(
+            parent_project_version=1,
+            parent_package_checksum="a" * 64,
+        ),
+    )
+
+    analysis = ImportService.analyze_import(package_path)
+    imported_version = ImportService.import_package(
+        package_path=package_path,
+        imported_by="Bob",
+    )
+
+    assert analysis.kind == ImportConflictKind.FAST_FORWARD
+    assert local_file.read_bytes() == b"incoming-version-two"
+    assert imported_version.parent_version_id == local_version.id
+    assert imported_version.backup_path is not None
+    backup = Path(imported_version.backup_path)
+    assert (backup / "world.sav").read_bytes() == b"local-version-one"
