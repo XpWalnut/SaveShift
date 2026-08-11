@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Save Shift Coordination API
-  version: 1.2.0
-  description: Provider-neutral group onboarding, device management, and project lease contract.
+  version: 1.3.0
+  description: Provider-neutral group onboarding, device management, project lease, and package catalog contract.
 servers:
   - url: https://coordination.example.com/api/v1
 paths:
@@ -193,6 +193,110 @@ paths:
               schema:
                 $ref: "#/components/schemas/InvitationResponse"
         "403":
+          $ref: "#/components/responses/Error"
+  /projects/{project_uuid}/packages:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    get:
+      summary: List immutable package artifacts for a project
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Packages ordered from newest to oldest project version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages]
+                properties:
+                  packages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PackageArtifactRecord"
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Register an immutable package while owning its project lease
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageRegistrationRequest"
+      responses:
+        "201":
+          description: Package registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [package]
+                properties:
+                  package:
+                    $ref: "#/components/schemas/PackageArtifactRecord"
+        "200":
+          description: Identical package registration replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [package]
+                properties:
+                  package:
+                    $ref: "#/components/schemas/PackageArtifactRecord"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /package-encryption-key:
+    get:
+      summary: Get the shared package encryption key for authenticated group members
+      description: The key protects unlisted transport payloads from access outside the authenticated Save Shift group.
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Current group package encryption key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: "#/components/schemas/PackageEncryptionKey"
+        "401":
+          $ref: "#/components/responses/Error"
+  /package-encryption-keys/{key_id}:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 100
+    get:
+      summary: Get a historical package key needed by a catalog artifact
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Requested group package encryption key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: "#/components/schemas/PackageEncryptionKey"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
           $ref: "#/components/responses/Error"
   /locks/{project_uuid}:
     parameters:
@@ -436,6 +540,85 @@ components:
           type: string
           format: date-time
         expires_at_utc:
+          type: string
+          format: date-time
+    PackageRegistrationRequest:
+      allOf:
+        - $ref: "#/components/schemas/PackageArtifactDescriptor"
+        - type: object
+          required: [lease_id]
+          properties:
+            lease_id:
+              type: string
+              minLength: 1
+    PackageArtifactDescriptor:
+      type: object
+      required:
+        - transport_name
+        - remote_id
+        - project_version
+        - package_checksum
+        - package_size_bytes
+        - encryption_key_id
+      properties:
+        transport_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        remote_id:
+          type: string
+          minLength: 1
+          maxLength: 512
+        project_version:
+          type: integer
+          minimum: 1
+        package_checksum:
+          type: string
+          pattern: "^[0-9a-fA-F]{64}$"
+        package_size_bytes:
+          type: integer
+          minimum: 1
+        encryption_key_id:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PackageArtifactRecord:
+      allOf:
+        - $ref: "#/components/schemas/PackageArtifactDescriptor"
+        - type: object
+          required:
+            - catalog_id
+            - project_uuid
+            - published_by_device_id
+            - published_at_utc
+          properties:
+            catalog_id:
+              type: string
+              minLength: 1
+            project_uuid:
+              type: string
+              minLength: 1
+            published_by_device_id:
+              type: string
+              minLength: 1
+            published_at_utc:
+              type: string
+              format: date-time
+    PackageEncryptionKey:
+      type: object
+      required: [key_id, algorithm, key_material, created_at_utc]
+      properties:
+        key_id:
+          type: string
+          minLength: 1
+        algorithm:
+          type: string
+          const: AES-256-GCM
+        key_material:
+          type: string
+          description: URL-safe base64 encoding of the 256-bit group key.
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        created_at_utc:
           type: string
           format: date-time
     ErrorResponse:

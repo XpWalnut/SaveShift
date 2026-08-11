@@ -10,9 +10,12 @@ from app.coordination.errors import (
     CoordinationUnavailableError,
     LockConflictError,
     LockOwnershipError,
+    PackageCatalogConflictError,
+    PackageKeyRotatedError,
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.models import LockLease
+from app.package_transport.models import PackageArtifact
 
 
 PROJECT_UUID = "12345678-1234-5678-1234-567812345678"
@@ -27,6 +30,23 @@ def _lock_data(**overrides: object) -> dict[str, object]:
         "owner_display_name": "Jake",
         "acquired_at_utc": "2026-07-13T20:00:00Z",
         "expires_at_utc": "2026-07-13T20:15:00+00:00",
+    }
+    data.update(overrides)
+    return data
+
+
+def _package_data(**overrides: object) -> dict[str, object]:
+    data: dict[str, object] = {
+        "catalog_id": "catalog-123",
+        "transport_name": "steam-ugc",
+        "remote_id": "ugc-456",
+        "project_uuid": PROJECT_UUID,
+        "project_version": 8,
+        "package_checksum": "a" * 64,
+        "package_size_bytes": 4096,
+        "encryption_key_id": "key-123",
+        "published_by_device_id": "device-123",
+        "published_at_utc": "2026-08-06T12:00:00Z",
     }
     data.update(overrides)
     return data
@@ -264,6 +284,192 @@ def test_status_returns_none_when_project_is_unlocked(
     )
 
     assert provider.get_lock(PROJECT_UUID) is None
+
+
+def test_register_and_list_packages_use_separate_catalog_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+    responses = [
+        {"package": _package_data()},
+        {"packages": [_package_data()]},
+    ]
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response(responses.pop(0))
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+    artifact = PackageArtifact(
+        transport_name="steam-ugc",
+        remote_id="ugc-456",
+        project_uuid=PROJECT_UUID,
+        project_version=8,
+        package_checksum="a" * 64,
+        package_size_bytes=4096,
+        encryption_key_id="key-123",
+    )
+    lease = LockLease.from_dict(_lock_data())
+
+    registered = provider.register_package(artifact, lease)
+    listed = provider.list_packages(PROJECT_UUID)
+
+    expected_url = (
+        f"https://locks.example.com/api/v1/projects/{PROJECT_UUID}/packages"
+    )
+    assert requests[0].full_url == expected_url
+    assert requests[0].method == "POST"
+    assert json.loads(requests[0].data) == {
+        "lease_id": "lease-123",
+        "transport_name": "steam-ugc",
+        "remote_id": "ugc-456",
+        "project_version": 8,
+        "package_checksum": "a" * 64,
+        "package_size_bytes": 4096,
+        "encryption_key_id": "key-123",
+    }
+    assert requests[1].full_url == expected_url
+    assert requests[1].method == "GET"
+    assert registered.artifact == artifact
+    assert registered.published_at_utc == datetime(
+        2026, 8, 6, 12, tzinfo=UTC
+    )
+    assert listed == [registered]
+
+
+def test_get_package_encryption_key_parses_group_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response(
+            {
+                "key": {
+                    "algorithm": "AES-256-GCM",
+                    "key_id": "key-123",
+                    "key_material": (
+                        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+                    ),
+                }
+            }
+        )
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+
+    key = provider.get_package_encryption_key()
+    historical_key = provider.get_package_encryption_key("key-123")
+
+    assert key.algorithm == "AES-256-GCM"
+    assert key.key_id == "key-123"
+    assert key.key_material == bytes(range(32))
+    assert historical_key == key
+    assert requests[0].full_url.endswith("/api/v1/package-encryption-key")
+    assert requests[0].method == "GET"
+    assert requests[1].full_url.endswith(
+        "/api/v1/package-encryption-keys/key-123"
+    )
+
+
+def test_register_rejects_package_for_a_different_lease_project() -> None:
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+    artifact = PackageArtifact(
+        transport_name="steam-ugc",
+        remote_id="ugc-456",
+        project_uuid="87654321-4321-4678-9234-567812345678",
+        project_version=8,
+        package_checksum="a" * 64,
+        package_size_bytes=4096,
+        encryption_key_id="key-123",
+    )
+
+    with pytest.raises(CoordinationConfigurationError, match="different projects"):
+        provider.register_package(artifact, LockLease.from_dict(_lock_data()))
+
+
+def test_package_version_conflict_has_a_distinct_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = json.dumps(
+        {
+            "error": {
+                "code": "package_version_conflict",
+                "message": "A different package is already registered.",
+            }
+        }
+    ).encode("utf-8")
+
+    def raise_conflict(*_args, **_kwargs):
+        raise HTTPError(
+            url="https://locks.example.com",
+            code=409,
+            msg="Conflict",
+            hdrs=None,
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", raise_conflict)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+    artifact = PackageArtifact(
+        transport_name="steam-ugc",
+        remote_id="ugc-456",
+        project_uuid=PROJECT_UUID,
+        project_version=8,
+        package_checksum="a" * 64,
+        package_size_bytes=4096,
+        encryption_key_id="key-123",
+    )
+
+    with pytest.raises(PackageCatalogConflictError):
+        provider.register_package(artifact, LockLease.from_dict(_lock_data()))
+
+
+def test_rotated_package_key_has_a_retriable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = b'{"error":{"code":"package_key_rotated","message":"Key changed."}}'
+
+    def raise_rotated(*_args, **_kwargs):
+        raise HTTPError(
+            url="https://locks.example.com",
+            code=409,
+            msg="Conflict",
+            hdrs=None,
+            fp=BytesIO(body),
+        )
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", raise_rotated)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+    artifact = PackageArtifact(
+        transport_name="steam-ugc",
+        remote_id="ugc-456",
+        project_uuid=PROJECT_UUID,
+        project_version=8,
+        package_checksum="a" * 64,
+        package_size_bytes=4096,
+        encryption_key_id="key-123",
+    )
+
+    with pytest.raises(PackageKeyRotatedError):
+        provider.register_package(artifact, LockLease.from_dict(_lock_data()))
 
 
 def test_conflict_response_preserves_current_lock(

@@ -44,6 +44,49 @@ The first server implementation is isolated under `coordination/cloudflare/` and
 
 The normal onboarding path uses single-use group invitations and administrator-managed devices. Cloudflare account provisioning is a separate adapter in `app/coordination/cloudflare_provisioning.py`: it uses browser OAuth with PKCE, uploads the bundled Worker, bootstraps the first administrator, and discards its temporary account access. The setup controller runs authorization, provisioning, invitation joins, departure, and owner-authorized Worker removal outside the Qt UI thread. Runtime lease operations never call Cloudflare's account API. The provider-neutral leave operation revokes the departing device and clears all Durable Object storage when the group becomes empty.
 
+### Package transport
+
+Remote package storage is separate from coordination and import. The
+`PackageTransport` protocol publishes, downloads, and deletes immutable package
+artifacts without exposing a provider SDK to application workflows.
+`PackageTransferService` derives artifact identity from the verified `.sspkg`,
+checks provider responses, downloads to a temporary sibling file, and validates
+the package UUID, version, byte length, ZIP contents, and SHA-256 checksum before
+atomically replacing the destination.
+
+`PackageHandoffService` composes the verified byte transport with the separate
+coordination catalog. Publication requires the project's active lease, uploads
+the immutable payload first, registers its descriptor second, and removes the
+remote payload if catalog registration fails. Downloads select the newest
+catalog entry and still pass through the complete transfer verification path.
+
+Transport implementations may encode bytes internally, but they must return the
+original `.sspkg` when downloading. `EncryptedPackageTransport` wraps an opaque
+blob provider with streaming AES-256-GCM. Cloudflare stores only catalog metadata
+and authenticated group encryption-key epochs; it never receives package bytes.
+Removing a member rotates the key for future uploads, while retained historical
+keys allow current members to recover earlier versions. An upload that races a
+rotation is rejected by the catalog and retried once with the current key.
+
+The first blob implementation uses unlisted Steam UGC under Save Shift AppID
+5096900. `SteamUgcBlobTransport` owns the UGC folder layout and safe metadata,
+while `SteamworksUgcClient` is a thin `ctypes` binding over the official flat API
+and manual callback dispatcher. Steam holds only encrypted bytes and never
+decides group membership or project lease ownership. The release build obtains
+the redistributable `steam_api64.dll` from a local Steamworks SDK rather than
+committing the proprietary SDK to the repository. Manual export and import
+remain available as an offline fallback.
+
+When coordination is configured, project cards present **Receive** and
+**Hand Off** as the normal workflow. A background controller keeps Steam and
+network transfers off the Qt UI thread. Hand Off creates the final local version,
+publishes it while the current lease is still held, and releases the lease only
+after the catalog accepts the artifact. A failed publication keeps the lease for
+a safe retry. Receive verifies the encrypted download before presenting the
+existing import-conflict preview, then acquires a temporary lease for backup and
+synchronization. Without coordination, the same card positions retain manual
+Import and Export actions.
+
 ### Core (`app/core`)
 
 Paths, settings, constants, logging, and other cross-cutting application configuration. `app/version.py` is the single source for application and Windows installer versions.
@@ -64,7 +107,7 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 
 ## Packaging and releases
 
-`tools/build_release.ps1` runs Python and Cloudflare tests, regenerates the bundled coordination Worker, builds `SaveShift.spec` with PyInstaller, reads version values from `app/version.py`, and invokes `installer/SaveShift.iss`. GitHub prereleases publish the resulting versioned installer. The updater requires the asset name to match `SaveShiftSetup-<version>.exe`.
+`tools/build_release.ps1` runs Python and Cloudflare tests, regenerates the bundled coordination Worker, locates the official Steamworks Windows redistributable through `STEAMWORKS_SDK_PATH`, builds `SaveShift.spec` with PyInstaller, reads version values from `app/version.py`, and invokes `installer/SaveShift.iss`. GitHub prereleases publish the resulting versioned installer. The updater requires the asset name to match `SaveShiftSetup-<version>.exe`.
 
 ## Architectural decisions
 
@@ -73,3 +116,4 @@ Paths, settings, constants, logging, and other cross-cutting application configu
 - [ADR-0003: Provider-neutral project coordination](decisions/ADR-0003-provider-neutral-coordination.md)
 - [ADR-0004: Cloudflare OAuth provider provisioning](decisions/ADR-0004-cloudflare-oauth-provisioning.md)
 - [ADR-0005: Embedded database migrations](decisions/ADR-0005-embedded-database-migrations.md)
+- [ADR-0006: Provider-neutral package transport](decisions/ADR-0006-provider-neutral-package-transport.md)

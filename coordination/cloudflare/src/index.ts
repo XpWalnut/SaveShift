@@ -43,6 +43,26 @@ interface LockRecord {
   expires_at_utc: string;
 }
 
+interface PackageArtifactRecord {
+  catalog_id: string;
+  transport_name: string;
+  remote_id: string;
+  project_uuid: string;
+  project_version: number;
+  package_checksum: string;
+  package_size_bytes: number;
+  encryption_key_id: string;
+  published_by_device_id: string;
+  published_at_utc: string;
+}
+
+interface PackageEncryptionKeyRecord {
+  key_id: string;
+  algorithm: "AES-256-GCM";
+  key_material: string;
+  created_at_utc: string;
+}
+
 interface ErrorBody {
   error: {
     code: string;
@@ -55,9 +75,13 @@ const API_PREFIX = "/api/v1";
 const DEFAULT_LEASE_SECONDS = 900;
 const MAX_DEVICE_NAME_LENGTH = 100;
 const MAX_OWNER_NAME_LENGTH = 100;
+const MAX_TRANSPORT_NAME_LENGTH = 50;
+const MAX_REMOTE_ID_LENGTH = 512;
+const MAX_KEY_ID_LENGTH = 100;
 const DEFAULT_INVITATION_SECONDS = 24 * 60 * 60;
 const MIN_INVITATION_SECONDS = 5 * 60;
 const MAX_INVITATION_SECONDS = 7 * 24 * 60 * 60;
+const CURRENT_PACKAGE_KEY = "package-encryption-key-current:v1";
 const PROJECT_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -87,7 +111,7 @@ export class CoordinationGroup extends DurableObject<Env> {
       return jsonResponse({
         status: "ok",
         api_version: "v1",
-        provider_version: "1.2.0"
+        provider_version: "1.3.0"
       });
     }
 
@@ -147,6 +171,43 @@ export class CoordinationGroup extends DurableObject<Env> {
       url.pathname === `${API_PREFIX}/invitations`
     ) {
       return this.createInvitation(request, device);
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === `${API_PREFIX}/package-encryption-key`
+    ) {
+      return this.getCurrentPackageEncryptionKey();
+    }
+
+    const packageKeyMatch = url.pathname.match(
+      /^\/api\/v1\/package-encryption-keys\/([^/]+)$/
+    );
+
+    if (request.method === "GET" && packageKeyMatch) {
+      return this.getPackageEncryptionKey(packageKeyMatch[1]);
+    }
+
+    const packageMatch = url.pathname.match(
+      /^\/api\/v1\/projects\/([^/]+)\/packages$/
+    );
+
+    if (packageMatch) {
+      const projectUuid = parseProjectUuid(packageMatch[1]);
+
+      if (!projectUuid) {
+        return errorResponse(400, "invalid_project", "Project UUID is invalid.");
+      }
+
+      if (request.method === "GET") {
+        return this.listPackages(projectUuid);
+      }
+
+      if (request.method === "POST") {
+        return this.registerPackage(request, projectUuid, device);
+      }
+
+      return errorResponse(405, "method_not_allowed", "Method not allowed.");
     }
 
     const match = url.pathname.match(
@@ -566,6 +627,7 @@ export class CoordinationGroup extends DurableObject<Env> {
     }
 
     await this.ctx.storage.put(key, { ...existing, revoked: true });
+    await this.ctx.storage.delete(CURRENT_PACKAGE_KEY);
     return jsonResponse({ revoked: true });
   }
 
@@ -596,6 +658,10 @@ export class CoordinationGroup extends DurableObject<Env> {
         ...device,
         revoked: true
       });
+
+      if (otherActiveDevices.length > 0) {
+        await transaction.delete(CURRENT_PACKAGE_KEY);
+      }
 
       return otherActiveDevices.length === 0 ? "empty" as const : "left" as const;
     });
@@ -644,6 +710,250 @@ export class CoordinationGroup extends DurableObject<Env> {
     }
 
     return { ...device, administrator: device.administrator === true };
+  }
+
+  private async registerPackage(
+    request: Request,
+    projectUuid: string,
+    device: DeviceRecord
+  ): Promise<Response> {
+    const body = await readJsonBody(request);
+
+    if (body instanceof Response) {
+      return body;
+    }
+
+    const leaseId = body.lease_id;
+    const transportName = normalizeName(
+      body.transport_name,
+      MAX_TRANSPORT_NAME_LENGTH
+    );
+    const remoteId = normalizeName(body.remote_id, MAX_REMOTE_ID_LENGTH);
+    const projectVersion = body.project_version;
+    const packageChecksum = body.package_checksum;
+    const packageSizeBytes = body.package_size_bytes;
+    const encryptionKeyId = normalizeName(
+      body.encryption_key_id,
+      MAX_KEY_ID_LENGTH
+    );
+
+    if (typeof leaseId !== "string" || !leaseId) {
+      return errorResponse(400, "invalid_lease", "Lease ID is required.");
+    }
+
+    if (!transportName) {
+      return errorResponse(
+        400,
+        "invalid_transport",
+        "Package transport name is required."
+      );
+    }
+
+    if (!remoteId) {
+      return errorResponse(
+        400,
+        "invalid_remote_id",
+        "Package remote identifier is required."
+      );
+    }
+
+    if (
+      typeof projectVersion !== "number" ||
+      !Number.isSafeInteger(projectVersion) ||
+      projectVersion < 1
+    ) {
+      return errorResponse(
+        400,
+        "invalid_project_version",
+        "Package project version must be a positive integer."
+      );
+    }
+
+    if (
+      typeof packageChecksum !== "string" ||
+      !/^[0-9a-f]{64}$/i.test(packageChecksum)
+    ) {
+      return errorResponse(
+        400,
+        "invalid_package_checksum",
+        "Package checksum must be a SHA-256 value."
+      );
+    }
+
+    if (
+      typeof packageSizeBytes !== "number" ||
+      !Number.isSafeInteger(packageSizeBytes) ||
+      packageSizeBytes < 1
+    ) {
+      return errorResponse(
+        400,
+        "invalid_package_size",
+        "Package size must be a positive integer."
+      );
+    }
+
+    if (!encryptionKeyId) {
+      return errorResponse(
+        400,
+        "invalid_encryption_key",
+        "Package encryption key identifier is required."
+      );
+    }
+
+    const result = await this.ctx.storage.transaction(async (transaction) => {
+      const lockStorageKey = lockKey(projectUuid);
+      const lock = await transaction.get<LockRecord>(lockStorageKey);
+      const now = new Date();
+
+      if (!lock || isExpired(lock, now)) {
+        if (lock) {
+          await transaction.delete(lockStorageKey);
+        }
+        return { error: "expired" as const };
+      }
+
+      if (
+        lock.owner_device_id !== device.device_id ||
+        lock.lease_id !== leaseId
+      ) {
+        return { error: "ownership" as const, lock };
+      }
+
+      const currentKeyId = await transaction.get<string>(CURRENT_PACKAGE_KEY);
+
+      if (currentKeyId !== encryptionKeyId) {
+        return { error: "encryption_key" as const };
+      }
+
+      const storageKey = packageKey(projectUuid, projectVersion);
+      const existing = await transaction.get<PackageArtifactRecord>(storageKey);
+
+      if (existing) {
+        const identical =
+          existing.transport_name === transportName &&
+          existing.remote_id === remoteId &&
+          existing.package_checksum === packageChecksum.toLowerCase() &&
+          existing.package_size_bytes === packageSizeBytes &&
+          existing.encryption_key_id === encryptionKeyId;
+        return identical
+          ? { package: existing, created: false }
+          : { error: "collision" as const };
+      }
+
+      const packageRecord: PackageArtifactRecord = {
+        catalog_id: crypto.randomUUID(),
+        transport_name: transportName,
+        remote_id: remoteId,
+        project_uuid: projectUuid,
+        project_version: projectVersion,
+        package_checksum: packageChecksum.toLowerCase(),
+        package_size_bytes: packageSizeBytes,
+        encryption_key_id: encryptionKeyId,
+        published_by_device_id: device.device_id,
+        published_at_utc: now.toISOString()
+      };
+      await transaction.put(storageKey, packageRecord);
+      return { package: packageRecord, created: true };
+    });
+
+    if ("error" in result && result.error === "expired") {
+      return errorResponse(
+        409,
+        "lease_expired",
+        "An active project lease is required to publish a package."
+      );
+    }
+
+    if ("error" in result && result.error === "ownership") {
+      return errorResponse(
+        403,
+        "lock_not_owned",
+        "This device does not own the project lease.",
+        result.lock
+      );
+    }
+
+    if ("error" in result && result.error === "encryption_key") {
+      return errorResponse(
+        409,
+        "package_key_rotated",
+        "The package encryption key changed. Encrypt and publish the package again."
+      );
+    }
+
+    if ("error" in result) {
+      return errorResponse(
+        409,
+        "package_version_conflict",
+        "A different package is already registered for this project version."
+      );
+    }
+
+    return jsonResponse(
+      { package: result.package },
+      result.created ? 201 : 200
+    );
+  }
+
+  private async getCurrentPackageEncryptionKey(): Promise<Response> {
+    const key = await this.ctx.storage.transaction(
+      async (transaction) => {
+        const currentId = await transaction.get<string>(CURRENT_PACKAGE_KEY);
+
+        if (currentId) {
+          const existing = await transaction.get<PackageEncryptionKeyRecord>(
+            packageEncryptionKey(currentId)
+          );
+
+          if (existing) {
+            return existing;
+          }
+        }
+
+        const created: PackageEncryptionKeyRecord = {
+          key_id: crypto.randomUUID(),
+          algorithm: "AES-256-GCM",
+          key_material: randomToken(),
+          created_at_utc: new Date().toISOString()
+        };
+        await transaction.put(CURRENT_PACKAGE_KEY, created.key_id);
+        await transaction.put(packageEncryptionKey(created.key_id), created);
+        return created;
+      }
+    );
+    return jsonResponse({ key });
+  }
+
+  private async getPackageEncryptionKey(encodedKeyId: string): Promise<Response> {
+    let keyId: string;
+
+    try {
+      keyId = decodeURIComponent(encodedKeyId);
+    } catch {
+      return errorResponse(400, "invalid_encryption_key", "Key ID is invalid.");
+    }
+
+    if (!normalizeName(keyId, MAX_KEY_ID_LENGTH)) {
+      return errorResponse(400, "invalid_encryption_key", "Key ID is invalid.");
+    }
+
+    const key = await this.ctx.storage.get<PackageEncryptionKeyRecord>(
+      packageEncryptionKey(keyId)
+    );
+
+    return key
+      ? jsonResponse({ key })
+      : errorResponse(404, "encryption_key_not_found", "Package key was not found.");
+  }
+
+  private async listPackages(projectUuid: string): Promise<Response> {
+    const records = await this.ctx.storage.list<PackageArtifactRecord>({
+      prefix: packagePrefix(projectUuid)
+    });
+    const packages = Array.from(records.values()).sort(
+      (left, right) => right.project_version - left.project_version
+    );
+    return jsonResponse({ packages });
   }
 
   private async acquireLock(
@@ -874,6 +1184,27 @@ function lockKey(projectUuid: string): string {
 
 function fencingKey(projectUuid: string): string {
   return `fencing:${projectUuid}`;
+}
+
+function packagePrefix(projectUuid: string): string {
+  return `package:${projectUuid}:`;
+}
+
+function packageKey(projectUuid: string, projectVersion: number): string {
+  return `${packagePrefix(projectUuid)}${projectVersion}`;
+}
+
+function packageEncryptionKey(keyId: string): string {
+  return `package-encryption-key:${keyId}`;
+}
+
+function parseProjectUuid(encodedValue: string): string | null {
+  try {
+    const value = decodeURIComponent(encodedValue);
+    return PROJECT_UUID_PATTERN.test(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function isExpired(lock: LockRecord, now: Date): boolean {

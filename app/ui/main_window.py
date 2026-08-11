@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -41,6 +41,7 @@ from app.coordination.models import GroupInvitation, LockLease, PairedDevice
 from app.coordination.cloudflare_provisioning import CreatedGroup
 from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
 from app.coordination.status_controller import LockStatusController
+from app.package_transport.controller import PackageHandoffController
 from app.games.registry import GameRegistry
 from app.services.export_service import ExportService
 from app.services.restore_service import RestoreService
@@ -122,6 +123,23 @@ class MainWindow(QMainWindow):
         self._pending_coordination_profile_name = ""
         self._pending_coordination_device_name = ""
         self._leaving_group = False
+        self.package_handoff_controller = PackageHandoffController(self)
+        self.package_handoff_controller.publish_completed.connect(
+            self._group_handoff_published
+        )
+        self.package_handoff_controller.download_completed.connect(
+            self._group_package_downloaded
+        )
+        self.package_handoff_controller.legal_agreement_required.connect(
+            self._open_workshop_agreement
+        )
+        self.package_handoff_controller.failed.connect(
+            self._group_handoff_failed
+        )
+        self._package_handoff_progress: QProgressDialog | None = None
+        self._pending_handoff_project: Project | None = None
+        self._pending_handoff_version: ProjectVersion | None = None
+        self._pending_receive_project: Project | None = None
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -1660,6 +1678,139 @@ class MainWindow(QMainWindow):
             message,
         )
 
+    def receive_or_import_project(self, project: Project) -> None:
+        if not self.settings.coordination_enabled:
+            self.import_package()
+            return
+
+        if self.package_handoff_controller.running:
+            QMessageBox.information(
+                self,
+                "Package Transfer In Progress",
+                "Wait for the current package transfer to finish.",
+            )
+            return
+
+        try:
+            provider = self._require_coordination_manager().provider
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
+
+        self._pending_receive_project = project
+        self._show_package_handoff_progress(
+            "Receiving Package",
+            f"Downloading the latest version of {project.name} from Steam…",
+        )
+
+        if not self.package_handoff_controller.download_latest(
+            project.uuid,
+            provider,
+        ):
+            self._close_package_handoff_progress()
+            self._pending_receive_project = None
+
+    def handoff_or_export_project(self, project: Project) -> None:
+        if not self.settings.coordination_enabled:
+            self.export_project(project)
+            return
+
+        self.handoff_project(project)
+
+    def handoff_project(self, project: Project) -> None:
+        if self.package_handoff_controller.running:
+            QMessageBox.information(
+                self,
+                "Package Transfer In Progress",
+                "Wait for the current package transfer to finish.",
+            )
+            return
+
+        installed_game = self._get_installed_game_for_project(project)
+        player_name = self._get_player_display_name()
+
+        if player_name is None:
+            return
+
+        journal_title = None
+        journal_body = None
+        add_journal = QMessageBox.question(
+            self,
+            "Add to World Journal?",
+            (
+                "Would you like to record what happened during this session "
+                "before handing the world off?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+
+        if add_journal == QMessageBox.StandardButton.Yes:
+            journal_dialog = JournalEntryDialog(project.name, self)
+
+            if journal_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            journal_title = journal_dialog.entry_title
+            journal_body = journal_dialog.entry_body
+
+        try:
+            manager = self._require_coordination_manager()
+
+            if not manager.has_active_lease(project.uuid):
+                self._acquire_hosting_lease(project.uuid, player_name)
+
+            lease = manager.active_leases[project.uuid]
+            version = HostingService.host_project(
+                project_id=project.id,
+                game_id=installed_game.game_id,
+                hosted_by=player_name,
+                notes="Handed off to the Save Shift group through Steam",
+                journal_title=journal_title,
+                journal_body=journal_body,
+                source_device_name=(
+                    self.settings.coordination_device_name or None
+                ),
+            )
+
+            if not version.package_path:
+                raise RuntimeError(
+                    "Save Shift created the version without a package path."
+                )
+
+            package_path = Path(version.package_path)
+
+            if not package_path.is_file():
+                raise FileNotFoundError(
+                    f"The generated package could not be found: {package_path}"
+                )
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Hand Off Failed",
+                f"Save Shift could not prepare the handoff.\n\n{error}",
+            )
+            return
+
+        self._pending_handoff_project = project
+        self._pending_handoff_version = version
+        self._show_package_handoff_progress(
+            "Handing Off Project",
+            f"Encrypting and uploading {project.name} through Steam…",
+        )
+
+        if not self.package_handoff_controller.publish(
+            package_path,
+            lease,
+            manager.provider,
+        ):
+            self._close_package_handoff_progress()
+            self._pending_handoff_project = None
+            self._pending_handoff_version = None
+
     def restore_version(
             self,
             project: Project,
@@ -1729,14 +1880,169 @@ class MainWindow(QMainWindow):
             installed_game=installed_game,
             latest_version=latest_version,
             on_host=self.host_project,
-            on_import=self.import_package,
-            on_export=self.export_project,
+            on_import=(
+                lambda selected_project=project:
+                self.receive_or_import_project(selected_project)
+            ),
+            on_export=self.handoff_or_export_project,
             on_history=self.show_history,
             latest_journal=latest_journal,
             on_journal=self.show_journal,
         )
         self._apply_project_lock_status(project.uuid, card)
+
+        if self.settings.coordination_enabled:
+            card.import_button.setText("Receive")
+            card.export_button.setText("Hand Off")
+
         return card
+
+    def _group_handoff_published(self, _package: object) -> None:
+        project = self._pending_handoff_project
+        version = self._pending_handoff_version
+        self._pending_handoff_project = None
+        self._pending_handoff_version = None
+        self._close_package_handoff_progress()
+
+        if project is None or version is None:
+            return
+
+        release_error = self._release_coordination_lease(
+            project.uuid,
+            report_error=False,
+        )
+        QMessageBox.information(
+            self,
+            "Project Handed Off",
+            (
+                f"{project.name} was encrypted and shared with the group.\n\n"
+                f"Version: {version.version_number}"
+                + (
+                    "\n\nWarning: Save Shift could not release the project "
+                    f"lock. It will expire automatically.\n\n{release_error}"
+                    if release_error is not None
+                    else ""
+                )
+            ),
+        )
+        self.load_installed_games()
+        self.load_projects()
+
+    def _group_package_downloaded(self, result: object) -> None:
+        project = self._pending_receive_project
+        self._pending_receive_project = None
+        self._close_package_handoff_progress()
+
+        if project is None:
+            return
+
+        if result is None:
+            QMessageBox.information(
+                self,
+                "No Shared Version",
+                f"No package has been shared for {project.name} yet.",
+            )
+            return
+
+        _catalog_package, package_path = result
+        package_path = Path(package_path)
+
+        try:
+            analysis = ImportService.analyze_import(package_path)
+        except Exception as error:
+            package_path.unlink(missing_ok=True)
+            QMessageBox.warning(self, "Import Not Allowed", str(error))
+            return
+
+        conflict_dialog = ImportConflictDialog(analysis, self)
+
+        if conflict_dialog.exec() != QDialog.DialogCode.Accepted:
+            package_path.unlink(missing_ok=True)
+            return
+
+        player_name = self._get_player_display_name()
+
+        if player_name is None:
+            package_path.unlink(missing_ok=True)
+            return
+
+        try:
+            with self._temporary_coordination_lease(
+                analysis.package_info.project_uuid,
+                player_name,
+            ):
+                version = ImportService.import_package(
+                    package_path=package_path,
+                    imported_by=player_name,
+                    allow_replace=analysis.requires_replace_confirmation,
+                )
+        except CoordinationError as error:
+            package_path.unlink(missing_ok=True)
+            self._show_coordination_error(error)
+            return
+        except Exception as error:
+            package_path.unlink(missing_ok=True)
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Save Shift could not import the shared package.\n\n{error}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Shared Package Received",
+            (
+                f"{project.name} was received successfully.\n\n"
+                f"Version: {version.version_number}\n"
+                f"Backup created:\n{version.backup_path}"
+            ),
+        )
+        self.load_installed_games()
+        self.load_projects()
+
+    def _group_handoff_failed(self, message: str) -> None:
+        operation = (
+            "Hand Off"
+            if self._pending_handoff_project is not None
+            else "Receive"
+        )
+        self._pending_handoff_project = None
+        self._pending_handoff_version = None
+        self._pending_receive_project = None
+        self._close_package_handoff_progress()
+        QMessageBox.critical(
+            self,
+            f"{operation} Failed",
+            (
+                f"Save Shift could not complete the group package transfer.\n\n"
+                f"{message}"
+            ),
+        )
+
+    @staticmethod
+    def _open_workshop_agreement(url: str) -> None:
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _show_package_handoff_progress(
+        self,
+        title: str,
+        message: str,
+    ) -> None:
+        self._close_package_handoff_progress()
+        progress = QProgressDialog(message, "", 0, 0, self)
+        progress.setWindowTitle(title)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        self._package_handoff_progress = progress
+
+    def _close_package_handoff_progress(self) -> None:
+        if self._package_handoff_progress is not None:
+            self._package_handoff_progress.close()
+            self._package_handoff_progress.deleteLater()
+            self._package_handoff_progress = None
 
     def _clear_installed_game_cards(self) -> None:
         while self.installed_game_layout.count():

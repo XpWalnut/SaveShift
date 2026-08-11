@@ -20,3 +20,11 @@ class LockConflictError(CoordinationError):
 
 class LockOwnershipError(CoordinationError):
     """The current device does not own the requested lease."""
+
+
+class PackageCatalogConflictError(CoordinationError):
+    """A project version already names a different remote artifact."""
+
+
+class PackageKeyRotatedError(CoordinationError):
+    """The group encryption key changed during package publication."""

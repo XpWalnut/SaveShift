@@ -6,6 +6,28 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- A provider-neutral package transport contract with verified publication,
+  atomic downloads, provider matching, integrity failure cleanup, and an
+  end-to-end transport/import regression test.
+- A provider-neutral package catalog in the coordination API, including
+  lease-authorized publication, idempotent registration, collision detection,
+  and newest-version discovery.
+- Streaming AES-256-GCM package encryption with authenticated group key epochs,
+  future-key rotation after membership removal, historical-key recovery for
+  current members, and one safe retry when rotation races publication.
+- Package handoff orchestration that composes encrypted blob storage with the
+  metadata catalog and removes orphaned uploads when registration fails.
+- Save Shift Steam AppID 5096900 integration through the official Steamworks
+  flat API, with manual callback dispatch, descriptive initialization errors,
+  and release packaging of the Windows redistributable.
+- An unlisted Steam UGC blob adapter with safe package metadata, Workshop
+  agreement notification, cached-download retrieval, failed-upload cleanup,
+  and deletion support.
+- Coordinated **Receive** and **Hand Off** project-card workflows that perform
+  Steam transfers off the UI thread, reuse import conflict handling and backups,
+  and release the project lease only after a successful cataloged upload.
+- Steam download recovery that tolerates transient callback failures while the
+  Steam client continues installing a Workshop item in the background.
 - Import previews that distinguish verified continuations, unverified or
   divergent histories, duplicates, older packages, and version collisions.
 - Explicit backup-and-replace acknowledgement for imports whose ancestry
