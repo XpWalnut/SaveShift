@@ -38,6 +38,9 @@ interface PackageRecord {
   package_size_bytes: number;
   published_by_device_id: string;
   published_at_utc: string;
+  project_name?: string;
+  game_id?: string;
+  created_by?: string;
 }
 
 async function pair(deviceName: string): Promise<Device> {
@@ -130,7 +133,7 @@ describe("provider-neutral lock contract", () => {
     expect(await response.json()).toEqual({
       status: "ok",
       api_version: "v1",
-      provider_version: "1.3.0"
+      provider_version: "1.4.0"
     });
   });
 
@@ -337,7 +340,10 @@ describe("group package catalog", () => {
       project_version: 4,
       package_checksum: checksum,
       package_size_bytes: 4096,
-      encryption_key_id: keyId
+      encryption_key_id: keyId,
+      project_name: "Shared World",
+      game_id: "abiotic_factor",
+      created_by: "Alice"
     };
   }
 
@@ -461,7 +467,10 @@ describe("group package catalog", () => {
       project_version: 4,
       package_checksum: checksum,
       package_size_bytes: 4096,
-      published_by_device_id: owner.device_id
+      published_by_device_id: owner.device_id,
+      project_name: "Shared World",
+      game_id: "abiotic_factor",
+      created_by: "Alice"
     });
 
     const replayResponse = await packageRequest(
@@ -483,6 +492,44 @@ describe("group package catalog", () => {
     expect(
       (await listResponse.json<{ packages: PackageRecord[] }>()).packages
     ).toEqual([created]);
+  });
+
+  it("lists the newest shared package for the group inbox", async () => {
+    const owner = await pair("Owner PC");
+    const member = await pair("Member PC");
+    const leaseId = await acquire(owner);
+    const key = await currentKey(owner.device_token);
+    await packageRequest(
+      projectUuid,
+      owner.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+    await packageRequest(
+      projectUuid,
+      owner.device_token,
+      {
+        ...packageBody(leaseId, key.key_id),
+        project_version: 5,
+        remote_id: "newer-item",
+        package_checksum: "b".repeat(64)
+      }
+    );
+
+    const response = await SELF.fetch(`${API}/packages/latest`, {
+      headers: { Authorization: `Bearer ${member.device_token}` }
+    });
+
+    expect(response.status).toBe(200);
+    const packages = (
+      await response.json<{ packages: PackageRecord[] }>()
+    ).packages;
+    expect(packages).toHaveLength(1);
+    expect(packages[0]).toMatchObject({
+      project_uuid: projectUuid,
+      project_version: 5,
+      project_name: "Shared World",
+      game_id: "abiotic_factor"
+    });
   });
 
   it("rejects different content for an existing project version", async () => {

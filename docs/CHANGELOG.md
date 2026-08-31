@@ -6,6 +6,11 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- A Shared Projects group inbox that discovers the newest Steam handoff for
+  projects not yet tracked on a computer and imports them through the existing
+  conflict, backup, and game-discovery workflow.
+- Friendly project name, game, and creator metadata in provider-neutral package
+  catalog records, with backward-compatible handling of older records.
 - A provider-neutral package transport contract with verified publication,
   atomic downloads, provider matching, integrity failure cleanup, and an
   end-to-end transport/import regression test.
@@ -28,6 +33,8 @@ All notable changes to Save Shift are documented here. The project is currently 
   and release the project lease only after a successful cataloged upload.
 - Steam download recovery that tolerates transient callback failures while the
   Steam client continues installing a Workshop item in the background.
+- Added a one-command SteamPipe upload script with release-build validation,
+  generated credential-free configuration, and a non-networked dry-run mode.
 - Import previews that distinguish verified continuations, unverified or
   divergent histories, duplicates, older packages, and version collisions.
 - Explicit backup-and-replace acknowledgement for imports whose ancestry

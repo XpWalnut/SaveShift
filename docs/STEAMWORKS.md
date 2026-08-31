@@ -35,6 +35,36 @@ is absent. The expected redistributable is:
 redistributable_bin\win64\steam_api64.dll
 ```
 
+## Uploading a private Steam build
+
+The repository provides one upload command for AppID `5096900` and Windows
+depot `5096901`:
+
+```powershell
+.\tools\upload_steam_build.ps1 -SteamUsername "YOUR_STEAM_USERNAME"
+```
+
+The script runs the normal Save Shift release build, verifies the unpacked
+`dist\SaveShift` application, creates temporary SteamPipe configuration under
+the ignored `build\steampipe` directory, and starts the SDK's SteamCMD uploader.
+SteamCMD may prompt for the account password and Steam Guard code; neither is
+written to the generated configuration.
+
+After the first upload, refresh **Steamworks > SteamPipe > Builds**, create a
+password-protected branch named `cross-machine-test`, and set the uploaded build
+live on that branch. Upload the unpacked application directory through this
+workflow; the Inno Setup installer is only for non-Steam distribution.
+
+For a configuration-only check that does not contact Steam, reuse an existing
+release build and add both switches:
+
+```powershell
+.\tools\upload_steam_build.ps1 `
+    -SteamUsername "YOUR_STEAM_USERNAME" `
+    -SkipBuild `
+    -DryRun
+```
+
 For a source-tree launch, either start Save Shift through Steam or create a local
 ignored `steam_appid.txt` containing only:
 
@@ -74,3 +104,27 @@ retrying the Workshop manifest in the background. Save Shift therefore monitors
 the item's state until it is installed and no longer pending or updating, rather
 than treating an early connection or timeout result as immediate transfer
 failure.
+
+## First transfer to another computer
+
+After one group member uses **Hand Off**, a newly joined computer does not need
+an emailed or Discord-shared `.sspkg`. Choose **Shared Projects** in Save Shift,
+select the project in the Group Inbox, and choose **Receive Project**. Save Shift
+downloads the encrypted Steam item, previews the import, discovers the correct
+game save target, and creates the local project after confirmation.
+
+Existing development groups must redeploy the coordination Worker once after
+pulling this change so their provider exposes the group inbox endpoint:
+
+```powershell
+cd coordination\cloudflare
+pnpm exec wrangler deploy --name "YOUR_EXISTING_WORKER_SCRIPT_NAME"
+```
+
+Use the existing script name from the group's `workers.dev` URL (for example,
+`saveshift-coordination-4fb73f`). Keeping the same name upgrades that Worker and
+preserves its Durable Object group data; a different name would create a
+separate provider.
+
+New groups created by a release build receive the updated bundled Worker
+automatically.

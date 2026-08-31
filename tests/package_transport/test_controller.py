@@ -27,6 +27,7 @@ def test_controller_publishes_away_from_caller(
     controller = PackageHandoffController()
     provider = object()
     package_path = tmp_path / "package.sspkg"
+    lease = _lease()
     expected = object()
     calls: list[tuple[Path, LockLease, object]] = []
 
@@ -37,10 +38,10 @@ def test_controller_publishes_away_from_caller(
     monkeypatch.setattr(GroupHandoffService, "publish_package", publish)
 
     with qtbot.waitSignal(controller.publish_completed) as signal:
-        assert controller.publish(package_path, _lease(), provider) is True
+        assert controller.publish(package_path, lease, provider) is True
 
     assert signal.args == [expected]
-    assert calls == [(package_path, _lease(), provider)]
+    assert calls == [(package_path, lease, provider)]
     assert controller.running is False
 
 
@@ -62,9 +63,37 @@ def test_controller_downloads_and_reports_failure(
     assert controller.running is False
 
 
+def test_controller_lists_shared_projects_away_from_caller(
+    qtbot,
+    monkeypatch,
+) -> None:
+    controller = PackageHandoffController()
+    provider = object()
+    expected = [object()]
+    calls: list[object] = []
+
+    def list_latest(received_provider):
+        calls.append(received_provider)
+        return expected
+
+    monkeypatch.setattr(
+        GroupHandoffService,
+        "list_latest_packages",
+        list_latest,
+    )
+
+    with qtbot.waitSignal(controller.catalog_completed) as signal:
+        assert controller.list_latest_packages(provider) is True
+
+    assert signal.args == [expected]
+    assert calls == [provider]
+    assert controller.running is False
+
+
 def test_controller_rejects_second_operation_while_running() -> None:
     controller = PackageHandoffController()
     controller._running = True
 
     assert controller.download_latest("project-123", object()) is False
     assert controller.publish(Path("package.sspkg"), _lease(), object()) is False
+    assert controller.list_latest_packages(object()) is False

@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from app.coordination.models import CatalogPackage, LockLease
+from app.coordination.models import (
+    CatalogPackage,
+    LockLease,
+    PackageCatalogMetadata,
+)
 from app.coordination.errors import PackageKeyRotatedError
 from app.package_transport.errors import PackageTransferIntegrityError
 from app.package_transport.handoff_service import PackageHandoffService
@@ -39,6 +43,7 @@ class MemoryCatalog:
         self,
         artifact: PackageArtifact,
         lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
     ) -> CatalogPackage:
         self.register_calls += 1
         if self.register_error is not None:
@@ -50,6 +55,7 @@ class MemoryCatalog:
                 artifact=artifact,
                 published_by_device_id=lease.owner_device_id,
                 published_at_utc=datetime(2026, 8, 6, 12, tzinfo=UTC),
+                metadata=metadata,
             )
         )
         self.packages.append(package)
@@ -76,6 +82,8 @@ def test_publish_registers_transport_artifact_in_group_catalog(
     assert published == catalog.packages[0]
     assert published.artifact.package_checksum == calculate_sha256(package_path)
     assert published.artifact.remote_id in transport.payloads
+    assert published.metadata is not None
+    assert published.metadata.project_name == "Shared World"
 
 
 def test_publish_deletes_remote_artifact_when_catalog_registration_fails(
@@ -107,11 +115,12 @@ def test_publish_retries_once_when_group_key_rotates(
     def rotate_once(
         artifact: PackageArtifact,
         lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
     ) -> CatalogPackage:
         if catalog.register_calls == 0:
             catalog.register_calls += 1
             raise PackageKeyRotatedError("key rotated")
-        return original_register(artifact, lease)
+        return original_register(artifact, lease, metadata)
 
     catalog.register_package = rotate_once
 

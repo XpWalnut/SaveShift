@@ -54,6 +54,9 @@ interface PackageArtifactRecord {
   encryption_key_id: string;
   published_by_device_id: string;
   published_at_utc: string;
+  project_name?: string;
+  game_id?: string;
+  created_by?: string;
 }
 
 interface PackageEncryptionKeyRecord {
@@ -78,6 +81,8 @@ const MAX_OWNER_NAME_LENGTH = 100;
 const MAX_TRANSPORT_NAME_LENGTH = 50;
 const MAX_REMOTE_ID_LENGTH = 512;
 const MAX_KEY_ID_LENGTH = 100;
+const MAX_PROJECT_NAME_LENGTH = 200;
+const MAX_GAME_ID_LENGTH = 100;
 const DEFAULT_INVITATION_SECONDS = 24 * 60 * 60;
 const MIN_INVITATION_SECONDS = 5 * 60;
 const MAX_INVITATION_SECONDS = 7 * 24 * 60 * 60;
@@ -111,7 +116,7 @@ export class CoordinationGroup extends DurableObject<Env> {
       return jsonResponse({
         status: "ok",
         api_version: "v1",
-        provider_version: "1.3.0"
+        provider_version: "1.4.0"
       });
     }
 
@@ -186,6 +191,13 @@ export class CoordinationGroup extends DurableObject<Env> {
 
     if (request.method === "GET" && packageKeyMatch) {
       return this.getPackageEncryptionKey(packageKeyMatch[1]);
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === `${API_PREFIX}/packages/latest`
+    ) {
+      return this.listLatestPackages();
     }
 
     const packageMatch = url.pathname.match(
@@ -736,6 +748,12 @@ export class CoordinationGroup extends DurableObject<Env> {
       body.encryption_key_id,
       MAX_KEY_ID_LENGTH
     );
+    const projectName = normalizeName(
+      body.project_name,
+      MAX_PROJECT_NAME_LENGTH
+    );
+    const gameId = normalizeName(body.game_id, MAX_GAME_ID_LENGTH);
+    const createdBy = normalizeName(body.created_by, MAX_OWNER_NAME_LENGTH);
 
     if (typeof leaseId !== "string" || !leaseId) {
       return errorResponse(400, "invalid_lease", "Lease ID is required.");
@@ -800,6 +818,18 @@ export class CoordinationGroup extends DurableObject<Env> {
       );
     }
 
+    const metadataValues = [projectName, gameId, createdBy];
+    if (
+      metadataValues.some((value) => value !== null) &&
+      metadataValues.some((value) => value === null)
+    ) {
+      return errorResponse(
+        400,
+        "invalid_package_metadata",
+        "Package display metadata must include project name, game ID, and creator."
+      );
+    }
+
     const result = await this.ctx.storage.transaction(async (transaction) => {
       const lockStorageKey = lockKey(projectUuid);
       const lock = await transaction.get<LockRecord>(lockStorageKey);
@@ -835,9 +865,22 @@ export class CoordinationGroup extends DurableObject<Env> {
           existing.package_checksum === packageChecksum.toLowerCase() &&
           existing.package_size_bytes === packageSizeBytes &&
           existing.encryption_key_id === encryptionKeyId;
-        return identical
-          ? { package: existing, created: false }
-          : { error: "collision" as const };
+        if (!identical) {
+          return { error: "collision" as const };
+        }
+
+        if (projectName && gameId && createdBy && !existing.project_name) {
+          const enriched = {
+            ...existing,
+            project_name: projectName,
+            game_id: gameId,
+            created_by: createdBy
+          };
+          await transaction.put(storageKey, enriched);
+          return { package: enriched, created: false };
+        }
+
+        return { package: existing, created: false };
       }
 
       const packageRecord: PackageArtifactRecord = {
@@ -852,6 +895,11 @@ export class CoordinationGroup extends DurableObject<Env> {
         published_by_device_id: device.device_id,
         published_at_utc: now.toISOString()
       };
+      if (projectName && gameId && createdBy) {
+        packageRecord.project_name = projectName;
+        packageRecord.game_id = gameId;
+        packageRecord.created_by = createdBy;
+      }
       await transaction.put(storageKey, packageRecord);
       return { package: packageRecord, created: true };
     });
@@ -952,6 +1000,25 @@ export class CoordinationGroup extends DurableObject<Env> {
     });
     const packages = Array.from(records.values()).sort(
       (left, right) => right.project_version - left.project_version
+    );
+    return jsonResponse({ packages });
+  }
+
+  private async listLatestPackages(): Promise<Response> {
+    const records = await this.ctx.storage.list<PackageArtifactRecord>({
+      prefix: "package:"
+    });
+    const latestByProject = new Map<string, PackageArtifactRecord>();
+
+    for (const record of records.values()) {
+      const current = latestByProject.get(record.project_uuid);
+      if (!current || record.project_version > current.project_version) {
+        latestByProject.set(record.project_uuid, record);
+      }
+    }
+
+    const packages = Array.from(latestByProject.values()).sort(
+      (left, right) => right.published_at_utc.localeCompare(left.published_at_utc)
     );
     return jsonResponse({ packages });
   }

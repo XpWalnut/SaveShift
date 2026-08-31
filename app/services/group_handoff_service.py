@@ -87,6 +87,12 @@ class GroupHandoffService:
             GroupHandoffService._close_client(client)
 
     @staticmethod
+    def list_latest_packages(
+        provider: PackageCatalogProvider,
+    ) -> list[CatalogPackage]:
+        return provider.list_latest_packages()
+
+    @staticmethod
     def _transport(
         client: SteamUgcClient,
         provider: PackageKeyProvider,

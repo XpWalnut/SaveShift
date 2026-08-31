@@ -18,6 +18,7 @@ from app.coordination.models import (
     GroupInvitation,
     GroupLeaveResult,
     LockLease,
+    PackageCatalogMetadata,
     PackageEncryptionKey,
     PairedDevice,
     parse_utc_datetime,
@@ -276,6 +277,7 @@ class HttpCoordinationProvider:
         self,
         artifact: PackageArtifact,
         lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
     ) -> CatalogPackage:
         if artifact.project_uuid != lease.project_uuid:
             raise CoordinationConfigurationError(
@@ -297,6 +299,15 @@ class HttpCoordinationProvider:
                 "package_checksum": artifact.package_checksum,
                 "package_size_bytes": artifact.package_size_bytes,
                 "encryption_key_id": artifact.encryption_key_id,
+                **(
+                    {
+                        "project_name": metadata.project_name,
+                        "game_id": metadata.game_id,
+                        "created_by": metadata.created_by,
+                    }
+                    if metadata is not None
+                    else {}
+                ),
             },
         )
         package = data.get("package")
@@ -333,6 +344,30 @@ class HttpCoordinationProvider:
             ) from error
 
         return parsed
+
+    def list_latest_packages(self) -> list[CatalogPackage]:
+        data = self._request_json(
+            method="GET",
+            path=f"{self.API_PREFIX}/packages/latest",
+        )
+        packages = data.get("packages")
+
+        if not isinstance(packages, list):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid package list."
+            )
+
+        try:
+            parsed: list[CatalogPackage] = []
+            for package in packages:
+                if not isinstance(package, dict):
+                    raise ValueError("Invalid package record.")
+                parsed.append(CatalogPackage.from_dict(package))
+            return parsed
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid package data."
+            ) from error
 
     def get_package_encryption_key(
         self,

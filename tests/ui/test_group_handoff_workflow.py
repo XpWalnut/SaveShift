@@ -6,11 +6,16 @@ import pytest
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.coordination.manager import CoordinationManager
-from app.coordination.models import LockLease
+from app.coordination.models import (
+    CatalogPackage,
+    LockLease,
+    PackageCatalogMetadata,
+)
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.packages.package_info import PackageInfo
+from app.package_transport.models import PackageArtifact
 from app.services.hosting_service import HostingService
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
@@ -46,6 +51,7 @@ class FakeHandoffController:
     def __init__(self) -> None:
         self.publish_calls: list[tuple[Path, LockLease, object]] = []
         self.download_calls: list[tuple[str, object]] = []
+        self.list_calls: list[object] = []
 
     def publish(
         self,
@@ -58,6 +64,10 @@ class FakeHandoffController:
 
     def download_latest(self, project_uuid: str, provider: object) -> bool:
         self.download_calls.append((project_uuid, provider))
+        return True
+
+    def list_latest_packages(self, provider: object) -> bool:
+        self.list_calls.append(provider)
         return True
 
 
@@ -116,6 +126,28 @@ def _analysis(project: Project) -> ImportAnalysis:
         project=project,
         local_version=None,
         kind=ImportConflictKind.FAST_FORWARD,
+    )
+
+
+def _catalog_package() -> CatalogPackage:
+    return CatalogPackage(
+        catalog_id="catalog-1",
+        artifact=PackageArtifact(
+            transport_name="steam-ugc",
+            remote_id="workshop-1",
+            project_uuid=PROJECT_UUID,
+            project_version=8,
+            package_checksum="a" * 64,
+            package_size_bytes=4096,
+            encryption_key_id="key-1",
+        ),
+        published_by_device_id="device-1",
+        published_at_utc=datetime.now(UTC),
+        metadata=PackageCatalogMetadata(
+            project_name="Shared World",
+            game_id="abiotic_factor",
+            created_by="Alice",
+        ),
     )
 
 
@@ -259,6 +291,44 @@ def test_receive_downloads_previews_locks_and_imports(
     assert provider.released[0].project_uuid == project.uuid
     assert package_path.exists()
     assert messages[0][0] == "Shared Package Received"
+
+
+def test_group_inbox_discovers_and_receives_unknown_project(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    package = _catalog_package()
+
+    class AcceptedInbox:
+        def __init__(self, packages, parent) -> None:
+            assert packages == [package]
+            assert parent is window
+            self.selected_package = package
+
+        def exec(self) -> int:
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        "app.ui.main_window.ProjectRepository.get_by_uuid",
+        lambda _uuid: None,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.SharedProjectsDialog",
+        AcceptedInbox,
+    )
+
+    window.show_shared_projects()
+
+    controller = window.package_handoff_controller
+    assert controller.list_calls == [provider]
+
+    window._shared_projects_loaded([package])
+
+    assert controller.download_calls == [(PROJECT_UUID, provider)]
+    assert window._pending_receive_project is None
+    assert window._pending_receive_project_name == "Shared World"
 
 
 def test_failed_handoff_keeps_project_lease_for_safe_retry(

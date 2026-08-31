@@ -1,12 +1,17 @@
 from pathlib import Path
 
-from app.coordination.models import CatalogPackage, LockLease
+from app.coordination.models import (
+    CatalogPackage,
+    LockLease,
+    PackageCatalogMetadata,
+)
 from app.coordination.errors import PackageKeyRotatedError
 from app.coordination.provider import PackageCatalogProvider
 from app.core.logging import logger
 from app.package_transport.errors import PackageTransferIntegrityError
 from app.package_transport.provider import PackageTransport
 from app.package_transport.service import PackageTransferService
+from app.packages.package_reader import PackageReader
 
 
 class PackageHandoffService:
@@ -19,11 +24,22 @@ class PackageHandoffService:
         transport: PackageTransport,
         catalog: PackageCatalogProvider,
     ) -> CatalogPackage:
+        package_info = PackageReader.read(package_path)
+        metadata = PackageCatalogMetadata(
+            project_name=package_info.project_name,
+            game_id=package_info.game_id,
+            created_by=package_info.created_by,
+        )
+
         for attempt in range(2):
             artifact = PackageTransferService.publish(package_path, transport)
 
             try:
-                registered = catalog.register_package(artifact, lease)
+                registered = catalog.register_package(
+                    artifact,
+                    lease,
+                    metadata,
+                )
 
                 if registered.artifact != artifact:
                     raise PackageTransferIntegrityError(

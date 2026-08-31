@@ -6,6 +6,7 @@ from app.coordination.models import (
     GroupInvitation,
     GroupLeaveResult,
     LockLease,
+    PackageCatalogMetadata,
     PackageEncryptionKey,
     PairedDevice,
 )
@@ -64,10 +65,14 @@ class PackageCatalogProvider(Protocol):
         self,
         artifact: PackageArtifact,
         lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
     ) -> CatalogPackage:
         ...
 
     def list_packages(self, project_uuid: str) -> list[CatalogPackage]:
+        ...
+
+    def list_latest_packages(self) -> list[CatalogPackage]:
         ...
 
 

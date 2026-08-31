@@ -10,6 +10,7 @@ from app.services.group_handoff_service import GroupHandoffService
 class PackageHandoffSignals(QObject):
     publish_completed = Signal(object)
     download_completed = Signal(object)
+    catalog_completed = Signal(object)
     legal_agreement_required = Signal(str)
     failed = Signal(str)
 
@@ -66,9 +67,28 @@ class DownloadPackageTask(QRunnable):
             self.signals.failed.emit(str(error))
 
 
+class ListPackagesTask(QRunnable):
+    def __init__(
+        self,
+        provider: PackageCatalogProvider,
+        signals: PackageHandoffSignals,
+    ) -> None:
+        super().__init__()
+        self.provider = provider
+        self.signals = signals
+
+    def run(self) -> None:
+        try:
+            result = GroupHandoffService.list_latest_packages(self.provider)
+            self.signals.catalog_completed.emit(result)
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+
+
 class PackageHandoffController(QObject):
     publish_completed = Signal(object)
     download_completed = Signal(object)
+    catalog_completed = Signal(object)
     legal_agreement_required = Signal(str)
     failed = Signal(str)
 
@@ -120,6 +140,22 @@ class PackageHandoffController(QObject):
         self._thread_pool.start(task)
         return True
 
+    def list_latest_packages(
+        self,
+        provider: PackageCatalogProvider,
+    ) -> bool:
+        if self._running:
+            return False
+
+        self._running = True
+        signals = PackageHandoffSignals(self)
+        task = ListPackagesTask(provider, signals)
+        self._task = task
+        signals.catalog_completed.connect(self._catalog_finished)
+        signals.failed.connect(self._failed)
+        self._thread_pool.start(task)
+        return True
+
     def _publish_finished(self, result: object) -> None:
         self._finish()
         self.publish_completed.emit(result)
@@ -127,6 +163,10 @@ class PackageHandoffController(QObject):
     def _download_finished(self, result: object) -> None:
         self._finish()
         self.download_completed.emit(result)
+
+    def _catalog_finished(self, result: object) -> None:
+        self._finish()
+        self.catalog_completed.emit(result)
 
     def _failed(self, message: str) -> None:
         self._finish()

@@ -4,6 +4,7 @@ from pathlib import Path
 from app.coordination.models import (
     CatalogPackage,
     LockLease,
+    PackageCatalogMetadata,
     PackageEncryptionKey,
 )
 from app.core.config import AppConfig
@@ -36,6 +37,7 @@ class MemoryGroupProvider:
         self,
         artifact: PackageArtifact,
         lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
     ) -> CatalogPackage:
         assert lease.project_uuid == artifact.project_uuid
         package = CatalogPackage(
@@ -43,6 +45,7 @@ class MemoryGroupProvider:
             artifact=artifact,
             published_by_device_id=lease.owner_device_id,
             published_at_utc=datetime.now(UTC),
+            metadata=metadata,
         )
         self.packages.append(package)
         return package

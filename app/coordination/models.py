@@ -186,11 +186,19 @@ class LockLease:
 
 
 @dataclass(frozen=True)
+class PackageCatalogMetadata:
+    project_name: str
+    game_id: str
+    created_by: str
+
+
+@dataclass(frozen=True)
 class CatalogPackage:
     catalog_id: str
     artifact: PackageArtifact
     published_by_device_id: str
     published_at_utc: datetime
+    metadata: PackageCatalogMetadata | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "CatalogPackage":
@@ -233,6 +241,25 @@ class CatalogPackage:
         ):
             raise ValueError("Package response has an invalid package_checksum.")
 
+        metadata_values = (
+            data.get("project_name"),
+            data.get("game_id"),
+            data.get("created_by"),
+        )
+        metadata: PackageCatalogMetadata | None = None
+
+        if any(value is not None for value in metadata_values):
+            if not all(
+                isinstance(value, str) and bool(value.strip())
+                for value in metadata_values
+            ):
+                raise ValueError("Package response has invalid display metadata.")
+            metadata = PackageCatalogMetadata(
+                project_name=str(metadata_values[0]).strip(),
+                game_id=str(metadata_values[1]).strip(),
+                created_by=str(metadata_values[2]).strip(),
+            )
+
         return cls(
             catalog_id=str(data["catalog_id"]),
             artifact=PackageArtifact(
@@ -246,6 +273,7 @@ class CatalogPackage:
             ),
             published_by_device_id=str(data["published_by_device_id"]),
             published_at_utc=parse_utc_datetime(str(data["published_at_utc"])),
+            metadata=metadata,
         )
 
 

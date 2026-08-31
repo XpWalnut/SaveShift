@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.database.repositories.project_repository import ProjectRepository
 from app.core.logging import logger
 from app.core.settings import AppSettings, SettingsService
 from app.coordination.errors import (
@@ -37,7 +38,12 @@ from app.coordination.errors import (
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.manager import CoordinationManager
-from app.coordination.models import GroupInvitation, LockLease, PairedDevice
+from app.coordination.models import (
+    CatalogPackage,
+    GroupInvitation,
+    LockLease,
+    PairedDevice,
+)
 from app.coordination.cloudflare_provisioning import CreatedGroup
 from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
 from app.coordination.status_controller import LockStatusController
@@ -58,6 +64,7 @@ from app.ui.dialogs.history_dialog import HistoryDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
 from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
+from app.ui.dialogs.shared_projects_dialog import SharedProjectsDialog
 from app.ui.dialogs.update_dialog import UpdateAvailableDialog
 from app.updates.controller import UpdateController
 from app.updates.models import UpdateRelease
@@ -130,6 +137,9 @@ class MainWindow(QMainWindow):
         self.package_handoff_controller.download_completed.connect(
             self._group_package_downloaded
         )
+        self.package_handoff_controller.catalog_completed.connect(
+            self._shared_projects_loaded
+        )
         self.package_handoff_controller.legal_agreement_required.connect(
             self._open_workshop_agreement
         )
@@ -140,6 +150,8 @@ class MainWindow(QMainWindow):
         self._pending_handoff_project: Project | None = None
         self._pending_handoff_version: ProjectVersion | None = None
         self._pending_receive_project: Project | None = None
+        self._pending_receive_project_name = ""
+        self._listing_shared_projects = False
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -242,6 +254,9 @@ class MainWindow(QMainWindow):
         self.remove_button = QPushButton("Remove Game")
         self.remove_button.clicked.connect(self.remove_selected_game)
 
+        self.shared_projects_button = QPushButton("Shared Projects")
+        self.shared_projects_button.clicked.connect(self.show_shared_projects)
+
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self.show_settings)
 
@@ -250,6 +265,7 @@ class MainWindow(QMainWindow):
             self.add_button,
             self.detect_games_button,
             self.remove_button,
+            self.shared_projects_button,
             self.settings_button,
         ):
             button.setStyleSheet(styles.secondary_button_style())
@@ -261,6 +277,7 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.add_button)
         left_panel.addWidget(self.detect_games_button)
         left_panel.addWidget(self.remove_button)
+        left_panel.addWidget(self.shared_projects_button)
         left_panel.addWidget(self.settings_button)
         left_panel.addStretch()
 
@@ -1067,6 +1084,10 @@ class MainWindow(QMainWindow):
 
 
     def load_projects(self) -> None:
+        self.shared_projects_button.setEnabled(
+            self.settings.coordination_enabled
+            and self.coordination_manager is not None
+        )
         self._clear_project_cards()
 
         selected_game = self._get_selected_installed_game()
@@ -1683,6 +1704,14 @@ class MainWindow(QMainWindow):
             self.import_package()
             return
 
+        self._begin_group_receive(project.uuid, project.name, project)
+
+    def _begin_group_receive(
+        self,
+        project_uuid: str,
+        project_name: str,
+        project: Project | None = None,
+    ) -> None:
         if self.package_handoff_controller.running:
             QMessageBox.information(
                 self,
@@ -1698,17 +1727,93 @@ class MainWindow(QMainWindow):
             return
 
         self._pending_receive_project = project
+        self._pending_receive_project_name = project_name
         self._show_package_handoff_progress(
             "Receiving Package",
-            f"Downloading the latest version of {project.name} from Steam…",
+            f"Downloading the latest version of {project_name} from Steam…",
         )
 
         if not self.package_handoff_controller.download_latest(
-            project.uuid,
+            project_uuid,
             provider,
         ):
             self._close_package_handoff_progress()
             self._pending_receive_project = None
+            self._pending_receive_project_name = ""
+
+    def show_shared_projects(self) -> None:
+        if not self.settings.coordination_enabled:
+            QMessageBox.information(
+                self,
+                "Group Not Connected",
+                "Join or create a group in Settings first.",
+            )
+            return
+
+        if self.package_handoff_controller.running:
+            QMessageBox.information(
+                self,
+                "Package Transfer In Progress",
+                "Wait for the current package transfer to finish.",
+            )
+            return
+
+        try:
+            provider = self._require_coordination_manager().provider
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
+
+        self._listing_shared_projects = True
+        self._show_package_handoff_progress(
+            "Shared Projects",
+            "Checking your group for shared projects…",
+        )
+        if not self.package_handoff_controller.list_latest_packages(provider):
+            self._listing_shared_projects = False
+            self._close_package_handoff_progress()
+
+    def _shared_projects_loaded(self, result: object) -> None:
+        self._listing_shared_projects = False
+        self._close_package_handoff_progress()
+        packages = (
+            [
+                package
+                for package in result
+                if isinstance(package, CatalogPackage)
+                and ProjectRepository.get_by_uuid(
+                    package.artifact.project_uuid
+                ) is None
+            ]
+            if isinstance(result, list)
+            else []
+        )
+
+        if not packages:
+            QMessageBox.information(
+                self,
+                "No New Shared Projects",
+                "No group project is waiting to be added on this computer.",
+            )
+            return
+
+        dialog = SharedProjectsDialog(packages, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = dialog.selected_package
+        if selected is None:
+            return
+
+        project_name = (
+            selected.metadata.project_name
+            if selected.metadata is not None
+            else "Shared project"
+        )
+        self._begin_group_receive(
+            selected.artifact.project_uuid,
+            project_name,
+        )
 
     def handoff_or_export_project(self, project: Project) -> None:
         if not self.settings.coordination_enabled:
@@ -1929,18 +2034,16 @@ class MainWindow(QMainWindow):
         self.load_projects()
 
     def _group_package_downloaded(self, result: object) -> None:
-        project = self._pending_receive_project
+        project_name = self._pending_receive_project_name
         self._pending_receive_project = None
+        self._pending_receive_project_name = ""
         self._close_package_handoff_progress()
-
-        if project is None:
-            return
 
         if result is None:
             QMessageBox.information(
                 self,
                 "No Shared Version",
-                f"No package has been shared for {project.name} yet.",
+                f"No package has been shared for {project_name} yet.",
             )
             return
 
@@ -1993,7 +2096,7 @@ class MainWindow(QMainWindow):
             self,
             "Shared Package Received",
             (
-                f"{project.name} was received successfully.\n\n"
+                f"{analysis.package_info.project_name} was received successfully.\n\n"
                 f"Version: {version.version_number}\n"
                 f"Backup created:\n{version.backup_path}"
             ),
@@ -2002,14 +2105,19 @@ class MainWindow(QMainWindow):
         self.load_projects()
 
     def _group_handoff_failed(self, message: str) -> None:
-        operation = (
-            "Hand Off"
-            if self._pending_handoff_project is not None
-            else "Receive"
-        )
+        if self._listing_shared_projects:
+            operation = "Shared Projects"
+        else:
+            operation = (
+                "Hand Off"
+                if self._pending_handoff_project is not None
+                else "Receive"
+            )
+        self._listing_shared_projects = False
         self._pending_handoff_project = None
         self._pending_handoff_version = None
         self._pending_receive_project = None
+        self._pending_receive_project_name = ""
         self._close_package_handoff_progress()
         QMessageBox.critical(
             self,

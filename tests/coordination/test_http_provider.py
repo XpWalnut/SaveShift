@@ -14,7 +14,7 @@ from app.coordination.errors import (
     PackageKeyRotatedError,
 )
 from app.coordination.http_provider import HttpCoordinationProvider
-from app.coordination.models import LockLease
+from app.coordination.models import LockLease, PackageCatalogMetadata
 from app.package_transport.models import PackageArtifact
 
 
@@ -47,6 +47,9 @@ def _package_data(**overrides: object) -> dict[str, object]:
         "encryption_key_id": "key-123",
         "published_by_device_id": "device-123",
         "published_at_utc": "2026-08-06T12:00:00Z",
+        "project_name": "Shared World",
+        "game_id": "abiotic_factor",
+        "created_by": "Alice",
     }
     data.update(overrides)
     return data
@@ -315,7 +318,12 @@ def test_register_and_list_packages_use_separate_catalog_contract(
     )
     lease = LockLease.from_dict(_lock_data())
 
-    registered = provider.register_package(artifact, lease)
+    metadata = PackageCatalogMetadata(
+        project_name="Shared World",
+        game_id="abiotic_factor",
+        created_by="Alice",
+    )
+    registered = provider.register_package(artifact, lease, metadata)
     listed = provider.list_packages(PROJECT_UUID)
 
     expected_url = (
@@ -331,6 +339,9 @@ def test_register_and_list_packages_use_separate_catalog_contract(
         "package_checksum": "a" * 64,
         "package_size_bytes": 4096,
         "encryption_key_id": "key-123",
+        "project_name": "Shared World",
+        "game_id": "abiotic_factor",
+        "created_by": "Alice",
     }
     assert requests[1].full_url == expected_url
     assert requests[1].method == "GET"
@@ -339,6 +350,29 @@ def test_register_and_list_packages_use_separate_catalog_contract(
         2026, 8, 6, 12, tzinfo=UTC
     )
     assert listed == [registered]
+    assert registered.metadata == metadata
+
+
+def test_list_latest_packages_uses_group_inbox_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response({"packages": [_package_data()]})
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+
+    packages = provider.list_latest_packages()
+
+    assert requests[0].full_url.endswith("/api/v1/packages/latest")
+    assert packages[0].metadata is not None
+    assert packages[0].metadata.project_name == "Shared World"
 
 
 def test_get_package_encryption_key_parses_group_key(
