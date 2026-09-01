@@ -1,12 +1,16 @@
 from typing import Protocol
 
 from app.coordination.models import (
+    CatalogPackage,
     CoordinationDevice,
     GroupInvitation,
     GroupLeaveResult,
     LockLease,
+    PackageCatalogMetadata,
+    PackageEncryptionKey,
     PairedDevice,
 )
+from app.package_transport.models import PackageArtifact
 
 
 class CoordinationProvider(Protocol):
@@ -51,4 +55,32 @@ class GroupAdministrationProvider(Protocol):
         ...
 
     def leave_group(self) -> GroupLeaveResult:
+        ...
+
+
+class PackageCatalogProvider(Protocol):
+    """Catalog contract kept separate from leases and package byte storage."""
+
+    def register_package(
+        self,
+        artifact: PackageArtifact,
+        lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
+    ) -> CatalogPackage:
+        ...
+
+    def list_packages(self, project_uuid: str) -> list[CatalogPackage]:
+        ...
+
+    def list_latest_packages(self) -> list[CatalogPackage]:
+        ...
+
+
+class PackageKeyProvider(Protocol):
+    """Authenticated access to group package encryption material."""
+
+    def get_package_encryption_key(
+        self,
+        key_id: str | None = None,
+    ) -> PackageEncryptionKey:
         ...

@@ -28,6 +28,21 @@ interface Invitation {
   expires_at_utc: string;
 }
 
+interface PackageRecord {
+  catalog_id: string;
+  transport_name: string;
+  remote_id: string;
+  project_uuid: string;
+  project_version: number;
+  package_checksum: string;
+  package_size_bytes: number;
+  published_by_device_id: string;
+  published_at_utc: string;
+  project_name?: string;
+  game_id?: string;
+  created_by?: string;
+}
+
 async function pair(deviceName: string): Promise<Device> {
   const response = await SELF.fetch(`${API}/devices/pair`, {
     method: "POST",
@@ -95,6 +110,21 @@ function lockRequest(
   });
 }
 
+function packageRequest(
+  projectUuid: string,
+  deviceToken: string,
+  body?: object
+): Promise<Response> {
+  return SELF.fetch(`${API}/projects/${projectUuid}/packages`, {
+    method: body ? "POST" : "GET",
+    headers: {
+      Authorization: `Bearer ${deviceToken}`,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
+
 describe("provider-neutral lock contract", () => {
   it("checks health through the durable coordination backend", async () => {
     const response = await SELF.fetch("https://coordination.test/health");
@@ -103,7 +133,7 @@ describe("provider-neutral lock contract", () => {
     expect(await response.json()).toEqual({
       status: "ok",
       api_version: "v1",
-      provider_version: "1.2.0"
+      provider_version: "1.4.0"
     });
   });
 
@@ -265,6 +295,266 @@ describe("provider-neutral lock contract", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({
       error: { code: "authentication_required" }
+    });
+  });
+});
+
+describe("group package catalog", () => {
+  const projectUuid = "12345678-1234-4234-9234-567812345611";
+  const checksum = "a".repeat(64);
+
+  async function acquire(device: Device): Promise<string> {
+    const response = await lockRequest(
+      projectUuid,
+      "acquire",
+      device.device_token,
+      { owner_display_name: "Alice" }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json<{ lock: { lease_id: string } }>()).lock.lease_id;
+  }
+
+  async function currentKey(deviceToken: string): Promise<{
+    key_id: string;
+    algorithm: string;
+    key_material: string;
+  }> {
+    const response = await SELF.fetch(`${API}/package-encryption-key`, {
+      headers: { Authorization: `Bearer ${deviceToken}` }
+    });
+    expect(response.status).toBe(200);
+    return (await response.json<{
+      key: {
+        key_id: string;
+        algorithm: string;
+        key_material: string;
+      };
+    }>()).key;
+  }
+
+  function packageBody(leaseId: string, keyId: string): object {
+    return {
+      lease_id: leaseId,
+      transport_name: "steam-ugc",
+      remote_id: "1234567890123456789",
+      project_version: 4,
+      package_checksum: checksum,
+      package_size_bytes: 4096,
+      encryption_key_id: keyId,
+      project_name: "Shared World",
+      game_id: "abiotic_factor",
+      created_by: "Alice"
+    };
+  }
+
+  it("shares one stable package encryption key with authenticated members", async () => {
+    const first = await pair("First PC");
+    const second = await pair("Second PC");
+
+    const firstResponse = await SELF.fetch(
+      `${API}/package-encryption-key`,
+      { headers: { Authorization: `Bearer ${first.device_token}` } }
+    );
+    const secondResponse = await SELF.fetch(
+      `${API}/package-encryption-key`,
+      { headers: { Authorization: `Bearer ${second.device_token}` } }
+    );
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    const firstKey = await firstResponse.json<{
+      key: { key_id: string; algorithm: string; key_material: string };
+    }>();
+    expect(firstKey.key.key_id).toBeTruthy();
+    expect(firstKey.key.algorithm).toBe("AES-256-GCM");
+    expect(firstKey.key.key_material).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await secondResponse.json()).toEqual(firstKey);
+  });
+
+  it("does not expose package encryption keys to unpaired callers", async () => {
+    const response = await SELF.fetch(`${API}/package-encryption-key`);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: { code: "authentication_required" }
+    });
+  });
+
+  it("rotates future package encryption after a device is revoked", async () => {
+    const administrator = await bootstrap("Owner PC");
+    const invitation = await createInvitation(administrator.device_token);
+    const joinedResponse = await join(invitation.invitation_token, "Former PC");
+    const former = (await joinedResponse.json<{ device: Device }>()).device;
+    const previous = await currentKey(former.device_token);
+
+    const revokeResponse = await SELF.fetch(
+      `${API}/devices/${former.device_id}/revoke`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${administrator.device_token}` }
+      }
+    );
+    expect(revokeResponse.status).toBe(200);
+    const current = await currentKey(administrator.device_token);
+    expect(current.key_id).not.toBe(previous.key_id);
+    expect(current.key_material).not.toBe(previous.key_material);
+
+    const historicalResponse = await SELF.fetch(
+      `${API}/package-encryption-keys/${previous.key_id}`,
+      { headers: { Authorization: `Bearer ${administrator.device_token}` } }
+    );
+    expect(historicalResponse.status).toBe(200);
+    expect(
+      (await historicalResponse.json<{ key: { key_id: string } }>()).key.key_id
+    ).toBe(previous.key_id);
+
+    const revokedResponse = await SELF.fetch(
+      `${API}/package-encryption-keys/${previous.key_id}`,
+      { headers: { Authorization: `Bearer ${former.device_token}` } }
+    );
+    expect(revokedResponse.status).toBe(401);
+  });
+
+  it("requires an active owned lease to register a package", async () => {
+    const first = await pair("First PC");
+    const second = await pair("Second PC");
+    const leaseId = await acquire(first);
+    const key = await currentKey(first.device_token);
+
+    const wrongOwner = await packageRequest(
+      projectUuid,
+      second.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+    expect(wrongOwner.status).toBe(403);
+    expect(await wrongOwner.json()).toMatchObject({
+      error: { code: "lock_not_owned" }
+    });
+
+    await lockRequest(projectUuid, "release", first.device_token, {
+      lease_id: leaseId
+    });
+    const unlocked = await packageRequest(
+      projectUuid,
+      first.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+    expect(unlocked.status).toBe(409);
+    expect(await unlocked.json()).toMatchObject({
+      error: { code: "lease_expired" }
+    });
+  });
+
+  it("registers idempotently and lists packages for group members", async () => {
+    const owner = await pair("Owner PC");
+    const member = await pair("Member PC");
+    const leaseId = await acquire(owner);
+    const key = await currentKey(owner.device_token);
+    const body = packageBody(leaseId, key.key_id);
+
+    const createdResponse = await packageRequest(
+      projectUuid,
+      owner.device_token,
+      body
+    );
+    expect(createdResponse.status).toBe(201);
+    const created = (
+      await createdResponse.json<{ package: PackageRecord }>()
+    ).package;
+    expect(created).toMatchObject({
+      transport_name: "steam-ugc",
+      remote_id: "1234567890123456789",
+      project_uuid: projectUuid,
+      project_version: 4,
+      package_checksum: checksum,
+      package_size_bytes: 4096,
+      published_by_device_id: owner.device_id,
+      project_name: "Shared World",
+      game_id: "abiotic_factor",
+      created_by: "Alice"
+    });
+
+    const replayResponse = await packageRequest(
+      projectUuid,
+      owner.device_token,
+      body
+    );
+    expect(replayResponse.status).toBe(200);
+    expect(
+      (await replayResponse.json<{ package: PackageRecord }>()).package
+        .catalog_id
+    ).toBe(created.catalog_id);
+
+    const listResponse = await packageRequest(
+      projectUuid,
+      member.device_token
+    );
+    expect(listResponse.status).toBe(200);
+    expect(
+      (await listResponse.json<{ packages: PackageRecord[] }>()).packages
+    ).toEqual([created]);
+  });
+
+  it("lists the newest shared package for the group inbox", async () => {
+    const owner = await pair("Owner PC");
+    const member = await pair("Member PC");
+    const leaseId = await acquire(owner);
+    const key = await currentKey(owner.device_token);
+    await packageRequest(
+      projectUuid,
+      owner.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+    await packageRequest(
+      projectUuid,
+      owner.device_token,
+      {
+        ...packageBody(leaseId, key.key_id),
+        project_version: 5,
+        remote_id: "newer-item",
+        package_checksum: "b".repeat(64)
+      }
+    );
+
+    const response = await SELF.fetch(`${API}/packages/latest`, {
+      headers: { Authorization: `Bearer ${member.device_token}` }
+    });
+
+    expect(response.status).toBe(200);
+    const packages = (
+      await response.json<{ packages: PackageRecord[] }>()
+    ).packages;
+    expect(packages).toHaveLength(1);
+    expect(packages[0]).toMatchObject({
+      project_uuid: projectUuid,
+      project_version: 5,
+      project_name: "Shared World",
+      game_id: "abiotic_factor"
+    });
+  });
+
+  it("rejects different content for an existing project version", async () => {
+    const owner = await pair("Owner PC");
+    const leaseId = await acquire(owner);
+    const key = await currentKey(owner.device_token);
+    await packageRequest(
+      projectUuid,
+      owner.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+
+    const collisionResponse = await packageRequest(
+      projectUuid,
+      owner.device_token,
+      {
+        ...packageBody(leaseId, key.key_id),
+        remote_id: "different-item",
+        package_checksum: "b".repeat(64)
+      }
+    );
+
+    expect(collisionResponse.status).toBe(409);
+    expect(await collisionResponse.json()).toMatchObject({
+      error: { code: "package_version_conflict" }
     });
   });
 });

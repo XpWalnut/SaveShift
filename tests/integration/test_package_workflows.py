@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from shutil import copy2
 
 import pytest
 
@@ -14,6 +15,8 @@ from app.packages.package_service import PackageService
 from app.packages.package_reader import PackageReader
 from app.packages.package_journal_entry import PackageJournalEntry
 from app.packages.package_metadata import PackageMetadata
+from app.package_transport.models import PackageArtifact, PackageDescriptor
+from app.package_transport.service import PackageTransferService
 from app.services.hosting_service import HostingService
 from app.services.import_conflict import ImportConflictKind
 from app.services.import_service import ImportService
@@ -27,6 +30,40 @@ from app.services.session_journal_service import SessionJournalService
 
 
 PROJECT_UUID = "12345678-1234-5678-1234-567812345678"
+
+
+class _DirectoryPackageTransport:
+    name = "test-directory"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def publish(
+        self,
+        package_path: Path,
+        descriptor: PackageDescriptor,
+    ) -> PackageArtifact:
+        self.root.mkdir(parents=True, exist_ok=True)
+        remote_id = f"{descriptor.project_uuid}-{descriptor.project_version}.sspkg"
+        copy2(package_path, self.root / remote_id)
+        return PackageArtifact(
+            transport_name=self.name,
+            remote_id=remote_id,
+            project_uuid=descriptor.project_uuid,
+            project_version=descriptor.project_version,
+            package_checksum=descriptor.package_checksum,
+            package_size_bytes=descriptor.package_size_bytes,
+        )
+
+    def download(
+        self,
+        artifact: PackageArtifact,
+        destination_path: Path,
+    ) -> None:
+        copy2(self.root / artifact.remote_id, destination_path)
+
+    def delete(self, artifact: PackageArtifact) -> None:
+        (self.root / artifact.remote_id).unlink()
 
 
 def _redirect_application_directories(
@@ -133,6 +170,60 @@ def test_verified_package_import_creates_discovered_project_and_history(
     assert journal_entries[0].entry_uuid == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
     assert journal_entries[0].title == "Power restored"
     assert journal_entries[0].project_version_number == 7
+
+
+def test_remote_transport_round_trip_downloads_and_imports_verified_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _redirect_application_directories(monkeypatch, tmp_path)
+    source_root = tmp_path / "source-world"
+    source_root.mkdir()
+    source_file = source_root / "world.sav"
+    source_file.write_bytes(b"remote-shared-state")
+    source_package = tmp_path / "outgoing.sspkg"
+    PackageService.create_package(
+        game_id=GameId.ABIOTIC_FACTOR.value,
+        project=Project(
+            installed_game_id=0,
+            name="Remote Shared World",
+            local_path=str(source_root),
+            uuid=PROJECT_UUID,
+        ),
+        project_version=4,
+        root_path=source_root,
+        save_files=[source_file],
+        output_path=source_package,
+        created_by="Alice",
+    )
+    save_root = tmp_path / "abiotic-saves"
+    (save_root / "76561198000000000").mkdir(parents=True)
+    InstalledGameRepository.add(
+        game_id=GameId.ABIOTIC_FACTOR.value,
+        display_name="Abiotic Factor",
+        save_path=str(save_root),
+    )
+    transport = _DirectoryPackageTransport(tmp_path / "remote-storage")
+
+    artifact = PackageTransferService.publish(source_package, transport)
+    source_package.unlink()
+    downloaded_package = PackageTransferService.download(
+        artifact,
+        tmp_path / "incoming" / "received.sspkg",
+        transport,
+    )
+    imported_version = ImportService.import_package(
+        package_path=downloaded_package,
+        imported_by="Bob",
+    )
+
+    imported_project = ProjectRepository.get_by_uuid(PROJECT_UUID)
+    assert imported_project is not None
+    assert imported_version.version_number == 4
+    assert imported_version.package_checksum == artifact.package_checksum
+    assert (
+        Path(imported_project.local_path) / "world.sav"
+    ).read_bytes() == b"remote-shared-state"
 
 
 def test_host_modify_and_restore_round_trip_preserves_history_and_backup(

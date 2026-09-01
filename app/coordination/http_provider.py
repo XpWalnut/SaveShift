@@ -9,15 +9,21 @@ from app.coordination.errors import (
     CoordinationUnavailableError,
     LockConflictError,
     LockOwnershipError,
+    PackageCatalogConflictError,
+    PackageKeyRotatedError,
 )
 from app.coordination.models import (
+    CatalogPackage,
     CoordinationDevice,
     GroupInvitation,
     GroupLeaveResult,
     LockLease,
+    PackageCatalogMetadata,
+    PackageEncryptionKey,
     PairedDevice,
     parse_utc_datetime,
 )
+from app.package_transport.models import PackageArtifact
 
 
 class HttpCoordinationProvider:
@@ -267,6 +273,139 @@ class HttpCoordinationProvider:
 
         return self._lock_from_dict(lock)
 
+    def register_package(
+        self,
+        artifact: PackageArtifact,
+        lease: LockLease,
+        metadata: PackageCatalogMetadata | None = None,
+    ) -> CatalogPackage:
+        if artifact.project_uuid != lease.project_uuid:
+            raise CoordinationConfigurationError(
+                "The package and project lease identify different projects."
+            )
+        if not artifact.encryption_key_id:
+            raise CoordinationConfigurationError(
+                "The package does not identify its encryption key."
+            )
+
+        data = self._request_json(
+            method="POST",
+            path=self._package_path(artifact.project_uuid),
+            payload={
+                "lease_id": lease.lease_id,
+                "transport_name": artifact.transport_name,
+                "remote_id": artifact.remote_id,
+                "project_version": artifact.project_version,
+                "package_checksum": artifact.package_checksum,
+                "package_size_bytes": artifact.package_size_bytes,
+                "encryption_key_id": artifact.encryption_key_id,
+                **(
+                    {
+                        "project_name": metadata.project_name,
+                        "game_id": metadata.game_id,
+                        "created_by": metadata.created_by,
+                    }
+                    if metadata is not None
+                    else {}
+                ),
+            },
+        )
+        package = data.get("package")
+
+        if not isinstance(package, dict):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid package record."
+            )
+
+        return self._parse_catalog_package(package)
+
+    def list_packages(self, project_uuid: str) -> list[CatalogPackage]:
+        data = self._request_json(
+            method="GET",
+            path=self._package_path(project_uuid),
+        )
+        packages = data.get("packages")
+
+        if not isinstance(packages, list):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid package list."
+            )
+
+        parsed: list[CatalogPackage] = []
+
+        try:
+            for package in packages:
+                if not isinstance(package, dict):
+                    raise ValueError("Invalid package record.")
+                parsed.append(CatalogPackage.from_dict(package))
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid package data."
+            ) from error
+
+        return parsed
+
+    def list_latest_packages(self) -> list[CatalogPackage]:
+        data = self._request_json(
+            method="GET",
+            path=f"{self.API_PREFIX}/packages/latest",
+        )
+        packages = data.get("packages")
+
+        if not isinstance(packages, list):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid package list."
+            )
+
+        try:
+            parsed: list[CatalogPackage] = []
+            for package in packages:
+                if not isinstance(package, dict):
+                    raise ValueError("Invalid package record.")
+                parsed.append(CatalogPackage.from_dict(package))
+            return parsed
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid package data."
+            ) from error
+
+    def get_package_encryption_key(
+        self,
+        key_id: str | None = None,
+    ) -> PackageEncryptionKey:
+        path = f"{self.API_PREFIX}/package-encryption-key"
+
+        if key_id is not None:
+            normalized_key_id = key_id.strip()
+
+            if not normalized_key_id:
+                raise CoordinationConfigurationError(
+                    "Package encryption key ID is required."
+                )
+
+            path = (
+                f"{self.API_PREFIX}/package-encryption-keys/"
+                f"{quote(normalized_key_id, safe='')}"
+            )
+
+        data = self._request_json(
+            method="GET",
+            path=path,
+        )
+        key = data.get("key")
+
+        if not isinstance(key, dict):
+            raise CoordinationUnavailableError(
+                "The coordination provider returned an invalid package key."
+            )
+
+        try:
+            return PackageEncryptionKey.from_dict(key)
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid package key data."
+            ) from error
+
     def _request_json(
         self,
         method: str,
@@ -357,6 +496,12 @@ class HttpCoordinationProvider:
             )
             raise LockConflictError(message, lock=lock) from error
 
+        if error.code == 409 and error_code == "package_version_conflict":
+            raise PackageCatalogConflictError(message) from error
+
+        if error.code == 409 and error_code == "package_key_rotated":
+            raise PackageKeyRotatedError(message) from error
+
         if error.code in (401, 403) or error_code in {
             "lease_expired",
             "lock_ownership_lost",
@@ -394,6 +539,13 @@ class HttpCoordinationProvider:
         return f"{path}/{action}" if action else path
 
     @staticmethod
+    def _package_path(project_uuid: str) -> str:
+        return (
+            f"{HttpCoordinationProvider.API_PREFIX}/projects/"
+            f"{quote(project_uuid, safe='')}/packages"
+        )
+
+    @staticmethod
     def _lock_from_dict(data: dict[str, object]) -> LockLease:
         try:
             return LockLease.from_dict(data)
@@ -412,3 +564,12 @@ class HttpCoordinationProvider:
             )
 
         return cls._lock_from_dict(lock)
+
+    @staticmethod
+    def _parse_catalog_package(data: dict[str, object]) -> CatalogPackage:
+        try:
+            return CatalogPackage.from_dict(data)
+        except ValueError as error:
+            raise CoordinationUnavailableError(
+                "The coordination provider returned invalid package data."
+            ) from error

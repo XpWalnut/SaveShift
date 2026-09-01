@@ -60,6 +60,24 @@ finally {
 Remove-Item ".\build" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item ".\dist\SaveShift" -Recurse -Force -ErrorAction SilentlyContinue
 
+if (-not $env:SAVESHIFT_STEAM_API_PATH) {
+    $SteamSdkRoot = $env:STEAMWORKS_SDK_PATH
+
+    if (-not $SteamSdkRoot) {
+        $SteamSdkRoot = Join-Path $HOME "sdk"
+    }
+
+    $SteamApiCandidate = Join-Path $SteamSdkRoot "redistributable_bin\win64\steam_api64.dll"
+
+    if (Test-Path $SteamApiCandidate) {
+        $env:SAVESHIFT_STEAM_API_PATH = $SteamApiCandidate
+    }
+}
+
+if (-not $env:SAVESHIFT_STEAM_API_PATH -or -not (Test-Path $env:SAVESHIFT_STEAM_API_PATH)) {
+    throw "steam_api64.dll was not found. Set STEAMWORKS_SDK_PATH before building a release."
+}
+
 pyinstaller SaveShift.spec
 
 if ($LASTEXITCODE -ne 0) {

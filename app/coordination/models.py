@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import base64
+import binascii
 import json
 from urllib.parse import urlparse
+
+from app.package_transport.models import PackageArtifact
 
 
 def parse_utc_datetime(value: str) -> datetime:
@@ -179,4 +182,135 @@ class LockLease:
             owner_display_name=str(data["owner_display_name"]),
             acquired_at_utc=parse_utc_datetime(str(data["acquired_at_utc"])),
             expires_at_utc=parse_utc_datetime(str(data["expires_at_utc"])),
+        )
+
+
+@dataclass(frozen=True)
+class PackageCatalogMetadata:
+    project_name: str
+    game_id: str
+    created_by: str
+
+
+@dataclass(frozen=True)
+class CatalogPackage:
+    catalog_id: str
+    artifact: PackageArtifact
+    published_by_device_id: str
+    published_at_utc: datetime
+    metadata: PackageCatalogMetadata | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "CatalogPackage":
+        required_strings = (
+            "catalog_id",
+            "transport_name",
+            "remote_id",
+            "project_uuid",
+            "package_checksum",
+            "encryption_key_id",
+            "published_by_device_id",
+            "published_at_utc",
+        )
+
+        for field_name in required_strings:
+            if not isinstance(data.get(field_name), str) or not data[field_name]:
+                raise ValueError(f"Package response is missing {field_name}.")
+
+        project_version = data.get("project_version")
+        package_size_bytes = data.get("package_size_bytes")
+
+        if (
+            not isinstance(project_version, int)
+            or isinstance(project_version, bool)
+            or project_version < 1
+        ):
+            raise ValueError("Package response has an invalid project_version.")
+        if (
+            not isinstance(package_size_bytes, int)
+            or isinstance(package_size_bytes, bool)
+            or package_size_bytes < 1
+        ):
+            raise ValueError("Package response has an invalid package_size_bytes.")
+
+        checksum = str(data["package_checksum"])
+
+        if len(checksum) != 64 or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in checksum
+        ):
+            raise ValueError("Package response has an invalid package_checksum.")
+
+        metadata_values = (
+            data.get("project_name"),
+            data.get("game_id"),
+            data.get("created_by"),
+        )
+        metadata: PackageCatalogMetadata | None = None
+
+        if any(value is not None for value in metadata_values):
+            if not all(
+                isinstance(value, str) and bool(value.strip())
+                for value in metadata_values
+            ):
+                raise ValueError("Package response has invalid display metadata.")
+            metadata = PackageCatalogMetadata(
+                project_name=str(metadata_values[0]).strip(),
+                game_id=str(metadata_values[1]).strip(),
+                created_by=str(metadata_values[2]).strip(),
+            )
+
+        return cls(
+            catalog_id=str(data["catalog_id"]),
+            artifact=PackageArtifact(
+                transport_name=str(data["transport_name"]),
+                remote_id=str(data["remote_id"]),
+                project_uuid=str(data["project_uuid"]),
+                project_version=project_version,
+                package_checksum=checksum.lower(),
+                package_size_bytes=package_size_bytes,
+                encryption_key_id=str(data["encryption_key_id"]),
+            ),
+            published_by_device_id=str(data["published_by_device_id"]),
+            published_at_utc=parse_utc_datetime(str(data["published_at_utc"])),
+            metadata=metadata,
+        )
+
+
+@dataclass(frozen=True)
+class PackageEncryptionKey:
+    key_id: str
+    algorithm: str
+    key_material: bytes
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "PackageEncryptionKey":
+        algorithm = data.get("algorithm")
+        key_id = data.get("key_id")
+        encoded_key = data.get("key_material")
+
+        if not isinstance(key_id, str) or not key_id:
+            raise ValueError("Package key identifier is missing.")
+        if algorithm != "AES-256-GCM":
+            raise ValueError("Package key uses an unsupported algorithm.")
+        if not isinstance(encoded_key, str) or not encoded_key:
+            raise ValueError("Package key material is missing.")
+
+        try:
+            padded = encoded_key + "=" * (-len(encoded_key) % 4)
+            key_material = base64.b64decode(
+                padded,
+                altchars=b"-_",
+                validate=True,
+            )
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("Package key material is invalid.") from error
+
+        if len(key_material) != 32:
+            raise ValueError("Package key must contain 256 bits.")
+
+        return cls(
+            key_id=key_id,
+            algorithm=algorithm,
+            key_material=key_material,
         )

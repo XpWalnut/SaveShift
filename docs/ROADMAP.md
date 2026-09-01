@@ -4,6 +4,9 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 
 ## Alpha stabilization
 
+- Publish the registered Save Shift Steamworks configuration and validate encrypted UGC transfers between two licensed accounts.
+- Validate the connected project-card Receive and Hand Off controls across two licensed Steam accounts.
+- Replace manual package sharing as the normal coordinated handoff path while retaining export/import as an offline fallback.
 - Exercise installer-based updates across consecutive published releases.
 - Expand manual testing across supported games and unusual save layouts.
 - Improve error reporting and recovery for interrupted package operations.
@@ -15,6 +18,7 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 
 ## Beta readiness
 
+- Exercise the complete host, publish, download, conflict-preview, import, and next-host workflow across two physical computers.
 - Validate versioned database migrations against databases produced by every published alpha release.
 - Define and test `.sspkg` compatibility guarantees.
 - Improve onboarding, empty states, and troubleshooting guidance.

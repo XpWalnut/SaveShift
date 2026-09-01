@@ -29,6 +29,10 @@ tests/output/
 
 # Temporary package output
 *.sspkg
+steam_appid.txt
+
+# Locally downloaded proprietary SDK files
+vendor/steamworks_sdk/
 
 # Logs
 *.log
