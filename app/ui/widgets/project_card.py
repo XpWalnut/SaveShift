@@ -18,6 +18,7 @@ class ProjectCard(QFrame):
             on_import,
             on_export,
             on_history,
+            on_join=None,
             latest_journal: SessionJournalEntry | None = None,
             on_journal=None,
             parent=None,
@@ -25,6 +26,8 @@ class ProjectCard(QFrame):
         super().__init__(parent)
 
         self.project = project
+        self._on_host = on_host
+        self._on_join = on_join
 
         self.setObjectName("ProjectCard")
         self.setStyleSheet(
@@ -66,7 +69,6 @@ class ProjectCard(QFrame):
         self.lock_status_label = QLabel()
         self.lock_status_label.setWordWrap(True)
         self.lock_status_label.setObjectName("SecondaryText")
-        self.show_coordination_disabled()
 
         self.host_button = QPushButton("Host")
         self.import_button = QPushButton("Import")
@@ -92,7 +94,7 @@ class ProjectCard(QFrame):
         button_row.addStretch()
 
         self.host_button.clicked.connect(
-            lambda: on_host(project)
+            self._perform_primary_action
         )
 
         self.import_button.clicked.connect(
@@ -113,6 +115,8 @@ class ProjectCard(QFrame):
             )
         else:
             self.journal_button.setEnabled(False)
+
+        self.show_coordination_disabled()
 
         layout = QVBoxLayout()
         layout.addWidget(title)
@@ -136,21 +140,48 @@ class ProjectCard(QFrame):
 
         self.setLayout(layout)
 
+    def _perform_primary_action(self) -> None:
+        if self.host_button.property("saveshift_action") == "join":
+            if self._on_join is not None:
+                self._on_join(self.project)
+            return
+
+        self._on_host(self.project)
+
+    def show_host_action(self, *, enabled: bool = True) -> None:
+        self.host_button.setProperty("saveshift_action", "host")
+        self.host_button.setText("Host")
+        self.host_button.setEnabled(enabled)
+
+    def show_join_action(self) -> None:
+        self.host_button.setProperty("saveshift_action", "join")
+        self.host_button.setText("Join Game")
+        self.host_button.setEnabled(self._on_join is not None)
+
+    def show_hosting_action(self) -> None:
+        self.host_button.setProperty("saveshift_action", "host")
+        self.host_button.setText("Hosting")
+        self.host_button.setEnabled(False)
+
     def show_coordination_disabled(self) -> None:
+        self.show_host_action()
         self.lock_status_label.setText(
             "Project lock: Local protection only — coordination disabled"
         )
         self.lock_status_label.setStyleSheet("")
 
     def show_lock_checking(self) -> None:
+        self.show_host_action()
         self.lock_status_label.setText("Project lock: Checking…")
         self.lock_status_label.setStyleSheet("")
 
     def show_lock_available(self) -> None:
+        self.show_host_action()
         self.lock_status_label.setText("Project lock: Available")
         self.lock_status_label.setStyleSheet(f"color: {theme.SUCCESS};")
 
     def show_lock_unavailable(self) -> None:
+        self.show_host_action()
         self.lock_status_label.setText("Project lock: Status unavailable")
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
 
@@ -173,3 +204,7 @@ class ProjectCard(QFrame):
             f"{owner_suffix} · Expires {expires_at} unless renewed"
         )
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
+        if lease.owner_device_id == local_device_id:
+            self.show_hosting_action()
+        else:
+            self.show_join_action()

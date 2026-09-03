@@ -28,6 +28,7 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.core.logging import logger
+from app.core.distribution import detect_distribution_channel
 from app.core.settings import AppSettings, SettingsService
 from app.coordination.errors import (
     CoordinationConfigurationError,
@@ -90,6 +91,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(950, 650)
 
         self.startup_package_path = startup_package_path
+        self.distribution_channel = detect_distribution_channel()
         self.settings = SettingsService.load()
         self.coordination_manager = self._create_coordination_manager(
             self.settings
@@ -327,6 +329,7 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(
             settings=self.settings,
             parent=self,
+            distribution_channel=self.distribution_channel,
         )
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -912,6 +915,16 @@ class MainWindow(QMainWindow):
         )
 
     def check_for_updates(self, *, manual: bool = True) -> None:
+        if self.distribution_channel.updates_managed_externally:
+            if manual:
+                QMessageBox.information(
+                    self,
+                    "Updates Managed by Steam",
+                    "Steam automatically downloads and installs updates for "
+                    "this Save Shift installation.",
+                )
+            return
+
         started = self.update_controller.check_for_updates(manual=manual)
 
         if started:
@@ -926,6 +939,9 @@ class MainWindow(QMainWindow):
             )
 
     def _start_automatic_update_check(self) -> None:
+        if self.distribution_channel.updates_managed_externally:
+            return
+
         if os.environ.get("SAVESHIFT_DISABLE_UPDATE_CHECKS") == "1":
             return
 
@@ -1699,6 +1715,66 @@ class MainWindow(QMainWindow):
             message,
         )
 
+    def join_hosted_project(self, project: Project) -> None:
+        lease = self.project_lock_statuses.get(project.uuid)
+
+        if lease is None or lease.expired:
+            QMessageBox.information(
+                self,
+                "Game No Longer Hosted",
+                "The project is no longer marked as hosted by another group member.",
+            )
+            self._refresh_project_lock_statuses()
+            return
+
+        if lease.owner_device_id == self.settings.coordination_device_id:
+            QMessageBox.information(
+                self,
+                "Already Hosting",
+                "This computer owns the project lock and is already the host.",
+            )
+            return
+
+        installed_game = self._get_installed_game_for_project(project)
+        supported_game = GameRegistry.get_by_game_id(installed_game.game_id)
+
+        if supported_game is None:
+            QMessageBox.warning(
+                self,
+                "Game Not Supported",
+                "Save Shift cannot identify which Steam game to launch.",
+            )
+            return
+
+        try:
+            was_already_running = supported_game.is_running()
+
+            if not was_already_running:
+                supported_game.join_hosted_session()
+        except Exception as error:
+            QMessageBox.warning(
+                self,
+                "Join Failed",
+                f"Save Shift could not launch {supported_game.display_name}.\n\n"
+                f"{error}\n\nYou can launch it manually from Steam.",
+            )
+            return
+
+        if was_already_running:
+            launch_message = f"{supported_game.display_name} is already running."
+        else:
+            launch_message = f"{supported_game.display_name} is launching through Steam."
+
+        QMessageBox.information(
+            self,
+            "Join Hosted Game",
+            f"{launch_message}\n\n"
+            f"{lease.owner_display_name} is hosting this project. Join their "
+            "session from the game's lobby or accept their Steam invitation.\n\n"
+            "Save Shift will not import or modify the host's protected save on "
+            "this computer.",
+        )
+
     def receive_or_import_project(self, project: Project) -> None:
         if not self.settings.coordination_enabled:
             self.import_package()
@@ -1991,6 +2067,7 @@ class MainWindow(QMainWindow):
             ),
             on_export=self.handoff_or_export_project,
             on_history=self.show_history,
+            on_join=self.join_hosted_project,
             latest_journal=latest_journal,
             on_journal=self.show_journal,
         )

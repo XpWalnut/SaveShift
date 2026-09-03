@@ -15,6 +15,7 @@ from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.services.hosting_service import HostingService
 from app.ui.main_window import MainWindow
+from app.ui.widgets.project_card import ProjectCard
 
 
 PROJECT_UUID = "12345678-1234-4678-9234-567812345678"
@@ -373,6 +374,100 @@ def test_host_conflict_blocks_local_hosting_workflow(
 
     assert warnings[0][0] == "Project In Use"
     assert "Alex" in warnings[0][1]
+
+
+def test_remote_project_lock_changes_host_action_to_join_game(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    installed_game = InstalledGame(
+        id=1,
+        game_id="abiotic_factor",
+        display_name="Abiotic Factor",
+        save_path=str(tmp_path / "saves"),
+        enabled=True,
+    )
+    joined: list[Project] = []
+    card = ProjectCard(
+        project=project,
+        installed_game=installed_game,
+        latest_version=None,
+        on_host=lambda _project: pytest.fail("remote project cannot be hosted"),
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        on_join=joined.append,
+    )
+    qtbot.addWidget(card)
+
+    card.show_lock(_lease("Alex"), local_device_id="local-device")
+
+    assert card.host_button.text() == "Join Game"
+    assert card.host_button.isEnabled()
+    card.host_button.click()
+    assert joined == [project]
+
+
+def test_join_hosted_project_launches_game_without_touching_save(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    window.settings = replace(
+        window.settings,
+        coordination_device_id="local-device",
+    )
+    project = _project(tmp_path)
+    lease = _lease("Alex")
+    window.project_lock_statuses[project.uuid] = lease
+    installed_game = InstalledGame(
+        id=1,
+        game_id="abiotic_factor",
+        display_name="Abiotic Factor",
+        save_path=str(tmp_path / "saves"),
+        enabled=True,
+    )
+    launches: list[bool] = []
+    messages: list[tuple[str, str]] = []
+
+    class FakeGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+        @staticmethod
+        def join_hosted_session() -> None:
+            launches.append(True)
+
+    monkeypatch.setattr(
+        window,
+        "_get_installed_game_for_project",
+        lambda _project: installed_game,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: FakeGame(),
+    )
+    monkeypatch.setattr(
+        HostingService,
+        "host_project",
+        lambda **_kwargs: pytest.fail("joining must not create a hosted version"),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    window.join_hosted_project(project)
+
+    assert launches == [True]
+    assert messages[0][0] == "Join Hosted Game"
+    assert "Alex is hosting" in messages[0][1]
+    assert "will not import or modify" in messages[0][1]
 
 
 def test_temporary_ui_lease_is_released_when_operation_fails(
