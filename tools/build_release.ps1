@@ -21,8 +21,62 @@ if ($LASTEXITCODE -ne 0) {
     throw "Regression tests failed. Release build aborted."
 }
 
+Write-Host ""
+Write-Host "============================="
+Write-Host " Bundling Coordination Provider"
+Write-Host "============================="
+Write-Host ""
+
+Push-Location ".\coordination\cloudflare"
+try {
+    pnpm install --frozen-lockfile
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination dependencies could not be installed."
+    }
+
+    pnpm run typecheck
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider type-check failed."
+    }
+
+    pnpm test
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider tests failed."
+    }
+
+    pnpm run bundle
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Coordination provider bundle failed."
+    }
+}
+finally {
+    Pop-Location
+}
+
 Remove-Item ".\build" -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item ".\dist\SaveShift" -Recurse -Force -ErrorAction SilentlyContinue
+
+if (-not $env:SAVESHIFT_STEAM_API_PATH) {
+    $SteamSdkRoot = $env:STEAMWORKS_SDK_PATH
+
+    if (-not $SteamSdkRoot) {
+        $SteamSdkRoot = Join-Path $HOME "sdk"
+    }
+
+    $SteamApiCandidate = Join-Path $SteamSdkRoot "redistributable_bin\win64\steam_api64.dll"
+
+    if (Test-Path $SteamApiCandidate) {
+        $env:SAVESHIFT_STEAM_API_PATH = $SteamApiCandidate
+    }
+}
+
+if (-not $env:SAVESHIFT_STEAM_API_PATH -or -not (Test-Path $env:SAVESHIFT_STEAM_API_PATH)) {
+    throw "steam_api64.dll was not found. Set STEAMWORKS_SDK_PATH before building a release."
+}
 
 pyinstaller SaveShift.spec
 

@@ -1,0 +1,669 @@
+openapi: 3.1.0
+info:
+  title: Save Shift Coordination API
+  version: 1.3.0
+  description: Provider-neutral group onboarding, device management, project lease, and package catalog contract.
+servers:
+  - url: https://coordination.example.com/api/v1
+paths:
+  /devices/bootstrap:
+    post:
+      summary: Create the first group administrator after provider provisioning
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BootstrapRequest"
+      responses:
+        "201":
+          description: Administrator device created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices/join:
+    post:
+      summary: Join a group with a single-use invitation
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinRequest"
+      responses:
+        "201":
+          description: Member device created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+  /devices/pair:
+    post:
+      summary: Pair a device
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairRequest"
+      responses:
+        "201":
+          description: Device paired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PairResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+  /devices/claim-administrator:
+    post:
+      summary: Migrate one legacy paired device to administrator access
+      description: Available only when the provider has an existing pairing code and no administrator has been established.
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pairing_code]
+              properties:
+                pairing_code:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Administrator access granted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [administrator]
+                properties:
+                  administrator:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices/leave:
+    post:
+      summary: Remove the authenticated device from the group
+      description: Administrators must revoke all other active devices before leaving. The provider deletes all group storage when the final device leaves.
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Device left the group
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [left, group_empty]
+                properties:
+                  left:
+                    type: boolean
+                    const: true
+                  group_empty:
+                    type: boolean
+        "409":
+          $ref: "#/components/responses/Error"
+  /devices:
+    get:
+      summary: List group devices; administrator only
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Group device list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Device"
+        "403":
+          $ref: "#/components/responses/Error"
+  /devices/{device_id}/revoke:
+    parameters:
+      - name: device_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+    post:
+      summary: Revoke another group device; administrator only
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Device revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /invitations:
+    post:
+      summary: Create a single-use invitation; administrator only
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expires_in_seconds:
+                  type: integer
+                  minimum: 300
+                  maximum: 604800
+                  default: 86400
+      responses:
+        "201":
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationResponse"
+        "403":
+          $ref: "#/components/responses/Error"
+  /projects/{project_uuid}/packages:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    get:
+      summary: List immutable package artifacts for a project
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Packages ordered from newest to oldest project version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages]
+                properties:
+                  packages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PackageArtifactRecord"
+        "401":
+          $ref: "#/components/responses/Error"
+    post:
+      summary: Register an immutable package while owning its project lease
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PackageRegistrationRequest"
+      responses:
+        "201":
+          description: Package registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [package]
+                properties:
+                  package:
+                    $ref: "#/components/schemas/PackageArtifactRecord"
+        "200":
+          description: Identical package registration replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [package]
+                properties:
+                  package:
+                    $ref: "#/components/schemas/PackageArtifactRecord"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /packages/latest:
+    get:
+      summary: List the newest shared package for every project in the group
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Latest packages ordered by most recently published
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages]
+                properties:
+                  packages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PackageArtifactRecord"
+        "401":
+          $ref: "#/components/responses/Error"
+  /package-encryption-key:
+    get:
+      summary: Get the shared package encryption key for authenticated group members
+      description: The key protects unlisted transport payloads from access outside the authenticated Save Shift group.
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Current group package encryption key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: "#/components/schemas/PackageEncryptionKey"
+        "401":
+          $ref: "#/components/responses/Error"
+  /package-encryption-keys/{key_id}:
+    parameters:
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 100
+    get:
+      summary: Get a historical package key needed by a catalog artifact
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Requested group package encryption key
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key]
+                properties:
+                  key:
+                    $ref: "#/components/schemas/PackageEncryptionKey"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    get:
+      summary: Read the current project lease
+      security:
+        - deviceToken: []
+      responses:
+        "200":
+          description: Current lease, or null when unlocked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [lock]
+                properties:
+                  lock:
+                    oneOf:
+                      - $ref: "#/components/schemas/LockLease"
+                      - type: "null"
+        "401":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}/acquire:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Atomically acquire an unlocked or expired project lease
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner_display_name]
+              properties:
+                owner_display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+      responses:
+        "200":
+          $ref: "#/components/responses/Lease"
+        "409":
+          description: An unexpired lease already exists; error code is lock_conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /locks/{project_uuid}/renew:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Renew an owned lease
+      security:
+        - deviceToken: []
+      requestBody:
+        $ref: "#/components/requestBodies/LeaseIdentity"
+      responses:
+        "200":
+          $ref: "#/components/responses/Lease"
+        "403":
+          $ref: "#/components/responses/Error"
+        "409":
+          $ref: "#/components/responses/Error"
+  /locks/{project_uuid}/release:
+    parameters:
+      - $ref: "#/components/parameters/ProjectUuid"
+    post:
+      summary: Release an owned lease
+      security:
+        - deviceToken: []
+      requestBody:
+        $ref: "#/components/requestBodies/LeaseIdentity"
+      responses:
+        "200":
+          description: Lease released or already expired
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [released]
+                properties:
+                  released:
+                    type: boolean
+                    const: true
+        "403":
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    deviceToken:
+      type: http
+      scheme: bearer
+  parameters:
+    ProjectUuid:
+      name: project_uuid
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  requestBodies:
+    LeaseIdentity:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [lease_id]
+            properties:
+              lease_id:
+                type: string
+                minLength: 1
+  responses:
+    Lease:
+      description: Current owned lease
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [lock]
+            properties:
+              lock:
+                $ref: "#/components/schemas/LockLease"
+    Error:
+      description: Provider-neutral error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    BootstrapRequest:
+      type: object
+      required: [bootstrap_token, device_name]
+      properties:
+        bootstrap_token:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    JoinRequest:
+      type: object
+      required: [invitation_token, device_name]
+      properties:
+        invitation_token:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PairRequest:
+      type: object
+      required: [pairing_code, device_name]
+      properties:
+        pairing_code:
+          type: string
+          minLength: 1
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PairResponse:
+      type: object
+      required: [device]
+      properties:
+        device:
+          type: object
+          required: [device_id, device_token]
+          properties:
+            device_id:
+              type: string
+              minLength: 1
+            device_token:
+              type: string
+              minLength: 1
+            administrator:
+              type: boolean
+    Device:
+      type: object
+      required:
+        - device_id
+        - device_name
+        - created_at_utc
+        - revoked
+        - administrator
+      properties:
+        device_id:
+          type: string
+        device_name:
+          type: string
+        created_at_utc:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        administrator:
+          type: boolean
+    InvitationResponse:
+      type: object
+      required: [invitation]
+      properties:
+        invitation:
+          type: object
+          required: [invitation_id, invitation_token, expires_at_utc]
+          properties:
+            invitation_id:
+              type: string
+            invitation_token:
+              type: string
+            expires_at_utc:
+              type: string
+              format: date-time
+    LockLease:
+      type: object
+      required:
+        - project_uuid
+        - lease_id
+        - fencing_token
+        - owner_device_id
+        - owner_display_name
+        - acquired_at_utc
+        - expires_at_utc
+      properties:
+        project_uuid:
+          type: string
+        lease_id:
+          type: string
+        fencing_token:
+          type: integer
+          minimum: 1
+        owner_device_id:
+          type: string
+        owner_display_name:
+          type: string
+        acquired_at_utc:
+          type: string
+          format: date-time
+        expires_at_utc:
+          type: string
+          format: date-time
+    PackageRegistrationRequest:
+      allOf:
+        - $ref: "#/components/schemas/PackageArtifactDescriptor"
+        - type: object
+          required: [lease_id]
+          properties:
+            lease_id:
+              type: string
+              minLength: 1
+    PackageArtifactDescriptor:
+      type: object
+      required:
+        - transport_name
+        - remote_id
+        - project_version
+        - package_checksum
+        - package_size_bytes
+        - encryption_key_id
+      properties:
+        transport_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+        remote_id:
+          type: string
+          minLength: 1
+          maxLength: 512
+        project_version:
+          type: integer
+          minimum: 1
+        package_checksum:
+          type: string
+          pattern: "^[0-9a-fA-F]{64}$"
+        package_size_bytes:
+          type: integer
+          minimum: 1
+        encryption_key_id:
+          type: string
+          minLength: 1
+          maxLength: 100
+        project_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        game_id:
+          type: string
+          minLength: 1
+          maxLength: 100
+        created_by:
+          type: string
+          minLength: 1
+          maxLength: 100
+    PackageArtifactRecord:
+      allOf:
+        - $ref: "#/components/schemas/PackageArtifactDescriptor"
+        - type: object
+          required:
+            - catalog_id
+            - project_uuid
+            - published_by_device_id
+            - published_at_utc
+          properties:
+            catalog_id:
+              type: string
+              minLength: 1
+            project_uuid:
+              type: string
+              minLength: 1
+            published_by_device_id:
+              type: string
+              minLength: 1
+            published_at_utc:
+              type: string
+              format: date-time
+    PackageEncryptionKey:
+      type: object
+      required: [key_id, algorithm, key_material, created_at_utc]
+      properties:
+        key_id:
+          type: string
+          minLength: 1
+        algorithm:
+          type: string
+          const: AES-256-GCM
+        key_material:
+          type: string
+          description: URL-safe base64 encoding of the 256-bit group key.
+          pattern: "^[A-Za-z0-9_-]{43}$"
+        created_at_utc:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            lock:
+              $ref: "#/components/schemas/LockLease"

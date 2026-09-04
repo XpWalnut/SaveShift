@@ -36,9 +36,31 @@ class AppConfig:
         )
 
     @staticmethod
+    def get_database_backups_directory() -> Path:
+        configured_path = os.environ.get("SAVESHIFT_DATABASE_BACKUPS_PATH")
+
+        if configured_path:
+            return AppConfig._ensure_directory(Path(configured_path))
+
+        return AppConfig._ensure_directory(
+            AppConfig.get_backups_directory() / AppResources.DATABASE_BACKUPS
+        )
+
+    @staticmethod
     def get_packages_directory() -> Path:
         return AppConfig._ensure_directory(
             AppConfig.get_saveshift_directory() / AppResources.PACKAGES
+        )
+
+    @staticmethod
+    def get_locks_directory() -> Path:
+        configured_path = os.environ.get("SAVESHIFT_LOCKS_PATH")
+
+        if configured_path:
+            return AppConfig._ensure_directory(Path(configured_path))
+
+        return AppConfig._ensure_directory(
+            AppConfig.get_saveshift_directory() / AppResources.LOCKS
         )
 
     @staticmethod

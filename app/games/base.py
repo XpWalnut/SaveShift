@@ -48,3 +48,11 @@ class SupportedGame(ABC):
             return
 
         GameLauncher.launch_steam_game(self.steam_app_id)
+
+    def join_hosted_session(self) -> None:
+        """Open the game for a remotely hosted Save Shift project.
+
+        Games that expose a supported direct-connect mechanism can override
+        this method without changing the project-card workflow.
+        """
+        self.launch()

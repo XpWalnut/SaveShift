@@ -41,6 +41,7 @@ Stores package metadata including:
 - Package creator
 - Save Shift version
 - List of packaged files
+- Optional World Journal entries with stable UUIDs
 - Future metadata
 
 ### checksums.json
@@ -80,7 +81,7 @@ Possible future additions include:
 - Package thumbnails
 - Compression settings
 - Digital signatures
-- Save notes
+- Additional rich World Journal media
 - Game version compatibility
 - Package encryption
 - Incremental backups

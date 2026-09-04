@@ -1,9 +1,11 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.database.models.project import Project
+from app.database.models.project_version import ProjectVersion
 from app.database.repositories.installed_game_repository import InstalledGameRepository
 from app.database.repositories.project_repository import ProjectRepository
 from app.database.repositories.project_version_repository import ProjectVersionRepository
@@ -12,14 +14,18 @@ from app.games.project_discovery import ImportTarget
 from app.games.registry import GameRegistry
 from app.packages.package_extractor import PackageExtractor
 from app.packages.package_info import PackageInfo
+from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 from app.packages.package_reader import PackageReader
 from app.services.import_service import ImportService
+from app.services.import_conflict import ImportConflictKind
 from app.services.project_service import ProjectService
 from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
 from app.services.save_file_service import SaveFileService
+from app.services.session_journal_service import SessionJournalService
 
 
 PROJECT_UUID = "12345678-1234-5678-1234-567812345678"
@@ -31,6 +37,8 @@ def _package_info(
     project_version: int = 2,
     game_id: str = GameId.ABIOTIC_FACTOR.value,
     project_name: str = "Regression Test World",
+    journal_entries: tuple[PackageJournalEntry, ...] = (),
+    metadata: PackageMetadata | None = None,
 ) -> PackageInfo:
     return PackageInfo(
         package_format_version=1,
@@ -43,6 +51,8 @@ def _package_info(
         save_shift_version="0.1.0-alpha.2",
         file_count=2,
         verified=True,
+        metadata=metadata or PackageMetadata(),
+        journal_entries=journal_entries,
     )
 
 
@@ -78,12 +88,17 @@ def _create_project(
     )
 
 
-def _create_version(project: Project, version_number: int) -> None:
-    ProjectVersionService.create_version(
+def _create_version(
+    project: Project,
+    version_number: int,
+    package_checksum: str | None = None,
+) -> ProjectVersion:
+    return ProjectVersionService.create_version(
         project_id=project.id,
         created_by="Local Host",
         source_type=ProjectVersionSource.HOSTED,
         version_number=version_number,
+        package_checksum=package_checksum,
     )
 
 
@@ -122,7 +137,9 @@ def test_newer_package_version_is_allowed(
     package_path = tmp_path / "incoming.sspkg"
     _mock_package_read(monkeypatch, _package_info(project_version=3))
 
-    ImportService.validate_import_package(package_path)
+    analysis = ImportService.analyze_import(package_path)
+
+    assert analysis.kind == ImportConflictKind.UNVERIFIED_NEWER
 
 
 def test_older_package_version_is_rejected(
@@ -145,8 +162,16 @@ def test_duplicate_package_version_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _create_project(tmp_path)
-    _create_version(project, version_number=2)
+    _create_version(
+        project,
+        version_number=2,
+        package_checksum="a" * 64,
+    )
     _mock_package_read(monkeypatch, _package_info(project_version=2))
+    monkeypatch.setattr(
+        "app.services.import_service.calculate_sha256",
+        lambda _package_path: "a" * 64,
+    )
 
     with pytest.raises(
         ValueError,
@@ -160,8 +185,15 @@ def test_existing_project_is_backed_up_and_import_version_is_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = _create_project(tmp_path)
-    _create_version(project, version_number=1)
-    package_info = _package_info(project_version=2)
+    parent_version = _create_version(project, version_number=1)
+    package_info = _package_info(
+        project_version=2,
+        metadata=PackageMetadata(
+            lineage_name="friends",
+            parent_project_version=1,
+            notes="Notes carried by package",
+        ),
+    )
     package_path = tmp_path / "incoming.sspkg"
     extracted_path = tmp_path / "extracted"
     extracted_path.mkdir()
@@ -209,7 +241,82 @@ def test_existing_project_is_backed_up_and_import_version_is_recorded(
     assert recorded.package_path == str(package_path)
     assert recorded.backup_path == str(backup_path)
     assert recorded.package_checksum == "a" * 64
+    assert recorded.parent_version_id == parent_version.id
+    assert recorded.lineage_name == "friends"
     assert recorded.notes == "Keep this import note"
+
+
+def test_import_preserves_package_notes_when_no_local_note_is_supplied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    _create_version(project, version_number=1)
+    extracted_path = tmp_path / "extracted"
+    extracted_path.mkdir()
+    _mock_package_read(
+        monkeypatch,
+        _package_info(
+            metadata=PackageMetadata(notes="Shared package note"),
+        ),
+    )
+    _mock_import_boundaries(monkeypatch, extracted_path)
+    monkeypatch.setattr(
+        SaveFileService,
+        "backup_project",
+        lambda **_kwargs: tmp_path / "backup",
+    )
+    monkeypatch.setattr(
+        SaveFileService,
+        "synchronize_project",
+        lambda **_kwargs: None,
+    )
+
+    imported = ImportService.import_package(
+        package_path=tmp_path / "incoming.sspkg",
+        imported_by="Receiving Player",
+        allow_replace=True,
+    )
+
+    assert imported.notes == "Shared package note"
+
+
+def test_import_does_not_claim_unmatched_package_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    _create_version(project, version_number=1)
+    extracted_path = tmp_path / "extracted"
+    extracted_path.mkdir()
+    _mock_package_read(
+        monkeypatch,
+        _package_info(
+            metadata=PackageMetadata(
+                parent_project_version=1,
+                parent_package_checksum="b" * 64,
+            ),
+        ),
+    )
+    _mock_import_boundaries(monkeypatch, extracted_path)
+    monkeypatch.setattr(
+        SaveFileService,
+        "backup_project",
+        lambda **_kwargs: tmp_path / "backup",
+    )
+    monkeypatch.setattr(
+        SaveFileService,
+        "synchronize_project",
+        lambda **_kwargs: None,
+    )
+
+    imported = ImportService.import_package(
+        package_path=tmp_path / "incoming.sspkg",
+        imported_by="Receiving Player",
+        allow_replace=True,
+    )
+
+    assert imported.parent_version_id is None
 
 
 def test_missing_existing_project_directory_skips_backup(
@@ -236,6 +343,7 @@ def test_missing_existing_project_directory_skips_backup(
     result = ImportService.import_package(
         package_path=package_path,
         imported_by="Importing Player",
+        allow_replace=True,
     )
 
     assert result.project_id == project.id
@@ -267,6 +375,7 @@ def test_extracted_files_are_synchronized_into_existing_project(
     ImportService.import_package(
         package_path=tmp_path / "incoming.sspkg",
         imported_by="Importing Player",
+        allow_replace=True,
     )
 
     assert not (project_path / "stale.sav").exists()
@@ -368,3 +477,49 @@ def test_new_project_import_rejects_unsupported_game_id(
         )
 
     assert ProjectRepository.get_by_uuid(package_info.project_uuid) is None
+
+
+def test_import_stores_package_journal_entries_for_the_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    extracted_path = tmp_path / "extracted"
+    extracted_path.mkdir()
+    journal_entry = PackageJournalEntry.create(
+        entry_uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        title="A narrow escape",
+        body="Everyone made it back to the base.",
+        created_by="Package Host",
+        created_at_utc=datetime(2026, 7, 13, 12, tzinfo=UTC),
+        project_version_number=2,
+    )
+    _mock_package_read(
+        monkeypatch,
+        _package_info(journal_entries=(journal_entry,)),
+    )
+    _mock_import_boundaries(monkeypatch, extracted_path)
+    monkeypatch.setattr(
+        SaveFileService,
+        "backup_project",
+        lambda **_kwargs: tmp_path / "backup",
+    )
+    monkeypatch.setattr(
+        SaveFileService,
+        "synchronize_project",
+        lambda **_kwargs: None,
+    )
+
+    ImportService.import_package(
+        package_path=tmp_path / "incoming.sspkg",
+        imported_by="Receiving Player",
+        allow_replace=True,
+    )
+
+    stored = SessionJournalService.get_entries_for_project(project.id)
+    assert len(stored) == 1
+    assert stored[0].entry_uuid == journal_entry.entry_uuid
+    assert stored[0].title == journal_entry.title
+    assert stored[0].body == journal_entry.body
+    assert stored[0].created_by == journal_entry.created_by
+    assert stored[0].project_version_number == 2

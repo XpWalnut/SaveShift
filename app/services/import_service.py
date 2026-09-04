@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.database.models.project import Project
+from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.packages.checksum import calculate_sha256
 from app.packages.package_extractor import PackageExtractor
@@ -14,6 +15,9 @@ from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
+from app.coordination.local_lock import ProjectOperationLock
+from app.services.session_journal_service import SessionJournalService
+from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 
 
 class ImportService:
@@ -22,19 +26,57 @@ class ImportService:
         package_path: Path,
         imported_by: str,
         notes: str | None = None,
+        allow_replace: bool = False,
     ):
-        package_info = PackageReader.read(package_path)
-
-        project = ProjectRepository.get_by_uuid(package_info.project_uuid)
+        analysis = ImportService.analyze_import(package_path)
+        ImportService._validate_analysis(analysis, allow_replace)
+        package_info = analysis.package_info
+        project = analysis.project
 
         if project is None:
-            project = ImportService._create_project_from_package(package_info)
+            if analysis.import_target is None:
+                raise RuntimeError("The package import target was not resolved.")
 
-        ImportService._validate_import_version(
-            package_info=package_info,
-            project=project,
-        )
+            if analysis.target_project is not None:
+                project = ProjectRepository.adopt_identity(
+                    project_id=analysis.target_project.id,
+                    project_uuid=package_info.project_uuid,
+                    name=package_info.project_name,
+                )
+            else:
+                project = ImportService._create_project_from_package(
+                    package_info,
+                    analysis.import_target,
+                )
 
+        with ProjectOperationLock(project.uuid, "importing into it"):
+            if analysis.project is not None:
+                analysis = ImportService.analyze_import(package_path)
+                ImportService._validate_analysis(analysis, allow_replace)
+                package_info = analysis.package_info
+                project = analysis.project
+
+                if project is None:
+                    raise RuntimeError(
+                        "The project changed while the import was being prepared."
+                    )
+
+            return ImportService._synchronize_package(
+                package_path=package_path,
+                package_info=package_info,
+                project=project,
+                imported_by=imported_by,
+                notes=notes,
+            )
+
+    @staticmethod
+    def _synchronize_package(
+        package_path: Path,
+        package_info: PackageInfo,
+        project: Project,
+        imported_by: str,
+        notes: str | None,
+    ):
         extracted_path = PackageExtractor.extract(package_path)
 
         project_root = Path(project.local_path)
@@ -53,8 +95,13 @@ class ImportService:
         )
 
         package_checksum = calculate_sha256(package_path)
+        parent_version = ProjectVersionService.get_latest_version(project.id)
+        parent_matches = ImportService._matches_package_parent(
+            package_info,
+            parent_version,
+        )
 
-        return ProjectVersionService.create_version(
+        version = ProjectVersionService.create_version(
             project_id=project.id,
             created_by=imported_by,
             source_type=ProjectVersionSource.IMPORTED,
@@ -62,52 +109,218 @@ class ImportService:
             package_path=str(package_path),
             backup_path=str(backup_path) if backup_path is not None else None,
             package_checksum=package_checksum,
-            notes=notes,
+            parent_version_id=(
+                parent_version.id
+                if parent_matches and parent_version is not None
+                else None
+            ),
+            lineage_name=package_info.metadata.lineage_name,
+            notes=(
+                notes
+                if notes is not None
+                else package_info.metadata.notes
+            ),
+        )
+
+        SessionJournalService.import_entries(
+            project.id,
+            package_info.journal_entries,
+        )
+
+        return version
+
+    @staticmethod
+    def _matches_package_parent(
+        package_info: PackageInfo,
+        local_version: ProjectVersion | None,
+    ) -> bool:
+        if local_version is None:
+            return False
+
+        metadata = package_info.metadata
+
+        if metadata.parent_project_version != local_version.version_number:
+            return False
+
+        if metadata.parent_package_checksum is None:
+            return True
+
+        return (
+            local_version.package_checksum
+            == metadata.parent_package_checksum
         )
 
     @staticmethod
-    def validate_import_package(package_path: Path) -> None:
+    def validate_import_package(package_path: Path) -> PackageInfo:
+        analysis = ImportService.analyze_import(package_path)
+        ImportService._raise_blocked_analysis(analysis)
+        return analysis.package_info
+
+    @staticmethod
+    def analyze_import(package_path: Path) -> ImportAnalysis:
         package_info = PackageReader.read(package_path)
         project = ProjectRepository.get_by_uuid(package_info.project_uuid)
 
         if project is None:
-            return
+            import_target = ImportService._resolve_import_target(package_info)
+            target_project = ProjectRepository.get_by_local_path(import_target)
 
-        ImportService._validate_import_version(
-            package_info=package_info,
-            project=project,
-        )
+            if target_project is not None:
+                target_version = ProjectVersionService.get_latest_version(
+                    target_project.id
+                )
+                return ImportAnalysis(
+                    package_info=package_info,
+                    project=None,
+                    local_version=target_version,
+                    kind=(
+                        ImportConflictKind.IDENTITY_COLLISION
+                        if target_version is not None
+                        else ImportConflictKind.ADOPT_EXISTING_PROJECT
+                    ),
+                    import_target=import_target,
+                    target_project=target_project,
+                )
 
-    @staticmethod
-    def _validate_import_version(
-        package_info: PackageInfo,
-        project: Project,
-    ) -> None:
+            target_contains_files = (
+                import_target.is_dir()
+                and any(path.is_file() for path in import_target.rglob("*"))
+            )
+            return ImportAnalysis(
+                package_info=package_info,
+                project=None,
+                local_version=None,
+                kind=(
+                    ImportConflictKind.NEW_PROJECT_REPLACE_EXISTING
+                    if target_contains_files
+                    else ImportConflictKind.NEW_PROJECT
+                ),
+                import_target=import_target,
+            )
+
         latest_version = ProjectVersionService.get_latest_version(project.id)
 
         if latest_version is None:
-            return
+            return ImportAnalysis(
+                package_info=package_info,
+                project=project,
+                local_version=None,
+                kind=ImportConflictKind.REPLACE_UNVERSIONED,
+            )
 
         local_version_number = latest_version.version_number
         incoming_version_number = package_info.project_version
 
         if incoming_version_number < local_version_number:
-            raise ValueError(
-                f"The package is older than your current project.\n\n"
-                f"Current version: {local_version_number}\n"
-                f"Package version: {incoming_version_number}\n\n"
-                f"Importing it would overwrite newer progress."
+            kind = ImportConflictKind.OLDER
+        elif incoming_version_number == local_version_number:
+            incoming_checksum = calculate_sha256(package_path)
+            kind = (
+                ImportConflictKind.DUPLICATE
+                if latest_version.package_checksum == incoming_checksum
+                else ImportConflictKind.VERSION_COLLISION
             )
+        elif ImportService._matches_package_parent(
+            package_info,
+            latest_version,
+        ):
+            kind = ImportConflictKind.FAST_FORWARD
+        elif (
+            package_info.metadata.parent_project_version is None
+            or package_info.metadata.parent_project_version
+            > local_version_number
+        ):
+            kind = ImportConflictKind.UNVERIFIED_NEWER
+        else:
+            kind = ImportConflictKind.DIVERGED
 
-        if incoming_version_number == local_version_number:
+        return ImportAnalysis(
+            package_info=package_info,
+            project=project,
+            local_version=latest_version,
+            kind=kind,
+        )
+
+    @staticmethod
+    def _validate_analysis(
+        analysis: ImportAnalysis,
+        allow_replace: bool,
+    ) -> None:
+        ImportService._raise_blocked_analysis(analysis)
+
+        if analysis.requires_replace_confirmation and not allow_replace:
             raise ValueError(
-                "This package version has already been imported.\n\n"
-                f"Current version: {local_version_number}\n"
-                f"Package version: {incoming_version_number}"
+                "This import requires explicit confirmation to replace the "
+                "current save after creating a backup."
             )
 
     @staticmethod
-    def _create_project_from_package(package_info: PackageInfo) -> Project:
+    def _raise_blocked_analysis(analysis: ImportAnalysis) -> None:
+        package_version = analysis.package_info.project_version
+        local_version = analysis.local_version
+        current_version = (
+            local_version.version_number
+            if local_version is not None
+            else None
+        )
+
+        if analysis.kind == ImportConflictKind.OLDER:
+            raise ValueError(
+                "The package is older than your current project.\n\n"
+                f"Current version: {current_version}\n"
+                f"Package version: {package_version}\n\n"
+                "Use version history to restore an older version without "
+                "corrupting the project timeline."
+            )
+
+        if analysis.kind == ImportConflictKind.DUPLICATE:
+            raise ValueError(
+                "This package version has already been imported.\n\n"
+                f"Current version: {current_version}\n"
+                f"Package version: {package_version}"
+            )
+
+        if analysis.kind == ImportConflictKind.VERSION_COLLISION:
+            raise ValueError(
+                "This package uses the current version number but contains "
+                "different data.\n\n"
+                f"Current version: {current_version}\n"
+                f"Package version: {package_version}\n\n"
+                "Save Shift cannot safely place both states at the same "
+                "point in history."
+            )
+
+        if analysis.kind == ImportConflictKind.IDENTITY_COLLISION:
+            raise ValueError(
+                "A differently identified project already tracks this save "
+                "folder and has its own version history. Save Shift cannot "
+                "safely combine the two timelines automatically."
+            )
+
+    @staticmethod
+    def _create_project_from_package(
+        package_info: PackageInfo,
+        import_target: Path,
+    ) -> Project:
+        installed_game = InstalledGameRepository.get_by_game_id(
+            package_info.game_id
+        )
+
+        if installed_game is None:
+            raise ValueError(
+                f"This package is for {package_info.game_id}, but that "
+                "game is not configured on this computer."
+            )
+
+        return ProjectService.create_project(
+            installed_game_id=installed_game.id,
+            project_uuid=package_info.project_uuid,
+            name=package_info.project_name,
+            local_path=import_target,
+        )
+
+    @staticmethod
+    def _resolve_import_target(package_info: PackageInfo) -> Path:
         installed_game = InstalledGameRepository.get_by_game_id(package_info.game_id)
 
         if installed_game is None:
@@ -126,9 +339,4 @@ class ImportService:
             project_name=package_info.project_name,
         )
 
-        return ProjectService.create_project(
-            installed_game_id=installed_game.id,
-            project_uuid=package_info.project_uuid,
-            name=package_info.project_name,
-            local_path=import_target.project_root,
-        )
+        return import_target.project_root

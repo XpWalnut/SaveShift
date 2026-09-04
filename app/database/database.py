@@ -1,10 +1,13 @@
 import os
 import sys
 
-from sqlalchemy import create_engine, inspect, text
+from pathlib import Path
+
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import AppConfig
+from app.database.migrations import MigrationResult, initialize_database
 
 
 def _resolve_database_path() -> str:
@@ -33,34 +36,19 @@ class Base(DeclarativeBase):
     pass
 
 
-def init_db() -> None:
+def init_db() -> MigrationResult:
     from app.database.models.installed_game import InstalledGame
     from app.database.models.project import Project
     from app.database.models.project_version import ProjectVersion
+    from app.database.models.session_journal_entry import SessionJournalEntry
 
-    Base.metadata.create_all(bind=engine)
-    _run_migrations()
+    return _run_migrations()
 
 
-def _run_migrations() -> None:
-    inspector = inspect(engine)
-
-    if "project_versions" not in inspector.get_table_names():
-        return
-
-    existing_columns = {
-        column["name"]
-        for column in inspector.get_columns("project_versions")
-    }
-
-    if "restored_from_version_id" not in existing_columns:
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    """
-                    ALTER TABLE project_versions
-                    ADD COLUMN restored_from_version_id INTEGER
-                    REFERENCES project_versions(id)
-                    """
-                )
-            )
+def _run_migrations() -> MigrationResult:
+    return initialize_database(
+        engine=engine,
+        metadata=Base.metadata,
+        database_path=Path(database_path),
+        backup_directory=AppConfig.get_database_backups_directory(),
+    )

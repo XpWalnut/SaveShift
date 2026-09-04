@@ -12,6 +12,7 @@ from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
+from app.services.session_journal_service import SessionJournalService
 
 
 def _create_project(tmp_path: Path, *, create_directory: bool = True):
@@ -87,11 +88,13 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     metadata_file = project_root / "Regression World.fwl"
     world_file.write_bytes(b"world")
     metadata_file.write_bytes(b"metadata")
-    ProjectVersionService.create_version(
+    previous_version = ProjectVersionService.create_version(
         project_id=project.id,
         created_by="Previous Host",
         source_type=ProjectVersionSource.HOSTED,
         version_number=3,
+        package_checksum="a" * 64,
+        lineage_name="friends",
     )
 
     package_path = tmp_path / "packages" / "regression.sspkg"
@@ -112,12 +115,18 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
         "app.services.hosting_service.calculate_sha256",
         lambda path: "b" * 64 if path == package_path else pytest.fail("wrong path"),
     )
+    monkeypatch.setattr(
+        HostingService,
+        "_get_game_metadata",
+        lambda _project, _game_id: {"game_version": "test-version"},
+    )
 
     result = HostingService.host_project(
         project_id=project.id,
         game_id=GameId.VALHEIM.value,
         hosted_by="  Current Host  ",
         notes="Known good version",
+        source_device_name="  Gaming PC  ",
     )
 
     assert len(package_calls) == 1
@@ -126,6 +135,13 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     assert package_calls[0]["project_version"] == 4
     assert set(package_calls[0]["save_files"]) == {world_file, metadata_file}
     assert package_calls[0]["created_by"] == "  Current Host  "
+    metadata = package_calls[0]["metadata"]
+    assert metadata.source_device_name == "Gaming PC"
+    assert metadata.lineage_name == "friends"
+    assert metadata.parent_project_version == 3
+    assert metadata.parent_package_checksum == "a" * 64
+    assert metadata.notes == "Known good version"
+    assert metadata.game_metadata == {"game_version": "test-version"}
 
     recorded = ProjectVersionRepository.get_by_id(result.id)
     assert recorded is not None
@@ -135,6 +151,8 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     assert recorded.source_type == ProjectVersionSource.HOSTED
     assert recorded.package_path == str(package_path)
     assert recorded.package_checksum == "b" * 64
+    assert recorded.parent_version_id == previous_version.id
+    assert recorded.lineage_name == "friends"
     assert recorded.notes == "Known good version"
 
 
@@ -162,3 +180,53 @@ def test_package_creation_failure_does_not_record_hosted_version(
         )
 
     assert ProjectVersionService.get_versions_for_project(project.id) == []
+
+
+def test_hosting_includes_existing_and_new_journal_entries_in_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    (Path(project.local_path) / "world.sav").write_bytes(b"world")
+    existing = SessionJournalService.create_entry(
+        project_id=project.id,
+        entry_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        title="The first night",
+        body="We built a shelter before dark.",
+        created_by="Alice",
+    )
+    package_path = tmp_path / "packages" / "journal.sspkg"
+    package_path.parent.mkdir()
+    package_path.write_bytes(b"package")
+    package_calls: list[dict[str, object]] = []
+
+    def fake_create_package(**kwargs: object) -> Path:
+        package_calls.append(kwargs)
+        return package_path
+
+    monkeypatch.setattr(PackageService, "create_project_package", fake_create_package)
+    monkeypatch.setattr(
+        "app.services.hosting_service.calculate_sha256",
+        lambda _path: "c" * 64,
+    )
+
+    version = HostingService.host_project(
+        project_id=project.id,
+        game_id=GameId.VALHEIM.value,
+        hosted_by="Bob",
+        journal_title="Boss defeated",
+        journal_body="The group defeated the first boss.",
+    )
+
+    packaged_entries = package_calls[0]["journal_entries"]
+    assert len(packaged_entries) == 2
+    assert packaged_entries[0].entry_uuid == existing.entry_uuid
+    assert packaged_entries[1].title == "Boss defeated"
+    assert packaged_entries[1].project_version_number == version.version_number
+
+    stored_entries = SessionJournalService.get_entries_for_project(project.id)
+    assert [entry.title for entry in stored_entries] == [
+        "The first night",
+        "Boss defeated",
+    ]
+    assert stored_entries[-1].project_version_number == version.version_number

@@ -3,6 +3,8 @@ from zipfile import ZipFile
 import json
 
 from app.packages.package_info import PackageInfo
+from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 from app.packages.package_service import PackageService
 
 
@@ -26,6 +28,17 @@ class PackageReader:
 
             manifest = json.loads(package.read("manifest.json"))
 
+        journal_data = manifest.get("journal_entries", [])
+
+        if not isinstance(journal_data, list):
+            raise ValueError("Package journal_entries must be a list.")
+
+        journal_entries = tuple(
+            PackageJournalEntry.from_dict(entry)
+            for entry in journal_data
+        )
+        metadata = PackageMetadata.from_dict(manifest.get("metadata", {}))
+
         return PackageInfo(
             package_format_version=manifest["package_format_version"],
             project_uuid=manifest["project_uuid"],
@@ -37,4 +50,6 @@ class PackageReader:
             save_shift_version=manifest["save_shift_version"],
             file_count=len(manifest["files"]),
             verified=verify,
+            metadata=metadata,
+            journal_entries=journal_entries,
         )

@@ -10,13 +10,16 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_version_repository import ProjectVersionRepository
 from app.services.project_version_service import ProjectVersionService
+from app.services.session_journal_service import SessionJournalService
 from app.ui import styles, theme
 
 
@@ -28,18 +31,21 @@ class HistoryDialog(QDialog):
                 [ProjectVersion],
                 ProjectVersion | None,
             ],
+            on_add_journal: Callable[[], object | None] | None = None,
+            initial_tab: str = "versions",
             parent=None,
     ) -> None:
         super().__init__(parent)
 
         self.project = project
         self.on_restore = on_restore
+        self.on_add_journal = on_add_journal
         self.versions_by_row: dict[int, ProjectVersion] = {}
 
         self.setWindowTitle(f"History — {project.name}")
         self.setMinimumSize(700, 500)
 
-        title = QLabel(f"Version History — {project.name}")
+        title = QLabel(f"World History — {project.name}")
         title.setStyleSheet(
             f"""
             color: {theme.TEXT_PRIMARY};
@@ -49,7 +55,7 @@ class HistoryDialog(QDialog):
         )
 
         subtitle = QLabel(
-            "Select a version to view its details or restore the project to it."
+            "Review save versions and the group's journal of shared adventures."
         )
         subtitle.setStyleSheet(
             f"color: {theme.TEXT_SECONDARY};"
@@ -82,13 +88,48 @@ class HistoryDialog(QDialog):
         self.restore_button.setStyleSheet(styles.primary_button_style())
         self.restore_button.clicked.connect(self._restore_selected_version)
 
+        version_button_row = QHBoxLayout()
+        version_button_row.addStretch()
+        version_button_row.addWidget(self.restore_button)
+
+        version_tab = QWidget()
+        version_layout = QVBoxLayout()
+        version_layout.addWidget(self.version_list)
+        version_layout.addLayout(version_button_row)
+        version_tab.setLayout(version_layout)
+
+        self.journal_list = QListWidget()
+        self.journal_list.setWordWrap(True)
+        self.journal_list.setStyleSheet(self.version_list.styleSheet())
+
+        self.add_journal_button = QPushButton("Add Journal Entry")
+        self.add_journal_button.setStyleSheet(styles.primary_button_style())
+        self.add_journal_button.clicked.connect(self._add_journal_entry)
+        self.add_journal_button.setEnabled(on_add_journal is not None)
+
+        journal_button_row = QHBoxLayout()
+        journal_button_row.addStretch()
+        journal_button_row.addWidget(self.add_journal_button)
+
+        journal_tab = QWidget()
+        journal_layout = QVBoxLayout()
+        journal_layout.addWidget(self.journal_list)
+        journal_layout.addLayout(journal_button_row)
+        journal_tab.setLayout(journal_layout)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(version_tab, "Version History")
+        self.tabs.addTab(journal_tab, "World Journal")
+
+        if initial_tab == "journal":
+            self.tabs.setCurrentWidget(journal_tab)
+
         close_button = QPushButton("Close")
         close_button.setStyleSheet(styles.secondary_button_style())
         close_button.clicked.connect(self.accept)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
-        button_row.addWidget(self.restore_button)
         button_row.addWidget(close_button)
 
         layout = QVBoxLayout()
@@ -101,7 +142,7 @@ class HistoryDialog(QDialog):
         layout.setSpacing(theme.SPACING)
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addWidget(self.version_list)
+        layout.addWidget(self.tabs, 1)
         layout.addLayout(button_row)
 
         self.setLayout(layout)
@@ -110,6 +151,7 @@ class HistoryDialog(QDialog):
         )
 
         self._load_versions()
+        self._load_journal_entries()
 
     def _load_versions(self) -> None:
         self.version_list.clear()
@@ -200,3 +242,40 @@ class HistoryDialog(QDialog):
 
         if restored_version is not None:
             self.accept()
+
+    def _load_journal_entries(self) -> None:
+        self.journal_list.clear()
+        entries = SessionJournalService.get_entries_for_project(self.project.id)
+
+        if not entries:
+            item = QListWidgetItem(
+                "No journal entries yet. Record the group's first adventure."
+            )
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            self.journal_list.addItem(item)
+            return
+
+        for entry in reversed(entries):
+            created_at = entry.created_at_utc
+
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+
+            details = [
+                entry.title,
+                f"{entry.created_by} · "
+                f"{created_at.astimezone().strftime('%B %d, %Y at %I:%M %p')}",
+            ]
+
+            if entry.project_version_number is not None:
+                details.append(f"Version {entry.project_version_number}")
+
+            details.extend(["", entry.body])
+            self.journal_list.addItem(QListWidgetItem("\n".join(details)))
+
+    def _add_journal_entry(self) -> None:
+        if self.on_add_journal is None:
+            return
+
+        if self.on_add_journal() is not None:
+            self._load_journal_entries()

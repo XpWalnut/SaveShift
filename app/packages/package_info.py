@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from app.packages.package_journal_entry import PackageJournalEntry
+from app.packages.package_metadata import PackageMetadata
 
 
 @dataclass(frozen=True)
@@ -13,3 +16,5 @@ class PackageInfo:
     save_shift_version: str
     file_count: int
     verified: bool
+    metadata: PackageMetadata = field(default_factory=PackageMetadata)
+    journal_entries: tuple[PackageJournalEntry, ...] = ()

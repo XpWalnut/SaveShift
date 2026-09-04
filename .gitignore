@@ -10,6 +10,12 @@ __pycache__/
 dist/
 build/
 *.spec
+node_modules/
+.pnpm-store/
+.wrangler/
+coverage/
+app/resources/cloudflare/*.map
+app/resources/cloudflare/README.md
 
 # IDE
 .idea/
@@ -23,6 +29,10 @@ tests/output/
 
 # Temporary package output
 *.sspkg
+steam_appid.txt
+
+# Locally downloaded proprietary SDK files
+vendor/steamworks_sdk/
 
 # Logs
 *.log
