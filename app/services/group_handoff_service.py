@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.coordination.models import CatalogPackage, LockLease
 from app.coordination.provider import PackageCatalogProvider, PackageKeyProvider
 from app.core.config import AppConfig
+from app.core.logging import diagnostic_operation, logger
 from app.package_transport.encrypted_transport import EncryptedPackageTransport
 from app.package_transport.handoff_service import PackageHandoffService
 from app.steam.native_ugc_client import SteamworksUgcClient
@@ -16,6 +17,7 @@ class GroupHandoffService:
     """Composes the group catalog, encryption, and Steam UGC transport."""
 
     @staticmethod
+    @diagnostic_operation("package.publish")
     def publish_package(
         package_path: Path,
         lease: LockLease,
@@ -47,6 +49,7 @@ class GroupHandoffService:
             GroupHandoffService._close_client(client)
 
     @staticmethod
+    @diagnostic_operation("package.receive")
     def download_latest(
         project_uuid: str,
         provider: PackageCatalogProvider | PackageKeyProvider,
@@ -87,10 +90,13 @@ class GroupHandoffService:
             GroupHandoffService._close_client(client)
 
     @staticmethod
+    @diagnostic_operation("catalog.list")
     def list_latest_packages(
         provider: PackageCatalogProvider,
     ) -> list[CatalogPackage]:
-        return provider.list_latest_packages()
+        packages = provider.list_latest_packages()
+        logger.info("catalog.list count=%d", len(packages))
+        return packages
 
     @staticmethod
     def _transport(

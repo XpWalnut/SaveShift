@@ -220,7 +220,7 @@ def test_download_recovers_when_steam_installs_after_transient_error(
     api.SteamAPI_ISteamUGC_GetItemState.result = lambda *_args: next(states, 4)
     client = RecoveringDownloadClient(
         library=api,
-        timeout_seconds=1.0,
+        download_timeout_seconds=1.0,
     )
 
     result = client.download_item("987654321")
@@ -267,3 +267,44 @@ def test_invalid_parameter_result_explains_workshop_configuration() -> None:
         match="unpublished Workshop file-transfer configuration",
     ):
         SteamworksUgcClient._require_ok("upload Workshop item", 8)
+
+
+def test_stalled_download_logs_waiting_and_timeout(tmp_path, monkeypatch, caplog):
+    import logging
+    import itertools
+    import app.steam.native_ugc_client as native
+
+    clock = itertools.count()
+    monkeypatch.setattr(native.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(native.time, "sleep", lambda _: None)
+    client = SteamworksUgcClient(library=FakeSteamApi(tmp_path), download_timeout_seconds=45)
+    with caplog.at_level(logging.INFO, logger="SaveShift"):
+        with pytest.raises(SteamworksError, match="timed out"):
+            client.download_item("987654321")
+    assert "state=0" in caplog.text
+    assert 1 <= caplog.text.count("steam.download waiting") <= 4
+    assert "steam.download timeout" in caplog.text
+    assert "error_type=SteamworksError" in caplog.text
+
+
+def test_download_default_timeout_is_one_minute_without_shortening_uploads(tmp_path):
+    client = SteamworksUgcClient(library=FakeSteamApi(tmp_path))
+    assert client.download_timeout_seconds == 60.0
+    assert client.timeout_seconds == 300.0
+    client.close()
+
+
+def test_default_download_times_out_after_one_minute(tmp_path, monkeypatch, caplog):
+    import logging
+    import app.steam.native_ugc_client as native
+
+    now = [0.0]
+    monkeypatch.setattr(native.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(native.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    client = SteamworksUgcClient(library=FakeSteamApi(tmp_path))
+    with caplog.at_level(logging.INFO, logger="SaveShift"):
+        with pytest.raises(SteamworksError, match="timed out"):
+            client.download_item("987654321")
+    assert 60.0 <= now[0] < 60.1
+    assert "timeout=60.0s" in caplog.text
+    client.close()
