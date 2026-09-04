@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from app.core.logging import logger
+from app.core.logging import diagnostic_operation, logger
 from app.steam.constants import SAVESHIFT_STEAM_APP_ID
 from app.steam.errors import SteamworksError, SteamworksUnavailableError
 from app.steam.ugc_client import (
@@ -100,9 +100,11 @@ class SteamworksUgcClient:
         dll_path: Path | None = None,
         *,
         timeout_seconds: float = 300.0,
+        download_timeout_seconds: float = 60.0,
         library: object | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.download_timeout_seconds = download_timeout_seconds
         self._lock = threading.RLock()
         self._closed = False
 
@@ -297,6 +299,7 @@ class SteamworksUgcClient:
                 ),
             )
 
+    @diagnostic_operation("steam.download")
     def download_item(self, published_file_id: str) -> Path:
         numeric_id = self._parse_published_file_id(published_file_id)
 
@@ -412,13 +415,25 @@ class SteamworksUgcClient:
         raise SteamworksError("The Steam operation timed out.")
 
     def _await_download(self, published_file_id: int) -> None:
-        deadline = time.monotonic() + self.timeout_seconds
+        started = time.monotonic()
+        deadline = started + self.download_timeout_seconds
+        next_diagnostic = started
         next_state_check = 0.0
         next_retry = float("inf")
         last_transient_result: int | None = None
 
         while time.monotonic() < deadline:
             now = time.monotonic()
+
+            if now >= next_diagnostic:
+                state = int(self._api.SteamAPI_ISteamUGC_GetItemState(
+                    self._ugc, published_file_id,
+                ))
+                logger.info(
+                    "steam.download waiting item=%d elapsed=%.1fs timeout=%.1fs state=%d",
+                    published_file_id, now - started, self.download_timeout_seconds, state,
+                )
+                next_diagnostic = now + 15.0
 
             if now >= next_state_check:
                 if self._item_download_ready(published_file_id):
@@ -442,6 +457,8 @@ class SteamworksUgcClient:
                     continue
 
                 result_code = int(result.result)
+                logger.info("steam.download callback item=%d result=%d",
+                            published_file_id, result_code)
 
                 if result_code == _RESULT_OK:
                     return
@@ -453,6 +470,8 @@ class SteamworksUgcClient:
                 next_retry = min(next_retry, time.monotonic() + 2.0)
 
             if time.monotonic() >= next_retry:
+                logger.warning("steam.download retry item=%d last_result=%s",
+                               published_file_id, last_transient_result)
                 self._api.SteamAPI_ISteamUGC_DownloadItem(
                     self._ugc,
                     published_file_id,
@@ -462,6 +481,8 @@ class SteamworksUgcClient:
 
             time.sleep(0.02)
 
+        logger.error("steam.download timeout item=%d last_result=%s",
+                     published_file_id, last_transient_result)
         if last_transient_result is not None:
             detail = _RESULT_MESSAGES.get(
                 last_transient_result,

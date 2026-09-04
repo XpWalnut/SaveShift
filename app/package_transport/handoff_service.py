@@ -7,7 +7,7 @@ from app.coordination.models import (
 )
 from app.coordination.errors import PackageKeyRotatedError
 from app.coordination.provider import PackageCatalogProvider
-from app.core.logging import logger
+from app.core.logging import diagnostic_operation, logger
 from app.package_transport.errors import PackageTransferIntegrityError
 from app.package_transport.provider import PackageTransport
 from app.package_transport.service import PackageTransferService
@@ -32,14 +32,16 @@ class PackageHandoffService:
         )
 
         for attempt in range(2):
-            artifact = PackageTransferService.publish(package_path, transport)
+            with diagnostic_operation("package.upload_and_encrypt"):
+                artifact = PackageTransferService.publish(package_path, transport)
 
             try:
-                registered = catalog.register_package(
-                    artifact,
-                    lease,
-                    metadata,
-                )
+                with diagnostic_operation("catalog.register"):
+                    registered = catalog.register_package(
+                        artifact,
+                        lease,
+                        metadata,
+                    )
 
                 if registered.artifact != artifact:
                     raise PackageTransferIntegrityError(
@@ -71,7 +73,9 @@ class PackageHandoffService:
         transport: PackageTransport,
         catalog: PackageCatalogProvider,
     ) -> tuple[CatalogPackage, Path] | None:
-        packages = catalog.list_packages(project_uuid)
+        with diagnostic_operation("catalog.project_versions"):
+            packages = catalog.list_packages(project_uuid)
+        logger.info("catalog.project_versions count=%d", len(packages))
 
         if not packages:
             return None
@@ -86,9 +90,10 @@ class PackageHandoffService:
                 "The package catalog returned an artifact for a different project."
             )
 
-        downloaded_path = PackageTransferService.download(
-            latest.artifact,
-            destination_path,
-            transport,
-        )
+        with diagnostic_operation("package.download_decrypt_validate"):
+            downloaded_path = PackageTransferService.download(
+                latest.artifact,
+                destination_path,
+                transport,
+            )
         return latest, downloaded_path

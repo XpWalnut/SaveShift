@@ -12,6 +12,7 @@ from app.coordination.cloudflare_provisioning import (
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.models import GroupInvitation, PairedDevice
+from app.core.logging import diagnostic_operation
 
 
 class GroupSetupSignals(QObject):
@@ -42,7 +43,8 @@ class CreateGroupTask(QRunnable):
 
     def run(self) -> None:
         try:
-            created = self.creator_factory().create_group(self.device_name)
+            with diagnostic_operation("group.create"):
+                created = self.creator_factory().create_group(self.device_name)
             self.signals.create_completed.emit(created)
         except Exception as error:
             self.signals.failed.emit(str(error))
@@ -63,10 +65,11 @@ class JoinGroupTask(QRunnable):
     def run(self) -> None:
         try:
             provider = HttpCoordinationProvider(self.invitation.provider_url)
-            device = provider.join(
-                self.invitation.invitation_token,
-                self.device_name,
-            )
+            with diagnostic_operation("group.join"):
+                device = provider.join(
+                    self.invitation.invitation_token,
+                    self.device_name,
+                )
             self.signals.join_completed.emit(self.invitation, device)
         except Exception as error:
             self.signals.failed.emit(str(error))
@@ -96,7 +99,8 @@ class LeaveGroupTask(QRunnable):
                 self.provider_url,
                 device_token=self.device_token,
             )
-            result = provider.leave_group()
+            with diagnostic_operation("group.leave"):
+                result = provider.leave_group()
         except Exception as error:
             self.signals.failed.emit(str(error))
             return
@@ -106,7 +110,8 @@ class LeaveGroupTask(QRunnable):
 
         if result.group_empty and self.account_id and self.script_name:
             try:
-                self.remover_factory().remove(self.account_id, self.script_name)
+                with diagnostic_operation("group.cleanup"):
+                    self.remover_factory().remove(self.account_id, self.script_name)
                 removed = True
             except Exception as error:
                 cleanup_warning = str(error)

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.settings import AppSettings
+from app.core.distribution import DistributionChannel, detect_distribution_channel
 from app.coordination.cloudflare_provisioning import CloudflareOAuthConfig
 from app.ui import styles, theme
 from app.version import APP_VERSION
@@ -25,8 +26,19 @@ class SettingsDialog(QDialog):
     ACTION_CLAIM_ADMINISTRATOR = "claim_administrator"
     ACTION_LEAVE_GROUP = "leave_group"
 
-    def __init__(self, settings: AppSettings, parent=None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        parent=None,
+        *,
+        distribution_channel: DistributionChannel | None = None,
+    ) -> None:
         super().__init__(parent)
+        self.distribution_channel = (
+            detect_distribution_channel()
+            if distribution_channel is None
+            else distribution_channel
+        )
         self.check_requested = False
         self.coordination_action: str | None = None
 
@@ -63,6 +75,25 @@ class SettingsDialog(QDialog):
         self.automatic_update_checkbox.setChecked(
             settings.automatic_update_checks
         )
+
+        self.update_management_label = QLabel()
+        self.update_management_label.setWordWrap(True)
+        self.update_management_label.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY};"
+        )
+
+        if self.distribution_channel.updates_managed_externally:
+            self.automatic_update_checkbox.setEnabled(False)
+            self.automatic_update_checkbox.setVisible(False)
+            self.update_management_label.setText(
+                "Updates for this installation are downloaded and installed "
+                "automatically by Steam."
+            )
+        else:
+            self.update_management_label.setText(
+                "Standalone installations receive installer updates from "
+                "Save Shift's official GitHub releases."
+            )
 
         coordination_heading = QLabel("Project Coordination")
         coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
@@ -209,6 +240,9 @@ class SettingsDialog(QDialog):
         self.check_now_button = QPushButton("Check for Updates")
         self.check_now_button.setStyleSheet(styles.secondary_button_style())
         self.check_now_button.clicked.connect(self._request_check)
+        self.check_now_button.setVisible(
+            not self.distribution_channel.updates_managed_externally
+        )
 
         close_button = QPushButton("Save and Close")
         close_button.setStyleSheet(styles.primary_button_style())
@@ -234,6 +268,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(update_heading)
         layout.addWidget(version_label)
         layout.addWidget(self.automatic_update_checkbox)
+        layout.addWidget(self.update_management_label)
         layout.addSpacing(theme.SPACING)
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)

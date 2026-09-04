@@ -40,6 +40,7 @@ $SteamCmd = Join-Path $SteamworksSdkPath "tools\ContentBuilder\builder\steamcmd.
 $ReleaseBuildScript = Join-Path $PSScriptRoot "build_release.ps1"
 $SaveShiftExecutable = Join-Path $ContentRoot "SaveShift.exe"
 $DevelopmentAppIdFile = Join-Path $ContentRoot "steam_appid.txt"
+$DistributionMarker = Join-Path $ContentRoot "saveshift-distribution.txt"
 
 Write-Host ""
 Write-Host "====================================="
@@ -131,13 +132,20 @@ Write-Host "SteamCMD may ask for your Steam password and Steam Guard code."
 Write-Host "Your credentials are entered directly into SteamCMD and are not stored by this script."
 Write-Host ""
 
-& $SteamCmd `
-    "+login" $SteamUsername `
-    "+run_app_build" $AppConfigPath `
-    "+quit"
+Set-Content -LiteralPath $DistributionMarker -Value "steam" -Encoding ASCII
 
-if ($LASTEXITCODE -ne 0) {
-    throw "SteamCMD failed. Review its output above; the Steam build was not completed."
+try {
+    & $SteamCmd `
+        "+login" $SteamUsername `
+        "+run_app_build" $AppConfigPath `
+        "+quit"
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "SteamCMD failed. Review its output above; the Steam build was not completed."
+    }
+}
+finally {
+    Remove-Item -LiteralPath $DistributionMarker -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
