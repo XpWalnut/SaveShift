@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from app.games.base import GameDiscovery
 from app.games.project_discovery import DiscoveredProject, ImportTarget
@@ -35,8 +36,9 @@ class ValheimDiscovery(GameDiscovery):
 
     def get_import_target(
             self,
-            save_path: Path,
-            project_name: str,
+        save_path: Path,
+        project_name: str,
+        game_metadata: dict[str, Any] | None = None,
     ) -> ImportTarget:
         return ImportTarget(
             project_root=save_path
