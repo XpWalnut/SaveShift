@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from app.games.base import GameDiscovery
 from app.games.project_discovery import DiscoveredProject, ImportTarget
@@ -48,9 +49,10 @@ class AbioticFactorDiscovery(GameDiscovery):
         return sorted(discovered_projects, key=lambda project: project.name.lower())
 
     def get_import_target(
-            self,
-            save_path: Path,
-            project_name: str,
+        self,
+        save_path: Path,
+        project_name: str,
+        game_metadata: dict[str, Any] | None = None,
     ) -> ImportTarget:
         steam_users = [
             path

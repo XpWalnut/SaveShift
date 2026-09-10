@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from app.games.base import GameDiscovery
 from app.games.project_discovery import DiscoveredProject, ImportTarget
@@ -63,6 +64,7 @@ class VRisingDiscovery(GameDiscovery):
         self,
         save_path: Path,
         project_name: str,
+        game_metadata: dict[str, Any] | None = None,
     ) -> ImportTarget:
         steam_users = [
             path
