@@ -188,12 +188,45 @@ def test_group_handoff_can_make_older_version_current_without_erasing_history(
     )
 
     assert imported.version_number == 3
+    assert imported.created_by == "Package Host"
     assert ProjectVersionService.get_latest_version(project.id).id == imported.id
     assert {
         version.id
         for version in ProjectVersionService.get_versions_for_project(project.id)
     } == {version_four.id, version_five.id, imported.id}
     assert ProjectVersionService.get_next_version_number(project.id) == 6
+
+
+def test_legacy_import_history_uses_creator_from_stored_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    package_path = tmp_path / "received.sspkg"
+    package_path.write_bytes(b"stored package")
+    legacy_import = ProjectVersionService.create_version(
+        project_id=project.id,
+        created_by="Receiving Player",
+        source_type=ProjectVersionSource.IMPORTED,
+        version_number=3,
+        package_path=str(package_path),
+    )
+    monkeypatch.setattr(
+        "app.services.project_version_service.PackageReader.read",
+        lambda path, verify: (
+            _package_info(project_version=3)
+            if path == package_path and verify is False
+            else pytest.fail("wrong package attribution lookup")
+        ),
+    )
+
+    current = ProjectVersionService.get_latest_version(project.id)
+    history = ProjectVersionService.get_versions_for_project(project.id)
+
+    assert current is not None
+    assert current.id == legacy_import.id
+    assert current.created_by == "Package Host"
+    assert history[0].created_by == "Package Host"
 
 
 def test_duplicate_package_version_is_rejected(
@@ -275,7 +308,7 @@ def test_existing_project_is_backed_up_and_import_version_is_recorded(
     assert recorded is not None
     assert recorded.project_id == project.id
     assert recorded.version_number == 2
-    assert recorded.created_by == "Importing Player"
+    assert recorded.created_by == "Package Host"
     assert recorded.source_type == ProjectVersionSource.IMPORTED
     assert recorded.package_path == str(package_path)
     assert recorded.backup_path == str(backup_path)

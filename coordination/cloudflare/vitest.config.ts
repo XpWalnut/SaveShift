@@ -7,6 +7,7 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.toml" },
       miniflare: {
         bindings: {
+          GROUP_ID: "test-group",
           PAIRING_CODE: "test-pairing-code",
           ADMIN_BOOTSTRAP_TOKEN: "test-bootstrap-token",
           LEASE_SECONDS: "900"

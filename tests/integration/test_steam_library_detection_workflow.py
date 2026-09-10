@@ -28,6 +28,21 @@ def _create_schedule_i_installation(steam_root: Path) -> None:
     )
 
 
+def _create_valheim_installation(steam_root: Path) -> None:
+    steamapps = steam_root / "steamapps"
+    (steamapps / "common" / "Valheim").mkdir(parents=True)
+    (steamapps / "appmanifest_892970.acf").write_text(
+        (
+            '"AppState"\n'
+            "{\n"
+            '    "appid" "892970"\n'
+            '    "installdir" "Valheim"\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def _create_schedule_i_save(save_root: Path) -> Path:
     save_folder = save_root / "76561198044844170" / "SaveGame_1"
     (save_folder / "Players" / "Player_0").mkdir(parents=True)
@@ -66,3 +81,23 @@ def test_steam_detection_registers_game_and_discovers_save_once(
     assert len(persisted_projects) == 1
     assert persisted_projects[0].name == "Detected Test Empire"
     assert persisted_projects[0].local_path == str(save_folder)
+
+
+def test_steam_detection_registers_fresh_valheim_install_without_save_folder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steam_root = tmp_path / "Steam"
+    expected_save_root = tmp_path / "missing" / "Valheim" / "worlds_local"
+    _create_valheim_installation(steam_root)
+    valheim = GameRegistry.get_by_game_id(GameId.VALHEIM)
+    assert valheim is not None
+    monkeypatch.setattr(valheim, "detect_save_path", lambda: expected_save_root)
+
+    added_games = InstalledGameService.detect_steam_games(steam_root)
+
+    assert len(added_games) == 1
+    assert added_games[0].game_id == GameId.VALHEIM.value
+    assert added_games[0].save_path == str(expected_save_root)
+    assert not expected_save_root.exists()
+    assert ProjectService.discover_projects(added_games[0].id) == []

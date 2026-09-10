@@ -16,8 +16,8 @@ class AbioticFactorGame(SupportedGame):
         return AbioticFactorDiscovery()
 
 
-    def detect_save_path(self) -> Path | None:
-        path = (
+    def detect_save_path(self) -> Path:
+        return (
                 Path.home()
                 / "AppData"
                 / "Local"
@@ -25,5 +25,3 @@ class AbioticFactorGame(SupportedGame):
                 / "Saved"
                 / "SaveGames"
         )
-
-        return path if path.exists() else None

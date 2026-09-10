@@ -2,7 +2,27 @@ from pathlib import Path
 
 import pytest
 
+from app.games.valheim.definition import ValheimGame
 from app.games.valheim.discovery import ValheimDiscovery
+
+
+def test_default_save_location_is_available_before_first_save(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    save_path = ValheimGame().detect_save_path()
+
+    assert save_path == (
+        tmp_path
+        / "AppData"
+        / "LocalLow"
+        / "IronGate"
+        / "Valheim"
+        / "worlds_local"
+    )
+    assert not save_path.exists()
 
 
 def test_discovers_valheim_world_with_db_and_fwl(

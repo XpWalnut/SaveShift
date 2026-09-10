@@ -164,6 +164,7 @@ def test_cloudflare_api_uploads_worker_with_scoped_bindings() -> None:
         "saveshift-coordination-123",
         b"export default {};",
         "bootstrap-secret",
+        "group-123",
     )
 
     request = requests[0]
@@ -173,6 +174,8 @@ def test_cloudflare_api_uploads_worker_with_scoped_bindings() -> None:
     assert b'"new_sqlite_classes":["CoordinationGroup"]' in request.data
     assert b'"type":"secret_text"' in request.data
     assert b"bootstrap-secret" in request.data
+    assert b'"name":"GROUP_ID"' in request.data
+    assert b'"text":"group-123"' in request.data
     assert b"export default {};" in request.data
 
 
@@ -282,8 +285,21 @@ def test_provider_provisioner_creates_subdomain_and_uploads_bundle(
             assert subdomain.startswith("saveshift-")
             return "generated-name"
 
-        def upload_worker(self, account_id, script_name, module, bootstrap_token):
-            self.upload = (account_id, script_name, module, bootstrap_token)
+        def upload_worker(
+            self,
+            account_id,
+            script_name,
+            module,
+            bootstrap_token,
+            group_id,
+        ):
+            self.upload = (
+                account_id,
+                script_name,
+                module,
+                bootstrap_token,
+                group_id,
+            )
 
         def enable_worker_subdomain(self, account_id, script_name):
             self.enabled = (account_id, script_name)
@@ -299,6 +315,8 @@ def test_provider_provisioner_creates_subdomain_and_uploads_bundle(
     assert provisioned.provider_url.endswith(".generated-name.workers.dev")
     assert api.upload[0] == "account-123"
     assert api.upload[2] == b"worker-module"
+    assert len(api.upload[4]) == 32
+    assert api.upload[4] != "default"
     assert api.enabled == ("account-123", provisioned.script_name)
     assert provisioned.bootstrap_token
 

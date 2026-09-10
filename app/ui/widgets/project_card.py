@@ -76,6 +76,24 @@ class ProjectCard(QFrame):
         self.history_button = QPushButton("History")
         self.journal_button = QPushButton("Journal")
 
+        self.host_button.setToolTip(
+            "Reserve this world for this computer, then launch the game. "
+            "Hosting does not create a new version."
+        )
+        self.import_button.setToolTip(
+            "Download and review the newest version shared by your group."
+        )
+        self.export_button.setToolTip(
+            "After exiting the game, upload your changes as the next version "
+            "and release the world for another host."
+        )
+        self.history_button.setToolTip(
+            "View saved versions and restore an earlier state."
+        )
+        self.journal_button.setToolTip(
+            "Record milestones, accomplishments, or notes about this world."
+        )
+
         for button in (
                 self.host_button,
                 self.import_button,
@@ -151,16 +169,28 @@ class ProjectCard(QFrame):
     def show_host_action(self, *, enabled: bool = True) -> None:
         self.host_button.setProperty("saveshift_action", "host")
         self.host_button.setText("Host")
+        self.host_button.setToolTip(
+            "Reserve this world for this computer, then launch the game. "
+            "Hosting does not create a new version."
+        )
         self.host_button.setEnabled(enabled)
 
     def show_join_action(self) -> None:
         self.host_button.setProperty("saveshift_action", "join")
         self.host_button.setText("Join Game")
+        self.host_button.setToolTip(
+            "Launch the game to join the current host. This does not replace "
+            "your protected local world."
+        )
         self.host_button.setEnabled(self._on_join is not None)
 
     def show_hosting_action(self) -> None:
         self.host_button.setProperty("saveshift_action", "host")
         self.host_button.setText("Hosting")
+        self.host_button.setToolTip(
+            "This computer currently owns the group lock. Exit the game and "
+            "choose Hand Off when you are finished."
+        )
         self.host_button.setEnabled(False)
 
     def show_coordination_disabled(self) -> None:
