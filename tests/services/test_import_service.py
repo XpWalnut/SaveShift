@@ -157,6 +157,45 @@ def test_older_package_version_is_rejected(
         ImportService.validate_import_package(tmp_path / "older.sspkg")
 
 
+def test_group_handoff_can_make_older_version_current_without_erasing_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    version_four = _create_version(project, version_number=4)
+    version_five = _create_version(project, version_number=5)
+    package_info = _package_info(project_version=3)
+    extracted_path = tmp_path / "extracted"
+    extracted_path.mkdir()
+    _mock_package_read(monkeypatch, package_info)
+    _mock_import_boundaries(monkeypatch, extracted_path)
+    monkeypatch.setattr(
+        SaveFileService,
+        "backup_project",
+        lambda **_kwargs: tmp_path / "backup",
+    )
+    monkeypatch.setattr(
+        SaveFileService,
+        "synchronize_project",
+        lambda **_kwargs: None,
+    )
+
+    imported = ImportService.import_package(
+        package_path=tmp_path / "group-handoff.sspkg",
+        imported_by="Receiving Player",
+        allow_replace=True,
+        allow_group_reconciliation=True,
+    )
+
+    assert imported.version_number == 3
+    assert ProjectVersionService.get_latest_version(project.id).id == imported.id
+    assert {
+        version.id
+        for version in ProjectVersionService.get_versions_for_project(project.id)
+    } == {version_four.id, version_five.id, imported.id}
+    assert ProjectVersionService.get_next_version_number(project.id) == 6
+
+
 def test_duplicate_package_version_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

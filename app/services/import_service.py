@@ -28,8 +28,12 @@ class ImportService:
         imported_by: str,
         notes: str | None = None,
         allow_replace: bool = False,
+        allow_group_reconciliation: bool = False,
     ):
-        analysis = ImportService.analyze_import(package_path)
+        analysis = ImportService.analyze_import(
+            package_path,
+            group_authoritative=allow_group_reconciliation,
+        )
         ImportService._validate_analysis(analysis, allow_replace)
         package_info = analysis.package_info
         project = analysis.project
@@ -52,7 +56,10 @@ class ImportService:
 
         with ProjectOperationLock(project.uuid, "importing into it"):
             if analysis.project is not None:
-                analysis = ImportService.analyze_import(package_path)
+                analysis = ImportService.analyze_import(
+                    package_path,
+                    group_authoritative=allow_group_reconciliation,
+                )
                 ImportService._validate_analysis(analysis, allow_replace)
                 package_info = analysis.package_info
                 project = analysis.project
@@ -159,7 +166,11 @@ class ImportService:
         return analysis.package_info
 
     @staticmethod
-    def analyze_import(package_path: Path) -> ImportAnalysis:
+    def analyze_import(
+        package_path: Path,
+        *,
+        group_authoritative: bool = False,
+    ) -> ImportAnalysis:
         package_info = PackageReader.read(package_path)
         project = ProjectRepository.get_by_uuid(package_info.project_uuid)
 
@@ -217,13 +228,21 @@ class ImportService:
         incoming_version_number = package_info.project_version
 
         if incoming_version_number < local_version_number:
-            kind = ImportConflictKind.OLDER
+            kind = (
+                ImportConflictKind.GROUP_RECONCILIATION
+                if group_authoritative
+                else ImportConflictKind.OLDER
+            )
         elif incoming_version_number == local_version_number:
             incoming_checksum = calculate_sha256(package_path)
             kind = (
                 ImportConflictKind.DUPLICATE
                 if latest_version.package_checksum == incoming_checksum
-                else ImportConflictKind.VERSION_COLLISION
+                else (
+                    ImportConflictKind.GROUP_RECONCILIATION
+                    if group_authoritative
+                    else ImportConflictKind.VERSION_COLLISION
+                )
             )
         elif ImportService._matches_package_parent(
             package_info,

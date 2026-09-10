@@ -2128,7 +2128,10 @@ class MainWindow(QMainWindow):
         package_path = Path(package_path)
 
         try:
-            analysis = ImportService.analyze_import(package_path)
+            analysis = ImportService.analyze_import(
+                package_path,
+                group_authoritative=True,
+            )
         except Exception as error:
             package_path.unlink(missing_ok=True)
             QMessageBox.warning(self, "Import Not Allowed", str(error))
@@ -2155,6 +2158,7 @@ class MainWindow(QMainWindow):
                     package_path=package_path,
                     imported_by=player_name,
                     allow_replace=analysis.requires_replace_confirmation,
+                    allow_group_reconciliation=True,
                 )
         except CoordinationError as error:
             package_path.unlink(missing_ok=True)

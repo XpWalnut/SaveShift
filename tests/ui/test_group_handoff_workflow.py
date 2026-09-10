@@ -259,7 +259,11 @@ def test_receive_downloads_previews_locks_and_imports(
     monkeypatch.setattr(
         ImportService,
         "analyze_import",
-        lambda _path: analysis,
+        lambda _path, **kwargs: (
+            analysis
+            if kwargs == {"group_authoritative": True}
+            else pytest.fail("group receive must be authoritative")
+        ),
     )
     monkeypatch.setattr(
         ImportService,
@@ -285,6 +289,7 @@ def test_receive_downloads_previews_locks_and_imports(
             "package_path": package_path,
             "imported_by": "Bob",
             "allow_replace": False,
+            "allow_group_reconciliation": True,
         }
     ]
     assert len(provider.released) == 1

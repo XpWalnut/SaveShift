@@ -16,6 +16,7 @@ class ImportConflictKind(str, Enum):
     REPLACE_UNVERSIONED = "replace_unversioned"
     UNVERIFIED_NEWER = "unverified_newer"
     DIVERGED = "diverged"
+    GROUP_RECONCILIATION = "group_reconciliation"
     OLDER = "older"
     DUPLICATE = "duplicate"
     VERSION_COLLISION = "version_collision"
@@ -47,4 +48,5 @@ class ImportAnalysis:
             ImportConflictKind.ADOPT_EXISTING_PROJECT,
             ImportConflictKind.UNVERIFIED_NEWER,
             ImportConflictKind.DIVERGED,
+            ImportConflictKind.GROUP_RECONCILIATION,
         }

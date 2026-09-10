@@ -56,9 +56,11 @@ class ProjectVersionService:
 
     @staticmethod
     def get_next_version_number(project_id: int) -> int:
-        latest = ProjectVersionRepository.get_latest(project_id)
+        highest_version = ProjectVersionRepository.get_highest_version_number(
+            project_id
+        )
 
-        if latest is None:
+        if highest_version is None:
             return 1
 
-        return latest.version_number + 1
+        return highest_version + 1

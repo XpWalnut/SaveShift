@@ -87,6 +87,24 @@ def test_history_lists_newest_first_with_notes_and_restore_origin(
     assert dialog.version_list.currentRow() == 0
 
 
+def test_history_marks_last_recorded_lower_group_version_as_current(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    project = _create_project(tmp_path)
+    _create_version(project.id, 4)
+    _create_version(project.id, 5)
+    current = _create_version(project.id, 3, source_type="IMPORTED")
+
+    assert ProjectVersionService.get_latest_version(project.id).id == current.id
+
+    dialog = HistoryDialog(project=project, on_restore=lambda _version: None)
+    qtbot.addWidget(dialog)
+
+    assert "Version 3 · Current" in dialog.version_list.item(0).text()
+    assert "Version 5" in dialog.version_list.item(1).text()
+
+
 def test_history_restore_cancellation_does_not_invoke_callback(
     qtbot,
     tmp_path: Path,
