@@ -16,3 +16,13 @@ its save files.
 
 If a step fails, preserve both copies of the world, capture the full error dialog,
 and collect `%USERPROFILE%\.saveshift\logs\SaveShift.log` from both PCs.
+
+## Legacy flat-world isolation
+
+1. With at least two old-format `.db` worlds in `worlds_local`, host only one.
+2. Open its generated `.sspkg` as a ZIP and inspect `manifest.json`. Confirm the
+   `files` list contains only the selected world's `.db` and optional `.fwl`.
+3. Receive that package while another flat world exists on the destination PC.
+   Confirm the unrelated world's files remain unchanged.
+4. An older package containing several worlds should be rejected with directions
+   to re-host it using the current Save Shift version.

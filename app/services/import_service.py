@@ -8,6 +8,7 @@ from app.packages.package_extractor import PackageExtractor
 from app.packages.package_info import PackageInfo
 from app.packages.package_reader import PackageReader
 from app.database.repositories.installed_game_repository import InstalledGameRepository
+from app.games.game_id import GameId
 from app.games.registry import GameRegistry
 from app.services.save_file_service import SaveFileService
 from app.services.project_service import ProjectService
@@ -92,6 +93,7 @@ class ImportService:
         SaveFileService.synchronize_project(
             project=project,
             source_directory=extracted_path,
+            game_id=package_info.game_id,
         )
 
         package_checksum = calculate_sha256(package_path)
@@ -163,7 +165,10 @@ class ImportService:
 
         if project is None:
             import_target = ImportService._resolve_import_target(package_info)
-            target_project = ProjectRepository.get_by_local_path(import_target)
+            target_project = ImportService._find_target_project(
+                package_info,
+                import_target,
+            )
 
             if target_project is not None:
                 target_version = ProjectVersionService.get_latest_version(
@@ -182,9 +187,9 @@ class ImportService:
                     target_project=target_project,
                 )
 
-            target_contains_files = (
-                import_target.is_dir()
-                and any(path.is_file() for path in import_target.rglob("*"))
+            target_contains_files = ImportService._target_contains_save_files(
+                package_info,
+                import_target,
             )
             return ImportAnalysis(
                 package_info=package_info,
@@ -341,3 +346,61 @@ class ImportService:
         )
 
         return import_target.project_root
+
+    @staticmethod
+    def _find_target_project(
+        package_info: PackageInfo,
+        import_target: Path,
+    ) -> Project | None:
+        installed_game = InstalledGameRepository.get_by_game_id(
+            package_info.game_id
+        )
+
+        if installed_game is None:
+            return None
+
+        expected_path = str(import_target.resolve(strict=False)).casefold()
+        candidates = [
+            project
+            for project in ProjectRepository.get_for_installed_game(
+                installed_game.id
+            )
+            if str(
+                Path(project.local_path).resolve(strict=False)
+            ).casefold() == expected_path
+        ]
+
+        for candidate in candidates:
+            if candidate.name.casefold() == package_info.project_name.casefold():
+                return candidate
+
+        if ImportService._is_flat_valheim_package(package_info):
+            # Legacy Valheim worlds intentionally share `worlds_local`.
+            # A different project at the same path is not an identity collision.
+            return None
+
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _target_contains_save_files(
+        package_info: PackageInfo,
+        import_target: Path,
+    ) -> bool:
+        if not import_target.is_dir():
+            return False
+
+        if ImportService._is_flat_valheim_package(package_info):
+            return any(
+                (import_target / f"{package_info.project_name}{suffix}").is_file()
+                for suffix in (".db", ".fwl")
+            )
+
+        return any(path.is_file() for path in import_target.rglob("*"))
+
+    @staticmethod
+    def _is_flat_valheim_package(package_info: PackageInfo) -> bool:
+        return (
+            package_info.game_id == GameId.VALHEIM.value
+            and package_info.metadata.game_metadata.get("storage_layout")
+            != "chunked_directory"
+        )

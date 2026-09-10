@@ -57,7 +57,7 @@ class HostingService:
         journal_body: str | None,
         source_device_name: str | None,
     ):
-        save_files = SaveFileService.list_project_files(project)
+        save_files = SaveFileService.list_project_files(project, game_id)
         parent_version = ProjectVersionService.get_latest_version(project.id)
         project_version_number = (
             parent_version.version_number + 1

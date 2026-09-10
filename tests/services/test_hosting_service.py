@@ -156,6 +156,59 @@ def test_hosting_creates_next_version_with_package_checksum_and_notes(
     assert recorded.notes == "Known good version"
 
 
+def test_hosting_flat_valheim_world_excludes_other_worlds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_root = tmp_path / "worlds_local"
+    save_root.mkdir()
+    selected_db = save_root / "Selected.db"
+    selected_fwl = save_root / "Selected.fwl"
+    selected_db.write_bytes(b"selected")
+    selected_fwl.write_bytes(b"metadata")
+    (save_root / "Other.db").write_bytes(b"other")
+    installed_game = InstalledGameRepository.add(
+        game_id=GameId.VALHEIM.value,
+        display_name="Valheim",
+        save_path=str(save_root),
+    )
+    project = ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid="87654321-4321-8765-4321-876543218765",
+        name="Selected",
+        local_path=save_root,
+    )
+    package_path = tmp_path / "packages" / "selected.sspkg"
+    package_path.parent.mkdir()
+    package_path.write_bytes(b"package")
+    package_calls: list[dict[str, object]] = []
+
+    def fake_create_package(**kwargs: object) -> Path:
+        package_calls.append(kwargs)
+        return package_path
+
+    monkeypatch.setattr(
+        PackageService,
+        "create_project_package",
+        fake_create_package,
+    )
+    monkeypatch.setattr(
+        "app.services.hosting_service.calculate_sha256",
+        lambda _path: "d" * 64,
+    )
+
+    HostingService.host_project(
+        project_id=project.id,
+        game_id=GameId.VALHEIM.value,
+        hosted_by="Test Host",
+    )
+
+    assert set(package_calls[0]["save_files"]) == {
+        selected_db,
+        selected_fwl,
+    }
+
+
 def test_package_creation_failure_does_not_record_hosted_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

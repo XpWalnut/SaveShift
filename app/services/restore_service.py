@@ -65,6 +65,7 @@ class RestoreService:
         SaveFileService.synchronize_project(
             project=project,
             source_directory=restore_directory,
+            game_id=installed_game.game_id,
         )
 
         return ProjectVersionService.create_version(

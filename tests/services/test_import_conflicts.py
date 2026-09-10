@@ -44,6 +44,28 @@ def _package_info(
     )
 
 
+def _flat_valheim_package_info(
+    *,
+    project_name: str = "Incoming World",
+    project_uuid: str = "87654321-4321-4678-9234-567812345678",
+) -> PackageInfo:
+    return PackageInfo(
+        package_format_version=1,
+        project_uuid=project_uuid,
+        project_version=1,
+        game_id=GameId.VALHEIM.value,
+        project_name=project_name,
+        created_at_utc="2026-09-10T12:00:00+00:00",
+        created_by="Alice",
+        save_shift_version="0.1.0-alpha.3",
+        file_count=2,
+        verified=True,
+        metadata=PackageMetadata(
+            game_metadata={"storage_layout": "flat"},
+        ),
+    )
+
+
 def _create_project(tmp_path: Path):
     installed_game = InstalledGameRepository.add(
         game_id=GameId.SCHEDULE_I.value,
@@ -134,6 +156,68 @@ def test_unknown_uuid_targeting_existing_files_requires_confirmation(
 
     assert analysis.kind == ImportConflictKind.NEW_PROJECT_REPLACE_EXISTING
     assert analysis.import_target == save_folder
+    assert analysis.requires_replace_confirmation
+
+
+def test_flat_valheim_import_ignores_other_projects_in_shared_save_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_root = tmp_path / "worlds_local"
+    save_root.mkdir()
+    (save_root / "Other World.db").write_bytes(b"other")
+    installed_game = InstalledGameRepository.add(
+        game_id=GameId.VALHEIM.value,
+        display_name="Valheim",
+        save_path=str(save_root),
+    )
+    ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name="Other World",
+        local_path=save_root,
+    )
+    _mock_package(monkeypatch, _flat_valheim_package_info())
+
+    analysis = ImportService.analyze_import(tmp_path / "incoming.sspkg")
+
+    assert analysis.kind == ImportConflictKind.NEW_PROJECT
+    assert analysis.target_project is None
+    assert not analysis.requires_replace_confirmation
+
+
+def test_flat_valheim_import_adopts_matching_world_in_shared_save_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_root = tmp_path / "worlds_local"
+    save_root.mkdir()
+    (save_root / "Incoming World.db").write_bytes(b"local")
+    (save_root / "Other World.db").write_bytes(b"other")
+    installed_game = InstalledGameRepository.add(
+        game_id=GameId.VALHEIM.value,
+        display_name="Valheim",
+        save_path=str(save_root),
+    )
+    ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name="Other World",
+        local_path=save_root,
+    )
+    matching_project = ProjectService.create_project(
+        installed_game_id=installed_game.id,
+        project_uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        name="Incoming World",
+        local_path=save_root,
+    )
+    _mock_package(monkeypatch, _flat_valheim_package_info())
+
+    analysis = ImportService.analyze_import(tmp_path / "incoming.sspkg")
+
+    assert analysis.kind == ImportConflictKind.ADOPT_EXISTING_PROJECT
+    assert analysis.target_project is not None
+    assert analysis.target_project.id == matching_project.id
     assert analysis.requires_replace_confirmation
 
 
