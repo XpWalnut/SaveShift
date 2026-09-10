@@ -77,8 +77,8 @@ class ProjectCard(QFrame):
         self.journal_button = QPushButton("Journal")
 
         self.host_button.setToolTip(
-            "Reserve this world for this computer, then launch the game. "
-            "Hosting does not create a new version."
+            "Reserve the world, receive the latest group version, and launch "
+            "the game. Save Shift hands it off when the game closes."
         )
         self.import_button.setToolTip(
             "Download and review the newest version shared by your group."
@@ -170,8 +170,8 @@ class ProjectCard(QFrame):
         self.host_button.setProperty("saveshift_action", "host")
         self.host_button.setText("Host")
         self.host_button.setToolTip(
-            "Reserve this world for this computer, then launch the game. "
-            "Hosting does not create a new version."
+            "Reserve the world, receive the latest group version, and launch "
+            "the game. Save Shift hands it off when the game closes."
         )
         self.host_button.setEnabled(enabled)
 

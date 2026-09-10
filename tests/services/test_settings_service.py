@@ -24,6 +24,19 @@ def test_settings_are_saved_and_loaded(tmp_path: Path) -> None:
     assert not settings_path.with_suffix(".json.tmp").exists()
 
 
+def test_manual_transfer_controls_are_opt_in(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+
+    assert not SettingsService.load(settings_path).manual_transfer_controls
+
+    SettingsService.save(
+        AppSettings(manual_transfer_controls=True),
+        settings_path,
+    )
+
+    assert SettingsService.load(settings_path).manual_transfer_controls
+
+
 def test_coordination_credential_is_protected_at_rest(
     tmp_path: Path,
     monkeypatch,

@@ -14,8 +14,9 @@ settings and database first, or use a new Windows profile.
    **Receive Shared World** is not shown yet.
 4. Hover over **Join Group**, **Detect Steam Games**, and **How It Works**.
    Confirm each tooltip describes the action in plain language.
-5. Open **How It Works**. Confirm it explains the complete cycle:
-   Receive → Host → play → exit the game → Hand Off.
+5. Open **How It Works**. Confirm it explains the default cycle:
+   Receive once → Host → play → exit the game. It should explain that receiving
+   updates and handing off are automatic.
 6. On an existing group administrator's computer, choose **Invite a Friend**
    and copy the invitation.
 7. On the new computer, choose **Join Group** on the main screen. Enter a
@@ -24,10 +25,11 @@ settings and database first, or use a new Windows profile.
    Steam games and immediately checks for shared worlds. No separate visit to
    Settings or click on Detect Steam Games should be required.
 9. Select the shared world and complete its import.
-10. Confirm the imported project's buttons are **Host**, **Receive**, **Hand
-   Off**, **History**, and **Journal**. Hover over each and verify its purpose is
-   explained.
-11. Choose **Host**. Confirm the game launches and the button changes to
-    **Hosting**.
-12. Exit the game, choose **Hand Off**, and confirm the new version uploads and
-    the group lock becomes available.
+10. Confirm **Receive** and **Hand Off** are hidden, while **Host**, **History**,
+    and **Journal** remain available.
+11. Choose **Host**. Confirm Save Shift checks for the latest group version
+    before launching the game, then the button changes to **Hosting**.
+12. Exit the game while leaving Save Shift open. Confirm the new version uploads
+    and the group lock becomes available without clicking Hand Off.
+13. In Settings, enable **Show manual Receive and Hand Off controls**. Confirm
+    both controls return to the project card.

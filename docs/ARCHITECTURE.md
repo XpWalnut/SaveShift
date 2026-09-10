@@ -77,15 +77,17 @@ the redistributable `steam_api64.dll` from a local Steamworks SDK rather than
 committing the proprietary SDK to the repository. Manual export and import
 remain available as an offline fallback.
 
-When coordination is configured, project cards present **Receive** and
-**Hand Off** as the normal workflow. A background controller keeps Steam and
-network transfers off the Qt UI thread. Hand Off creates the final local version,
-publishes it while the current lease is still held, and releases the lease only
-after the catalog accepts the artifact. A failed publication keeps the lease for
-a safe retry. Receive verifies the encrypted download before presenting the
-existing import-conflict preview, then acquires a temporary lease for backup and
-synchronization. Without coordination, the same card positions retain manual
-Import and Export actions.
+When coordination is configured, **Host** is the normal workflow. It acquires
+the project lease, downloads and reconciles the group's latest encrypted
+package, and only then launches the game. The desktop monitors the game process;
+after a confirmed exit it creates and publishes the next version while the lease
+is still held, then releases the lease only after the catalog accepts the
+artifact. A failed publication keeps the lease for a safe manual retry. Users
+can expose manual **Receive** and **Hand Off** controls in Settings for recovery
+or troubleshooting. **Receive Shared World** remains available for the initial
+addition of a project that is not yet tracked locally. Without coordination, the
+same card positions retain manual Import and Export actions. Background
+controllers keep Steam and network transfers off the Qt UI thread.
 
 ### Core (`app/core`)
 

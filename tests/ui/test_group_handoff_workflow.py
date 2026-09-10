@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from app.coordination.manager import CoordinationManager
@@ -172,7 +173,7 @@ def _window(qtbot, monkeypatch, tmp_path: Path) -> tuple[MainWindow, FakeProvide
     return window, provider
 
 
-def test_group_project_card_uses_receive_and_handoff_labels(
+def test_group_project_card_hides_manual_transfers_by_default(
     qtbot,
     tmp_path: Path,
     monkeypatch,
@@ -186,6 +187,180 @@ def test_group_project_card_uses_receive_and_handoff_labels(
 
     assert card.import_button.text() == "Receive"
     assert card.export_button.text() == "Hand Off"
+    assert card.import_button.isHidden()
+    assert card.export_button.isHidden()
+
+
+def test_manual_transfer_setting_shows_receive_and_handoff(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    window.settings = replace(window.settings, manual_transfer_controls=True)
+
+    card = window._create_project_card(
+        _project(tmp_path),
+        _installed_game(tmp_path),
+    )
+
+    assert not card.import_button.isHidden()
+    assert not card.export_button.isHidden()
+
+
+def test_host_pulls_latest_then_automatically_hands_off_when_game_closes(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    running = [False]
+    launches: list[str] = []
+    handoffs: list[tuple[Project, bool]] = []
+
+    class FakeGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return running[0]
+
+        @staticmethod
+        def launch() -> None:
+            launches.append("launch")
+
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: FakeGame(),
+    )
+    monkeypatch.setattr(
+        window,
+        "handoff_project",
+        lambda selected, *, automatic=False: handoffs.append(
+            (selected, automatic)
+        ),
+    )
+
+    window.host_project(project)
+
+    assert window.package_handoff_controller.download_calls == [
+        (project.uuid, provider)
+    ]
+    assert launches == []
+
+    window._group_package_downloaded(None)
+
+    assert launches == ["launch"]
+    assert window.automatic_session_timer.isActive()
+
+    running[0] = True
+    window._check_automatic_host_session()
+    running[0] = False
+    window._check_automatic_host_session()
+    assert handoffs == []
+    window._check_automatic_host_session()
+
+    assert handoffs == [(project, True)]
+    assert not window.automatic_session_timer.isActive()
+    window._release_coordination_lease(project.uuid, report_error=False)
+
+
+def test_host_applies_downloaded_group_version_before_launch(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    package_path = tmp_path / "latest.sspkg"
+    package_path.write_bytes(b"package")
+    analysis = _analysis(project)
+    events: list[str] = []
+
+    class FakeGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+        @staticmethod
+        def launch() -> None:
+            events.append("launch")
+
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: FakeGame(),
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "analyze_import",
+        lambda *_args, **_kwargs: analysis,
+    )
+    monkeypatch.setattr(
+        ImportService,
+        "import_package",
+        lambda **_kwargs: events.append("import"),
+    )
+
+    window.host_project(project)
+    window._group_package_downloaded((object(), package_path))
+
+    assert events == ["import", "launch"]
+    window.automatic_session_timer.stop()
+    window._release_coordination_lease(project.uuid, report_error=False)
+
+
+def test_host_download_failure_releases_preflight_lease(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: type(
+            "StoppedGame",
+            (),
+            {"display_name": "Abiotic Factor", "is_running": lambda self: False},
+        )(),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.critical",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    window.host_project(project)
+    lease = window.coordination_manager.active_leases[project.uuid]
+    window._group_handoff_failed("Steam is offline")
+
+    assert provider.released == [lease]
+    assert not window.coordination_manager.active_leases
+    assert messages[0][0] == "Host Failed"
+
+
+def test_window_stays_open_during_automatic_host_session(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    window._automatic_session_project = _project(tmp_path)
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.warning",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert messages[0][0] == "Hosted Game Still Active"
+    window._automatic_session_project = None
 
 
 def test_handoff_publishes_version_then_releases_lease_on_success(
@@ -228,6 +403,36 @@ def test_handoff_publishes_version_then_releases_lease_on_success(
     assert provider.released == [lease]
     assert messages[0][0] == "Project Handed Off"
     assert "Version: 8" in messages[0][1]
+
+
+def test_automatic_handoff_completes_without_success_dialog(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    package_path = tmp_path / "hosted.sspkg"
+    package_path.write_bytes(b"package")
+    version = _version(package_path)
+    lease = window.coordination_manager.acquire_hosting_lease(
+        project.uuid,
+        "Bob",
+    )
+    window._pending_handoff_project = project
+    window._pending_handoff_version = version
+    window._automatic_handoff_in_progress = True
+    messages: list[str] = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda *_args: messages.append("shown"),
+    )
+
+    window._group_handoff_published(object())
+
+    assert provider.released == [lease]
+    assert messages == []
+    assert "handed off as Version 8" in window.statusBar().currentMessage()
 
 
 def test_receive_downloads_previews_locks_and_imports(

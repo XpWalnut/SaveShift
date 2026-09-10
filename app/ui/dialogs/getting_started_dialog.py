@@ -27,19 +27,21 @@ class GettingStartedDialog(QDialog):
             "Create a group or paste an invitation from a friend. Save Shift "
             "then detects supported Steam games and checks for shared worlds.<br><br>"
             "<b>2. Receive before playing</b><br>"
-            "Receive Shared World downloads a world that is not on this computer. "
-            "For an existing world, Receive gets the group's newest version.<br><br>"
+            "Receive Shared World adds a world that is not on this computer yet. "
+            "After that, Host receives updates automatically.<br><br>"
             "<b>3. Host when it is your turn</b><br>"
-            "Host reserves the world for this computer and launches the game. "
+            "Host reserves the world, receives the latest version, and launches "
+            "the game. "
             "Other members can join your game, but should not host their own copy.<br><br>"
-            "<b>4. Hand off when finished</b><br>"
-            "Exit the game, then choose Hand Off. Save Shift uploads the new "
-            "version and makes the world available to the next host."
+            "<b>4. Exit the game when finished</b><br>"
+            "Keep Save Shift open. When the game closes, Save Shift uploads the "
+            "new version and releases the world for the next host automatically. "
+            "Manual Receive and Hand Off controls can be enabled in Settings."
         )
         steps.setWordWrap(True)
 
         reminder = QLabel(
-            "Simple rule: Receive → Host → play → exit the game → Hand Off."
+            "Simple rule: Receive once → Host → play → exit the game."
         )
         reminder.setWordWrap(True)
         reminder.setStyleSheet(f"color: {theme.SUCCESS}; font-weight: bold;")

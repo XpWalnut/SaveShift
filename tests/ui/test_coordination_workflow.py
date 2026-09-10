@@ -376,13 +376,64 @@ def test_host_conflict_blocks_local_hosting_workflow(
     assert "Alex" in warnings[0][1]
 
 
-def test_host_acquires_lock_and_launches_without_creating_version(
+def test_host_refuses_to_sync_while_game_is_already_running(
     qtbot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     window = _window(qtbot, monkeypatch)
     window.settings = replace(window.settings, player_display_name="Jake")
+    provider = FakeProvider()
+    window.coordination_manager = CoordinationManager(provider)
+    project = _project(tmp_path)
+    installed_game = InstalledGame(
+        id=1,
+        game_id="abiotic_factor",
+        display_name="Abiotic Factor",
+        save_path=str(tmp_path / "saves"),
+        enabled=True,
+    )
+    warnings: list[tuple[str, str]] = []
+
+    class RunningGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return True
+
+    monkeypatch.setattr(
+        window,
+        "_get_installed_game_for_project",
+        lambda _project: installed_game,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: RunningGame(),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    window.host_project(project)
+
+    assert provider.acquired == []
+    assert warnings[0][0] == "Close Game Before Hosting"
+    assert "receive the latest group version" in warnings[0][1]
+
+
+def test_host_acquires_lock_and_launches_without_creating_version(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    window.settings = replace(
+        window.settings,
+        player_display_name="Jake",
+        manual_transfer_controls=True,
+    )
     provider = FakeProvider()
     window.coordination_manager = CoordinationManager(provider)
     project = _project(tmp_path)
@@ -425,14 +476,24 @@ def test_host_acquires_lock_and_launches_without_creating_version(
         "app.ui.main_window.QMessageBox.information",
         lambda _parent, title, message: messages.append((title, message)),
     )
+    downloads: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        window.package_handoff_controller,
+        "download_latest",
+        lambda project_uuid, selected_provider: (
+            downloads.append((project_uuid, selected_provider)) or True
+        ),
+    )
 
     window.host_project(project)
+    window._group_package_downloaded(None)
 
     assert provider.acquired == [(PROJECT_UUID, "Jake")]
+    assert downloads == [(PROJECT_UUID, provider)]
     assert window.coordination_manager.has_active_lease(PROJECT_UUID)
     assert launches == [True]
     assert messages[0][0] == "Project Hosted"
-    assert "No new project version was created" in messages[0][1]
+    assert "latest group version was received first" in messages[0][1]
 
     window._release_coordination_lease(PROJECT_UUID, report_error=False)
 
