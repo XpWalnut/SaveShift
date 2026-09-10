@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 from app.games.base import GameDiscovery
 from app.games.project_discovery import DiscoveredProject, ImportTarget
@@ -63,6 +64,7 @@ class VRisingDiscovery(GameDiscovery):
         self,
         save_path: Path,
         project_name: str,
+        game_metadata: dict[str, Any] | None = None,
     ) -> ImportTarget:
         steam_users = [
             path
@@ -76,9 +78,21 @@ class VRisingDiscovery(GameDiscovery):
                 "receive the imported V Rising project."
             )
 
-        raise NotImplementedError(
-            "V Rising imports need the original save UUID, "
-            "not only the project display name."
+        world_uuid = (game_metadata or {}).get("world_uuid")
+
+        if not isinstance(world_uuid, str) or not world_uuid.strip():
+            raise ValueError(
+                "This V Rising package does not contain its original save "
+                "UUID. Re-export it with the current version of Save Shift."
+            )
+
+        world_uuid = world_uuid.strip()
+
+        if Path(world_uuid).name != world_uuid or world_uuid in {".", ".."}:
+            raise ValueError("The V Rising package contains an invalid save UUID.")
+
+        return ImportTarget(
+            project_root=steam_users[0] / "v4" / world_uuid,
         )
 
     @staticmethod

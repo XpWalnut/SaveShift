@@ -337,6 +337,7 @@ class ImportService:
         import_target = supported_game.discovery().get_import_target(
             save_path=Path(installed_game.save_path),
             project_name=package_info.project_name,
+            game_metadata=package_info.metadata.game_metadata,
         )
 
         return import_target.project_root

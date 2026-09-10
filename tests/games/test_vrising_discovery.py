@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.games.vrising.discovery import VRisingDiscovery
 
 
@@ -139,3 +141,40 @@ def test_ignores_empty_vrising_world(
     projects = discovery.discover_projects(temp_save_root)
 
     assert projects == []
+
+
+def test_import_target_uses_original_world_uuid(temp_save_root: Path) -> None:
+    steam_user = temp_save_root / "76561198044844170"
+    steam_user.mkdir()
+
+    target = VRisingDiscovery().get_import_target(
+        temp_save_root,
+        "Display Name Is Not A Folder Name",
+        {"world_uuid": "5c30111e-ebce-4af2-9c32-f27b098e4ff2"},
+    )
+
+    assert target.project_root == (
+        steam_user / "v4" / "5c30111e-ebce-4af2-9c32-f27b098e4ff2"
+    )
+
+
+def test_import_target_rejects_package_without_world_uuid(temp_save_root: Path) -> None:
+    (temp_save_root / "76561198044844170").mkdir()
+
+    with pytest.raises(ValueError, match="does not contain its original save UUID"):
+        VRisingDiscovery().get_import_target(temp_save_root, "World", {})
+
+
+@pytest.mark.parametrize("world_uuid", ["../other", "folder/name", "folder\\name"])
+def test_import_target_rejects_unsafe_world_uuid(
+    temp_save_root: Path,
+    world_uuid: str,
+) -> None:
+    (temp_save_root / "76561198044844170").mkdir()
+
+    with pytest.raises(ValueError, match="invalid save UUID"):
+        VRisingDiscovery().get_import_target(
+            temp_save_root,
+            "World",
+            {"world_uuid": world_uuid},
+        )

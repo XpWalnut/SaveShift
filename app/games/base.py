@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.games.game_id import GameId
 from app.games.launcher import GameLauncher
@@ -18,6 +19,7 @@ class GameDiscovery(ABC):
         self,
         save_path: Path,
         project_name: str,
+        game_metadata: dict[str, Any] | None = None,
     ) -> ImportTarget:
         """Returns the folder that should receive imported save files."""
         pass

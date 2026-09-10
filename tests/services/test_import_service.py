@@ -397,9 +397,14 @@ def test_unknown_project_uuid_creates_project_at_game_discovery_target(
             self,
             save_path: Path,
             project_name: str,
+            game_metadata=None,
         ) -> ImportTarget:
             discovery_calls.append(
-                {"save_path": save_path, "project_name": project_name}
+                {
+                    "save_path": save_path,
+                    "project_name": project_name,
+                    "game_metadata": game_metadata,
+                }
             )
             return ImportTarget(project_root=import_target_path)
 
@@ -432,6 +437,7 @@ def test_unknown_project_uuid_creates_project_at_game_discovery_target(
         {
             "save_path": save_path,
             "project_name": package_info.project_name,
+            "game_metadata": package_info.metadata.game_metadata,
         }
     ]
 
