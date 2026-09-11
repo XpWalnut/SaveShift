@@ -6,6 +6,8 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- An optional World Journal prompt for completed hosted sessions, including a
+  persistent "don't ask again" choice and a matching Settings toggle.
 - A Shared Projects group inbox that discovers the newest Steam handoff for
   projects not yet tracked on a computer and imports them through the existing
   conflict, backup, and game-discovery workflow.

@@ -52,6 +52,21 @@ def test_settings_dialog_check_now_preserves_checkbox_and_requests_check(
     assert dialog.automatic_update_checks
 
 
+def test_settings_dialog_exposes_session_journal_prompt_preference(
+    qtbot,
+) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings(prompt_for_session_journal=False)
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.prompt_for_session_journal
+
+    dialog.session_journal_prompt_checkbox.setChecked(True)
+
+    assert dialog.prompt_for_session_journal
+
+
 def test_steam_settings_explain_that_updates_are_managed_by_steam(qtbot) -> None:
     dialog = SettingsDialog(
         settings=AppSettings(automatic_update_checks=True),

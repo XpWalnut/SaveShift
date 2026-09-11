@@ -88,6 +88,24 @@ class SettingsDialog(QDialog):
             "transfers or troubleshooting."
         )
 
+        journal_heading = QLabel("Session Journal")
+        journal_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
+
+        journal_description = QLabel(
+            "Save Shift can offer to record accomplishments, discoveries, "
+            "or notes for the next host after a hosted session. Entries can "
+            "always be added later from the project card."
+        )
+        journal_description.setWordWrap(True)
+        journal_description.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
+
+        self.session_journal_prompt_checkbox = QCheckBox(
+            "Ask to record a World Journal entry after hosted sessions"
+        )
+        self.session_journal_prompt_checkbox.setChecked(
+            settings.prompt_for_session_journal
+        )
+
         self.update_management_label = QLabel()
         self.update_management_label.setWordWrap(True)
         self.update_management_label.setStyleSheet(
@@ -282,6 +300,10 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.automatic_update_checkbox)
         layout.addWidget(self.update_management_label)
         layout.addSpacing(theme.SPACING)
+        layout.addWidget(journal_heading)
+        layout.addWidget(journal_description)
+        layout.addWidget(self.session_journal_prompt_checkbox)
+        layout.addSpacing(theme.SPACING)
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)
         layout.addWidget(self.coordination_enabled_checkbox)
@@ -301,6 +323,10 @@ class SettingsDialog(QDialog):
     @property
     def automatic_update_checks(self) -> bool:
         return self.automatic_update_checkbox.isChecked()
+
+    @property
+    def prompt_for_session_journal(self) -> bool:
+        return self.session_journal_prompt_checkbox.isChecked()
 
     @property
     def manual_transfer_controls(self) -> bool:

@@ -2,9 +2,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QMessageBox
 
+from app.core.settings import AppSettings, SettingsService
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.session_journal_entry import SessionJournalEntry
@@ -142,33 +144,14 @@ def test_export_handoff_forwards_optional_journal_entry(
     destination = tmp_path / "handoff.sspkg"
     export_calls: list[dict[str, object]] = []
 
-    class AcceptedJournalDialog:
-        entry_title = "New outpost"
-        entry_body = "The group established a mountain base."
-
-        def __init__(self, project_name: str, parent) -> None:
-            assert project_name == project.name
-            assert parent is window
-
-        def exec(self):
-            return QDialog.DialogCode.Accepted
-
     monkeypatch.setattr("app.ui.main_window.discover_all_projects", lambda: None)
     monkeypatch.setattr(
         "app.ui.main_window.QFileDialog.getSaveFileName",
         lambda *_args, **_kwargs: (str(destination), ""),
     )
     monkeypatch.setattr(
-        "app.ui.main_window.QMessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
-    monkeypatch.setattr(
         "app.ui.main_window.QMessageBox.information",
         lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        "app.ui.main_window.JournalEntryDialog",
-        AcceptedJournalDialog,
     )
 
     def fake_export(**kwargs: object):
@@ -181,6 +164,11 @@ def test_export_handoff_forwards_optional_journal_entry(
     qtbot.addWidget(window)
     window._get_installed_game_for_project = lambda _project: installed_game
     window._get_player_display_name = lambda: "Alice"
+    window._request_session_journal_entry = lambda _project: (
+        True,
+        "New outpost",
+        "The group established a mountain base.",
+    )
     window.load_installed_games = lambda: None
     window.load_projects = lambda: None
 
@@ -197,3 +185,73 @@ def test_export_handoff_forwards_optional_journal_entry(
                 "source_device_name": None,
             }
     ]
+
+
+def test_session_journal_prompt_can_disable_future_prompts(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _detached_project(tmp_path)
+    saved_settings: list[AppSettings] = []
+
+    class AcceptedPrompt:
+        dont_ask_again = True
+
+        def __init__(self, project_name: str, parent) -> None:
+            assert project_name == project.name
+            assert parent is window
+
+        def exec(self):
+            return QMessageBox.StandardButton.Yes
+
+    class AcceptedJournalDialog:
+        entry_title = "New outpost"
+        entry_body = "The group established a mountain base."
+
+        def __init__(self, project_name: str, parent) -> None:
+            assert project_name == project.name
+            assert parent is window
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr("app.ui.main_window.discover_all_projects", lambda: None)
+    monkeypatch.setattr("app.ui.main_window.SessionJournalPrompt", AcceptedPrompt)
+    monkeypatch.setattr(
+        "app.ui.main_window.JournalEntryDialog",
+        AcceptedJournalDialog,
+    )
+    monkeypatch.setattr(SettingsService, "save", saved_settings.append)
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    result = window._request_session_journal_entry(project)
+
+    assert result == (
+        True,
+        "New outpost",
+        "The group established a mountain base.",
+    )
+    assert not window.settings.prompt_for_session_journal
+    assert saved_settings == [window.settings]
+
+
+def test_disabled_session_journal_prompt_is_skipped(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("app.ui.main_window.discover_all_projects", lambda: None)
+    monkeypatch.setattr(
+        "app.ui.main_window.SessionJournalPrompt",
+        lambda *_args: pytest.fail("prompt should not be shown"),
+    )
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings = AppSettings(prompt_for_session_journal=False)
+
+    assert window._request_session_journal_entry(
+        _detached_project(tmp_path)
+    ) == (True, None, None)

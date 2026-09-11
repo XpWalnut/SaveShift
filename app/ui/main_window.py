@@ -66,6 +66,7 @@ from app.ui.widgets.project_card import ProjectCard
 from app.ui.dialogs.history_dialog import HistoryDialog
 from app.ui.dialogs.getting_started_dialog import GettingStartedDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
+from app.ui.dialogs.session_journal_prompt import SessionJournalPrompt
 from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.dialogs.shared_projects_dialog import SharedProjectsDialog
@@ -496,6 +497,11 @@ class MainWindow(QMainWindow):
         candidate = replace(
             self.settings,
             automatic_update_checks=dialog.automatic_update_checks,
+            prompt_for_session_journal=getattr(
+                dialog,
+                "prompt_for_session_journal",
+                self.settings.prompt_for_session_journal,
+            ),
             manual_transfer_controls=getattr(
                 dialog,
                 "manual_transfer_controls",
@@ -1775,27 +1781,12 @@ class MainWindow(QMainWindow):
         if destination.suffix.lower() != ".sspkg":
             destination = destination.with_suffix(".sspkg")
 
-        journal_title = None
-        journal_body = None
-        add_journal = QMessageBox.question(
-            self,
-            "Add to World Journal?",
-            (
-                "Would you like to record what happened during this session "
-                "before handing the world off?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        continue_export, journal_title, journal_body = (
+            self._request_session_journal_entry(project)
         )
 
-        if add_journal == QMessageBox.StandardButton.Yes:
-            journal_dialog = JournalEntryDialog(project.name, self)
-
-            if journal_dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-
-            journal_title = journal_dialog.entry_title
-            journal_body = journal_dialog.entry_body
+        if not continue_export:
+            return
 
         lease_acquired_here = False
 
@@ -1868,6 +1859,46 @@ class MainWindow(QMainWindow):
 
         self.load_installed_games()
         self.load_projects()
+
+    def _request_session_journal_entry(
+        self,
+        project: Project,
+    ) -> tuple[bool, str | None, str | None]:
+        if not self.settings.prompt_for_session_journal:
+            return True, None, None
+
+        prompt = SessionJournalPrompt(project.name, self)
+        response = prompt.exec()
+
+        if prompt.dont_ask_again:
+            candidate = replace(
+                self.settings,
+                prompt_for_session_journal=False,
+            )
+
+            try:
+                SettingsService.save(candidate)
+            except Exception as error:
+                QMessageBox.warning(
+                    self,
+                    "Journal Preference Not Saved",
+                    (
+                        "Save Shift could not remember the journal prompt "
+                        f"preference.\n\n{error}"
+                    ),
+                )
+            else:
+                self.settings = candidate
+
+        if response != QMessageBox.StandardButton.Yes:
+            return True, None, None
+
+        journal_dialog = JournalEntryDialog(project.name, self)
+
+        if journal_dialog.exec() != QDialog.DialogCode.Accepted:
+            return False, None, None
+
+        return True, journal_dialog.entry_title, journal_dialog.entry_body
 
 
     def show_history(self, project: Project) -> None:
@@ -2200,27 +2231,13 @@ class MainWindow(QMainWindow):
 
         journal_title = None
         journal_body = None
-        add_journal = QMessageBox.StandardButton.No
         if not automatic:
-            add_journal = QMessageBox.question(
-                self,
-                "Add to World Journal?",
-                (
-                    "Would you like to record what happened during this session "
-                    "before handing the world off?"
-                ),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
+            continue_handoff, journal_title, journal_body = (
+                self._request_session_journal_entry(project)
             )
 
-        if add_journal == QMessageBox.StandardButton.Yes:
-            journal_dialog = JournalEntryDialog(project.name, self)
-
-            if journal_dialog.exec() != QDialog.DialogCode.Accepted:
+            if not continue_handoff:
                 return
-
-            journal_title = journal_dialog.entry_title
-            journal_body = journal_dialog.entry_body
 
         try:
             manager = self._require_coordination_manager()
@@ -2418,6 +2435,27 @@ class MainWindow(QMainWindow):
                     )
                 ),
             )
+
+        if automatic:
+            _continue, journal_title, journal_body = (
+                self._request_session_journal_entry(project)
+            )
+            if journal_title is not None or journal_body is not None:
+                try:
+                    SessionJournalService.create_entry(
+                        project_id=project.id,
+                        title=journal_title or "",
+                        body=journal_body or "",
+                        created_by=version.created_by,
+                        project_version_number=version.version_number,
+                    )
+                except Exception as error:
+                    QMessageBox.critical(
+                        self,
+                        "Journal Entry Not Saved",
+                        "The save was handed off successfully, but Save Shift "
+                        f"could not save the journal entry.\n\n{error}",
+                    )
         self.load_installed_games()
         self.load_projects()
 
