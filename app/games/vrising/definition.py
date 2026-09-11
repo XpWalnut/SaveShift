@@ -14,8 +14,8 @@ class VRisingGame(SupportedGame):
     def discovery(self) -> GameDiscovery:
         return VRisingDiscovery()
 
-    def detect_save_path(self) -> Path | None:
-        path = (
+    def detect_save_path(self) -> Path:
+        return (
             Path.home()
             / "AppData"
             / "LocalLow"
@@ -23,5 +23,3 @@ class VRisingGame(SupportedGame):
             / "VRising"
             / "CloudSaves"
         )
-
-        return path if path.exists() else None

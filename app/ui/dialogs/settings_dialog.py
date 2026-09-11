@@ -76,6 +76,18 @@ class SettingsDialog(QDialog):
             settings.automatic_update_checks
         )
 
+        self.manual_transfer_checkbox = QCheckBox(
+            "Show manual Receive and Hand Off controls"
+        )
+        self.manual_transfer_checkbox.setChecked(
+            settings.manual_transfer_controls
+        )
+        self.manual_transfer_checkbox.setToolTip(
+            "By default, Host receives the latest group version, launches the "
+            "game, and hands off after the game closes. Enable this for manual "
+            "transfers or troubleshooting."
+        )
+
         self.update_management_label = QLabel()
         self.update_management_label.setWordWrap(True)
         self.update_management_label.setStyleSheet(
@@ -278,6 +290,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.advanced_coordination_checkbox)
         layout.addLayout(coordination_form)
         layout.addWidget(self.coordination_status_label)
+        layout.addWidget(self.manual_transfer_checkbox)
         layout.addSpacing(theme.SPACING)
         layout.addLayout(button_row)
         self.setLayout(layout)
@@ -288,6 +301,10 @@ class SettingsDialog(QDialog):
     @property
     def automatic_update_checks(self) -> bool:
         return self.automatic_update_checkbox.isChecked()
+
+    @property
+    def manual_transfer_controls(self) -> bool:
+        return self.manual_transfer_checkbox.isChecked()
 
     @property
     def player_display_name(self) -> str:

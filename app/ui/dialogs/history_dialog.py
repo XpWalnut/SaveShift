@@ -160,10 +160,13 @@ class HistoryDialog(QDialog):
         versions = ProjectVersionService.get_versions_for_project(
             self.project.id
         )
+        current_version = ProjectVersionService.get_latest_version(
+            self.project.id
+        )
 
         versions = sorted(
             versions,
-            key=lambda version: version.version_number,
+            key=lambda version: version.id,
             reverse=True,
         )
 
@@ -185,7 +188,12 @@ class HistoryDialog(QDialog):
             local_time = created_at.astimezone()
 
             details = [
-                f"Version {version.version_number}",
+                (
+                    f"Version {version.version_number} · Current"
+                    if current_version is not None
+                    and version.id == current_version.id
+                    else f"Version {version.version_number}"
+                ),
                 f"{version.source_type} by {version.created_by}",
                 local_time.strftime("%B %d, %Y at %I:%M %p"),
                 f"Timeline: {version.lineage_name}",

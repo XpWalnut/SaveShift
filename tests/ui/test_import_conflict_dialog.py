@@ -98,6 +98,30 @@ def test_diverged_preview_requires_explicit_backup_acknowledgement(
     assert dialog.import_button.isEnabled()
 
 
+def test_group_reconciliation_is_available_with_explicit_acknowledgement(
+    qtbot,
+) -> None:
+    dialog = ImportConflictDialog(
+        _analysis(ImportConflictKind.GROUP_RECONCILIATION)
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.status_label.text() == (
+        "Group handoff differs from local history"
+    )
+    assert dialog.replace_confirmation.isVisible()
+    assert not dialog.import_button.isEnabled()
+    assert dialog.import_button.text() == "Sync to Group Version"
+
+    qtbot.mouseClick(
+        dialog.replace_confirmation,
+        Qt.MouseButton.LeftButton,
+    )
+
+    assert dialog.import_button.isEnabled()
+
+
 def test_new_identity_with_existing_files_is_presented_as_replacement(
     qtbot,
 ) -> None:

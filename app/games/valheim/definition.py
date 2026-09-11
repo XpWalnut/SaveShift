@@ -17,8 +17,8 @@ class ValheimGame(SupportedGame):
         return ValheimDiscovery()
 
 
-    def detect_save_path(self) -> Path | None:
-        path = (
+    def detect_save_path(self) -> Path:
+        return (
                 Path.home()
                 / "AppData"
                 / "LocalLow"
@@ -26,5 +26,3 @@ class ValheimGame(SupportedGame):
                 / "Valheim"
                 / "worlds_local"
         )
-
-        return path if path.exists() else None

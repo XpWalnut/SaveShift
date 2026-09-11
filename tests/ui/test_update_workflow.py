@@ -82,6 +82,23 @@ def test_settings_dialog_makes_disabled_and_unpaired_coordination_clear(
     assert dialog.coordination_server_input.isEnabled()
 
 
+def test_automatic_host_workflow_is_default_with_manual_opt_in(qtbot) -> None:
+    automatic_dialog = SettingsDialog(settings=AppSettings())
+    qtbot.addWidget(automatic_dialog)
+
+    assert not automatic_dialog.manual_transfer_controls
+    assert "Host receives the latest group version" in (
+        automatic_dialog.manual_transfer_checkbox.toolTip()
+    )
+
+    manual_dialog = SettingsDialog(
+        settings=AppSettings(manual_transfer_controls=True)
+    )
+    qtbot.addWidget(manual_dialog)
+
+    assert manual_dialog.manual_transfer_controls
+
+
 def test_settings_dialog_presents_create_and_join_group_actions(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,

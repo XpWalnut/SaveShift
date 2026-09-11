@@ -3,6 +3,7 @@ from collections.abc import Generator
 from dataclasses import replace
 from datetime import UTC, datetime
 import os
+import platform
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -54,6 +55,7 @@ from app.services.export_service import ExportService
 from app.services.restore_service import RestoreService
 from app.services.hosting_service import HostingService
 from app.services.import_service import ImportService
+from app.services.import_conflict import ImportConflictKind
 from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
@@ -62,6 +64,7 @@ from app.ui import styles, theme
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
 from app.ui.dialogs.history_dialog import HistoryDialog
+from app.ui.dialogs.getting_started_dialog import GettingStartedDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
 from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
@@ -154,6 +157,18 @@ class MainWindow(QMainWindow):
         self._pending_receive_project: Project | None = None
         self._pending_receive_project_name = ""
         self._listing_shared_projects = False
+        self._pending_host_project: Project | None = None
+        self._pending_host_manual = False
+        self._automatic_session_project: Project | None = None
+        self._automatic_session_game = None
+        self._automatic_session_seen_running = False
+        self._automatic_session_wait_ticks = 0
+        self._automatic_handoff_in_progress = False
+        self.automatic_session_timer = QTimer(self)
+        self.automatic_session_timer.setInterval(1_000)
+        self.automatic_session_timer.timeout.connect(
+            self._check_automatic_host_session
+        )
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -256,8 +271,20 @@ class MainWindow(QMainWindow):
         self.remove_button = QPushButton("Remove Game")
         self.remove_button.clicked.connect(self.remove_selected_game)
 
-        self.shared_projects_button = QPushButton("Shared Projects")
+        self.create_group_button = QPushButton("Create Group")
+        self.create_group_button.clicked.connect(self.create_group_from_home)
+
+        self.join_group_button = QPushButton("Join Group")
+        self.join_group_button.clicked.connect(self.join_group_from_home)
+
+        self.invite_friend_button = QPushButton("Invite a Friend")
+        self.invite_friend_button.clicked.connect(self._create_group_invitation)
+
+        self.shared_projects_button = QPushButton("Receive Shared World")
         self.shared_projects_button.clicked.connect(self.show_shared_projects)
+
+        self.how_it_works_button = QPushButton("How It Works")
+        self.how_it_works_button.clicked.connect(self.show_getting_started)
 
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self.show_settings)
@@ -267,7 +294,11 @@ class MainWindow(QMainWindow):
             self.add_button,
             self.detect_games_button,
             self.remove_button,
+            self.create_group_button,
+            self.join_group_button,
+            self.invite_friend_button,
             self.shared_projects_button,
+            self.how_it_works_button,
             self.settings_button,
         ):
             button.setStyleSheet(styles.secondary_button_style())
@@ -279,7 +310,11 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.add_button)
         left_panel.addWidget(self.detect_games_button)
         left_panel.addWidget(self.remove_button)
+        left_panel.addWidget(self.create_group_button)
+        left_panel.addWidget(self.join_group_button)
+        left_panel.addWidget(self.invite_friend_button)
         left_panel.addWidget(self.shared_projects_button)
+        left_panel.addWidget(self.how_it_works_button)
         left_panel.addWidget(self.settings_button)
         left_panel.addStretch()
 
@@ -316,6 +351,8 @@ class MainWindow(QMainWindow):
         discover_all_projects()
         self.load_installed_games()
         self.load_projects()
+        self._refresh_group_buttons()
+        QTimer.singleShot(0, self._start_automatic_game_detection)
 
         if startup_package_path is not None:
             QTimer.singleShot(
@@ -324,6 +361,76 @@ class MainWindow(QMainWindow):
             )
         else:
             QTimer.singleShot(0, self._start_automatic_update_check)
+
+    def show_getting_started(self) -> None:
+        GettingStartedDialog(self).exec()
+
+    def _start_automatic_game_detection(self) -> None:
+        if os.environ.get("SAVESHIFT_DISABLE_GAME_DETECTION") == "1":
+            return
+        if InstalledGameService.get_installed_games():
+            return
+
+        self._detect_steam_games(show_messages=False)
+
+    def _coordination_identity(self) -> tuple[str, str] | None:
+        profile_name = self.settings.player_display_name.strip()
+        if not profile_name:
+            profile_name, accepted = QInputDialog.getText(
+                self,
+                "Your Display Name",
+                "What name should your friends see?",
+            )
+            profile_name = profile_name.strip()
+            if not accepted or not profile_name:
+                return None
+
+        device_name = (
+            self.settings.coordination_device_name.strip()
+            or platform.node().strip()
+            or "Windows PC"
+        )
+        return device_name, profile_name
+
+    def create_group_from_home(self) -> None:
+        identity = self._coordination_identity()
+        if identity is not None:
+            self._begin_create_group(*identity)
+
+    def join_group_from_home(self) -> None:
+        identity = self._coordination_identity()
+        if identity is not None:
+            self._begin_join_group(*identity)
+
+    def _refresh_group_buttons(self) -> None:
+        connected = self.settings.coordination_enabled
+        self.create_group_button.setVisible(not connected)
+        self.join_group_button.setVisible(not connected)
+        self.invite_friend_button.setVisible(
+            connected and self.settings.coordination_is_administrator
+        )
+        self.shared_projects_button.setVisible(connected)
+
+        self.detect_games_button.setToolTip(
+            "Scan every Steam library for supported installed games, including "
+            "games that do not have a save yet."
+        )
+        self.create_group_button.setToolTip(
+            "Create a private group and become its administrator."
+        )
+        self.join_group_button.setToolTip(
+            "Paste a single-use invitation from a friend. Save Shift will then "
+            "detect games and check for shared worlds automatically."
+        )
+        self.invite_friend_button.setToolTip(
+            "Copy a single-use invitation that you can send to one friend."
+        )
+        self.shared_projects_button.setToolTip(
+            "Check this group for worlds that have not been added to this computer."
+        )
+        self.how_it_works_button.setToolTip(
+            "Learn the Receive, Host, play, and Hand Off workflow."
+        )
 
     def show_settings(self) -> None:
         dialog = SettingsDialog(
@@ -389,6 +496,11 @@ class MainWindow(QMainWindow):
         candidate = replace(
             self.settings,
             automatic_update_checks=dialog.automatic_update_checks,
+            manual_transfer_controls=getattr(
+                dialog,
+                "manual_transfer_controls",
+                self.settings.manual_transfer_controls,
+            ),
             player_display_name=dialog.player_display_name,
             coordination_enabled=dialog.coordination_enabled,
             coordination_server_url=dialog.coordination_server_url,
@@ -579,9 +691,10 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Group Created",
-            "Your group is ready. Open Settings and choose Invite a Friend "
+            "Your group is ready. Choose Invite a Friend on the main screen "
             "to connect another computer.",
         )
+        self._detect_steam_games(show_messages=False)
 
     def _group_joined(
         self,
@@ -607,8 +720,11 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Group Joined",
-            "This computer is now connected to the Save Shift group.",
+            "This computer is now connected. Save Shift will detect supported "
+            "Steam games and check the group for shared worlds next.",
         )
+        self._detect_steam_games(show_messages=False)
+        self.show_shared_projects()
 
     def _begin_leave_group(self) -> None:
         if self.coordination_manager is not None and self.coordination_manager.active_leases:
@@ -770,6 +886,7 @@ class MainWindow(QMainWindow):
             self.lock_status_timer.stop()
 
         self.load_projects()
+        self._refresh_group_buttons()
         return True
 
     def _create_group_invitation(self) -> None:
@@ -1197,12 +1314,13 @@ class MainWindow(QMainWindow):
         if detected_save_path is not None:
             use_detected_path = QMessageBox.question(
                 self,
-                "Save Folder Found",
+                "Default Save Location",
                 (
-                    f"Save Shift found the default save folder for "
+                    f"Save Shift knows the default save location for "
                     f"{supported_game.display_name}:\n\n"
                     f"{detected_save_path}\n\n"
-                    "Use this folder?"
+                    "Use this location? The game or a received world will "
+                    "create it when needed."
                 ),
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No,
@@ -1296,11 +1414,46 @@ class MainWindow(QMainWindow):
 
 
     def host_project(self, project: Project) -> None:
+        if (
+            self._automatic_session_project is not None
+            and self._automatic_session_project.uuid != project.uuid
+        ):
+            QMessageBox.information(
+                self,
+                "Another Game Is Hosting",
+                "Exit the currently hosted game and let Save Shift finish its "
+                "handoff before hosting another project.",
+            )
+            return
+
         installed_game = self._get_installed_game_for_project(project)
         player_name = self._get_player_display_name()
 
         if player_name is None:
             return
+
+        supported_game = GameRegistry.get_by_game_id(installed_game.game_id)
+        if self.settings.coordination_enabled and supported_game is not None:
+            try:
+                game_running = supported_game.is_running()
+            except Exception as error:
+                QMessageBox.warning(
+                    self,
+                    "Game Status Unavailable",
+                    "Save Shift could not verify whether the game is already "
+                    f"running. No files were changed.\n\n{error}",
+                )
+                return
+
+            if game_running:
+                QMessageBox.warning(
+                    self,
+                    "Close Game Before Hosting",
+                    f"Close {supported_game.display_name}, then choose Host "
+                    "again. Save Shift must receive the latest group version "
+                    "before launching the game.",
+                )
+                return
 
         if (
             self.coordination_manager is not None
@@ -1311,7 +1464,7 @@ class MainWindow(QMainWindow):
                 "Already Hosting",
                 (
                     "This computer already owns the project lock. "
-                    "Export the project when you are ready to hand it off."
+                    "Hand it off when you are finished hosting."
                 ),
             )
             return
@@ -1322,41 +1475,79 @@ class MainWindow(QMainWindow):
             self._show_coordination_error(error)
             return
 
-        try:
-            version = HostingService.host_project(
-                project_id=project.id,
-                game_id=installed_game.game_id,
-                hosted_by=player_name,
-                source_device_name=(
-                    self.settings.coordination_device_name or None
-                ),
+        logger.info(
+            "Preparing host session for project %s by checking the latest "
+            "group package.",
+            project.uuid,
+        )
+
+        if self.settings.coordination_enabled:
+            try:
+                provider = self._require_coordination_manager().provider
+            except CoordinationError as error:
+                self._release_coordination_lease(
+                    project.uuid,
+                    report_error=False,
+                )
+                self._show_coordination_error(error)
+                return
+
+            self._pending_host_project = project
+            self._pending_host_manual = self.settings.manual_transfer_controls
+            self._show_package_handoff_progress(
+                "Preparing to Host",
+                f"Receiving the latest group version of {project.name}…",
             )
-        except Exception as error:
-            self._release_coordination_lease(project.uuid, report_error=False)
-            QMessageBox.critical(
+            if self.package_handoff_controller.download_latest(
+                project.uuid,
+                provider,
+            ):
+                return
+
+            self._pending_host_project = None
+            self._close_package_handoff_progress()
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
+            QMessageBox.warning(
                 self,
-                "Hosting Failed",
-                f"Save Shift could not host this project.\n\n{error}",
+                "Host Failed",
+                "Another package transfer is already in progress.",
             )
             return
 
-        self.load_installed_games()
-        self.load_projects()
+        self._launch_hosted_project(
+            project,
+            installed_game,
+            automatic=False,
+        )
+
+    def _launch_hosted_project(
+        self,
+        project: Project,
+        installed_game: InstalledGame,
+        *,
+        automatic: bool,
+    ) -> None:
 
         supported_game = GameRegistry.get_by_game_id(
             installed_game.game_id
         )
 
         if supported_game is None:
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
             QMessageBox.information(
                 self,
                 "Project Hosted",
                 (
-                    "Hosted version created successfully.\n\n"
-                    f"Version: {version.version_number}\n"
-                    f"Package:\n{version.package_path}\n\n"
-                    "The game could not be identified, so it was not "
-                    "launched automatically."
+                    "The project is ready to host, but the game could not "
+                    "be identified and was not launched automatically.\n\n"
+                    "Launch it manually. Enable manual transfer controls in "
+                    "Settings so you can hand it off when finished."
                 ),
             )
             return
@@ -1367,19 +1558,36 @@ class MainWindow(QMainWindow):
             if not was_already_running:
                 supported_game.launch()
         except Exception as error:
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
             QMessageBox.warning(
                 self,
                 "Project Hosted",
                 (
-                    "Hosted version created successfully.\n\n"
-                    f"Version: {version.version_number}\n"
-                    f"Package:\n{version.package_path}\n\n"
-                    "However, Save Shift could not launch "
+                    "The project is ready to host, but Save Shift could not "
+                    "launch "
                     f"{supported_game.display_name} automatically.\n\n"
                     f"{error}\n\n"
-                    "You can launch it manually from Steam."
+                    "You can launch it manually from Steam. Enable manual "
+                    "transfer controls in Settings so you can hand it off "
+                    "when finished."
                 ),
             )
+            return
+
+        if automatic:
+            self._automatic_session_project = project
+            self._automatic_session_game = supported_game
+            self._automatic_session_seen_running = was_already_running
+            self._automatic_session_wait_ticks = 0
+            self.automatic_session_timer.start()
+            self.statusBar().showMessage(
+                f"Hosting {project.name}. Save Shift will hand it off when "
+                f"{supported_game.display_name} closes."
+            )
+            self.load_projects()
             return
 
         if was_already_running:
@@ -1395,12 +1603,75 @@ class MainWindow(QMainWindow):
             self,
             "Project Hosted",
             (
-                "Hosted version created successfully.\n\n"
-                f"Version: {version.version_number}\n"
-                f"Package:\n{version.package_path}\n\n"
-                f"{launch_message}"
+                f"{launch_message}\n\n"
+                + (
+                    "The latest group version was received first. Use Hand Off "
+                    "when you are finished; that will create and share the next "
+                    "version."
+                    if self.settings.coordination_enabled
+                    else (
+                        "No new project version was created. Use Export when "
+                        "you are finished to save the next version."
+                    )
+                )
             ),
         )
+
+    def _check_automatic_host_session(self) -> None:
+        project = self._automatic_session_project
+        supported_game = self._automatic_session_game
+
+        if project is None or supported_game is None:
+            self.automatic_session_timer.stop()
+            return
+
+        try:
+            running = supported_game.is_running()
+        except Exception as error:
+            logger.warning(
+                "Could not check hosted game process for %s: %s",
+                project.uuid,
+                error,
+            )
+            return
+
+        if running:
+            self._automatic_session_seen_running = True
+            self._automatic_session_wait_ticks = 0
+            return
+
+        if not self._automatic_session_seen_running:
+            self._automatic_session_wait_ticks += 1
+            if self._automatic_session_wait_ticks < 60:
+                return
+
+            self.automatic_session_timer.stop()
+            self._automatic_session_project = None
+            self._automatic_session_game = None
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
+            QMessageBox.warning(
+                self,
+                "Game Did Not Start",
+                "Save Shift did not detect the game within 60 seconds, so the "
+                "project lock was released. Try Host again or enable manual "
+                "transfer controls in Settings.",
+            )
+            return
+
+        self._automatic_session_wait_ticks += 1
+        if self._automatic_session_wait_ticks < 2:
+            return
+
+        self.automatic_session_timer.stop()
+        self._automatic_session_project = None
+        self._automatic_session_game = None
+        self.statusBar().showMessage(
+            f"{supported_game.display_name} closed. Handing off {project.name}…"
+        )
+        self.handoff_project(project, automatic=True)
 
     def import_package(
             self,
@@ -1662,26 +1933,32 @@ class MainWindow(QMainWindow):
         return entry
 
     def detect_steam_games(self) -> None:
+        self._detect_steam_games(show_messages=True)
+
+    def _detect_steam_games(self, *, show_messages: bool) -> list[InstalledGame]:
         try:
             added_games = InstalledGameService.detect_steam_games()
         except Exception as error:
-            QMessageBox.warning(
-                self,
-                "Steam Detection Failed",
-                f"Save Shift could not scan the Steam libraries.\n\n{error}",
-            )
-            return
+            logger.warning("Automatic Steam game detection failed: %s", error)
+            if show_messages:
+                QMessageBox.warning(
+                    self,
+                    "Steam Detection Failed",
+                    f"Save Shift could not scan the Steam libraries.\n\n{error}",
+                )
+            return []
 
         if not added_games:
-            QMessageBox.information(
-                self,
-                "No New Games Found",
-                (
-                    "Save Shift did not find any unconfigured supported "
-                    "Steam games with local save data."
-                ),
-            )
-            return
+            if show_messages:
+                QMessageBox.information(
+                    self,
+                    "No New Games Found",
+                    (
+                        "Save Shift did not find any unconfigured supported "
+                        "games in your Steam libraries."
+                    ),
+                )
+            return []
 
         discovery_errors: list[str] = []
 
@@ -1696,6 +1973,7 @@ class MainWindow(QMainWindow):
         self.selected_installed_game_id = added_games[0].id
         self.load_installed_games()
         self.load_projects()
+        self._refresh_group_buttons()
 
         added_names = ", ".join(
             installed_game.display_name
@@ -1709,11 +1987,13 @@ class MainWindow(QMainWindow):
                 + "\n".join(discovery_errors)
             )
 
-        QMessageBox.information(
-            self,
-            "Steam Games Detected",
-            message,
-        )
+        if show_messages:
+            QMessageBox.information(
+                self,
+                "Steam Games Detected",
+                message,
+            )
+        return added_games
 
     def join_hosted_project(self, project: Project) -> None:
         lease = self.project_lock_statuses.get(project.uuid)
@@ -1822,7 +2102,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Group Not Connected",
-                "Join or create a group in Settings first.",
+                "Choose Join Group or Create Group on the main screen first.",
             )
             return
 
@@ -1898,7 +2178,12 @@ class MainWindow(QMainWindow):
 
         self.handoff_project(project)
 
-    def handoff_project(self, project: Project) -> None:
+    def handoff_project(
+        self,
+        project: Project,
+        *,
+        automatic: bool = False,
+    ) -> None:
         if self.package_handoff_controller.running:
             QMessageBox.information(
                 self,
@@ -1915,16 +2200,18 @@ class MainWindow(QMainWindow):
 
         journal_title = None
         journal_body = None
-        add_journal = QMessageBox.question(
-            self,
-            "Add to World Journal?",
-            (
-                "Would you like to record what happened during this session "
-                "before handing the world off?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
+        add_journal = QMessageBox.StandardButton.No
+        if not automatic:
+            add_journal = QMessageBox.question(
+                self,
+                "Add to World Journal?",
+                (
+                    "Would you like to record what happened during this session "
+                    "before handing the world off?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
 
         if add_journal == QMessageBox.StandardButton.Yes:
             journal_dialog = JournalEntryDialog(project.name, self)
@@ -1969,15 +2256,24 @@ class MainWindow(QMainWindow):
             self._show_coordination_error(error)
             return
         except Exception as error:
+            recovery = (
+                "\n\nThe project lock is still held for safety. Enable "
+                "manual Receive and Hand Off controls in Settings, then retry "
+                "Hand Off."
+                if automatic
+                else ""
+            )
             QMessageBox.critical(
                 self,
                 "Hand Off Failed",
-                f"Save Shift could not prepare the handoff.\n\n{error}",
+                "Save Shift could not prepare the handoff.\n\n"
+                f"{error}{recovery}",
             )
             return
 
         self._pending_handoff_project = project
         self._pending_handoff_version = version
+        self._automatic_handoff_in_progress = automatic
         self._show_package_handoff_progress(
             "Handing Off Project",
             f"Encrypting and uploading {project.name} through Steam…",
@@ -2076,14 +2372,22 @@ class MainWindow(QMainWindow):
         if self.settings.coordination_enabled:
             card.import_button.setText("Receive")
             card.export_button.setText("Hand Off")
+            card.import_button.setVisible(
+                self.settings.manual_transfer_controls
+            )
+            card.export_button.setVisible(
+                self.settings.manual_transfer_controls
+            )
 
         return card
 
     def _group_handoff_published(self, _package: object) -> None:
         project = self._pending_handoff_project
         version = self._pending_handoff_version
+        automatic = self._automatic_handoff_in_progress
         self._pending_handoff_project = None
         self._pending_handoff_version = None
+        self._automatic_handoff_in_progress = False
         self._close_package_handoff_progress()
 
         if project is None or version is None:
@@ -2093,24 +2397,35 @@ class MainWindow(QMainWindow):
             project.uuid,
             report_error=False,
         )
-        QMessageBox.information(
-            self,
-            "Project Handed Off",
-            (
-                f"{project.name} was encrypted and shared with the group.\n\n"
-                f"Version: {version.version_number}"
-                + (
-                    "\n\nWarning: Save Shift could not release the project "
-                    f"lock. It will expire automatically.\n\n{release_error}"
-                    if release_error is not None
-                    else ""
-                )
-            ),
-        )
+        if automatic and release_error is None:
+            self.statusBar().showMessage(
+                f"{project.name} was handed off as Version "
+                f"{version.version_number}.",
+                15_000,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Project Handed Off",
+                (
+                    f"{project.name} was encrypted and shared with the group.\n\n"
+                    f"Version: {version.version_number}"
+                    + (
+                        "\n\nWarning: Save Shift could not release the project "
+                        f"lock. It will expire automatically.\n\n{release_error}"
+                        if release_error is not None
+                        else ""
+                    )
+                ),
+            )
         self.load_installed_games()
         self.load_projects()
 
     def _group_package_downloaded(self, result: object) -> None:
+        if self._pending_host_project is not None:
+            self._finish_host_preflight(result)
+            return
+
         project_name = self._pending_receive_project_name
         self._pending_receive_project = None
         self._pending_receive_project_name = ""
@@ -2128,7 +2443,10 @@ class MainWindow(QMainWindow):
         package_path = Path(package_path)
 
         try:
-            analysis = ImportService.analyze_import(package_path)
+            analysis = ImportService.analyze_import(
+                package_path,
+                group_authoritative=True,
+            )
         except Exception as error:
             package_path.unlink(missing_ok=True)
             QMessageBox.warning(self, "Import Not Allowed", str(error))
@@ -2155,6 +2473,7 @@ class MainWindow(QMainWindow):
                     package_path=package_path,
                     imported_by=player_name,
                     allow_replace=analysis.requires_replace_confirmation,
+                    allow_group_reconciliation=True,
                 )
         except CoordinationError as error:
             package_path.unlink(missing_ok=True)
@@ -2181,7 +2500,69 @@ class MainWindow(QMainWindow):
         self.load_installed_games()
         self.load_projects()
 
+    def _finish_host_preflight(self, result: object) -> None:
+        project = self._pending_host_project
+        manual = self._pending_host_manual
+        self._pending_host_project = None
+        self._pending_host_manual = False
+        self._close_package_handoff_progress()
+
+        if project is None:
+            return
+
+        try:
+            if result is not None:
+                _catalog_package, package_path = result
+                package_path = Path(package_path)
+                analysis = ImportService.analyze_import(
+                    package_path,
+                    group_authoritative=True,
+                )
+
+                if analysis.kind == ImportConflictKind.DUPLICATE:
+                    package_path.unlink(missing_ok=True)
+                elif analysis.is_blocked:
+                    package_path.unlink(missing_ok=True)
+                    raise ValueError(
+                        "The latest group version could not be applied safely: "
+                        f"{analysis.kind.value}."
+                    )
+                else:
+                    ImportService.import_package(
+                        package_path=package_path,
+                        imported_by=(
+                            self.settings.player_display_name
+                            or self.settings.coordination_device_name
+                        ),
+                        allow_replace=analysis.requires_replace_confirmation,
+                        allow_group_reconciliation=True,
+                    )
+
+            installed_game = self._get_installed_game_for_project(project)
+        except Exception as error:
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
+            QMessageBox.critical(
+                self,
+                "Host Failed",
+                "Save Shift could not receive the latest group version, so "
+                f"the game was not launched.\n\n{error}",
+            )
+            return
+
+        self.load_installed_games()
+        self.load_projects()
+        self._launch_hosted_project(
+            project,
+            installed_game,
+            automatic=not manual,
+        )
+
     def _group_handoff_failed(self, message: str) -> None:
+        pending_host = self._pending_host_project
+        automatic_handoff = self._automatic_handoff_in_progress
         if self._listing_shared_projects:
             operation = "Shared Projects"
         else:
@@ -2193,15 +2574,31 @@ class MainWindow(QMainWindow):
         self._listing_shared_projects = False
         self._pending_handoff_project = None
         self._pending_handoff_version = None
+        self._pending_host_project = None
+        self._pending_host_manual = False
         self._pending_receive_project = None
         self._pending_receive_project_name = ""
         self._close_package_handoff_progress()
+        if pending_host is not None:
+            self._release_coordination_lease(
+                pending_host.uuid,
+                report_error=False,
+            )
+            operation = "Host"
+        self._automatic_handoff_in_progress = False
         QMessageBox.critical(
             self,
             f"{operation} Failed",
             (
                 f"Save Shift could not complete the group package transfer.\n\n"
                 f"{message}"
+                + (
+                    "\n\nThe project lock is still held for safety. Enable "
+                    "manual Receive and Hand Off controls in Settings, then "
+                    "retry Hand Off."
+                    if automatic_handoff
+                    else ""
+                )
             ),
         )
 
@@ -2575,6 +2972,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         manager = self.coordination_manager
+
+        if self._automatic_session_project is not None:
+            QMessageBox.warning(
+                self,
+                "Hosted Game Still Active",
+                "Keep Save Shift open while hosting. Close the game first so "
+                "Save Shift can upload the save and release its project lock.",
+            )
+            event.ignore()
+            return
 
         if manager is not None and manager.active_leases:
             response = QMessageBox.question(

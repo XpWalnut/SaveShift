@@ -7,7 +7,7 @@ import type { Env as CoordinationEnv } from "../src/index";
 const API = "https://coordination.test/api/v1";
 
 beforeEach(async () => {
-  const group = (env as CoordinationEnv).COORDINATION.getByName("default");
+  const group = (env as CoordinationEnv).COORDINATION.getByName("test-group");
   await runInDurableObject(
     group,
     async (_instance: CoordinationGroup, state) => {
@@ -133,8 +133,109 @@ describe("provider-neutral lock contract", () => {
     expect(await response.json()).toEqual({
       status: "ok",
       api_version: "v1",
-      provider_version: "1.4.0"
+      provider_version: "1.5.0"
     });
+  });
+
+  it("isolates package catalogs and encryption keys by group identity", async () => {
+    const namespace = (env as CoordinationEnv).COORDINATION;
+    const firstGroup = namespace.getByName("isolated-group-one");
+    const secondGroup = namespace.getByName("isolated-group-two");
+    const bootstrapRequest = (deviceName: string) => new Request(
+      `${API}/devices/bootstrap`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bootstrap_token: "test-bootstrap-token",
+          device_name: deviceName
+        })
+      }
+    );
+
+    const firstBootstrap = await firstGroup.fetch(
+      bootstrapRequest("First Group Owner")
+    );
+    const secondBootstrap = await secondGroup.fetch(
+      bootstrapRequest("Second Group Owner")
+    );
+    expect(firstBootstrap.status).toBe(201);
+    expect(secondBootstrap.status).toBe(201);
+    const firstDevice = (
+      await firstBootstrap.json<{ device: Device }>()
+    ).device;
+    const secondDevice = (
+      await secondBootstrap.json<{ device: Device }>()
+    ).device;
+
+    const firstKeyResponse = await firstGroup.fetch(new Request(
+      `${API}/package-encryption-key`,
+      { headers: { Authorization: `Bearer ${firstDevice.device_token}` } }
+    ));
+    const secondKeyResponse = await secondGroup.fetch(new Request(
+      `${API}/package-encryption-key`,
+      { headers: { Authorization: `Bearer ${secondDevice.device_token}` } }
+    ));
+    const firstKey = await firstKeyResponse.json<{ key: { key_id: string } }>();
+    const secondKey = await secondKeyResponse.json<{ key: { key_id: string } }>();
+    expect(firstKey.key.key_id).not.toBe(secondKey.key.key_id);
+
+    const isolatedProjectUuid = "12345678-1234-4234-9234-567812345698";
+    const leaseResponse = await firstGroup.fetch(new Request(
+      `${API}/locks/${isolatedProjectUuid}/acquire`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${firstDevice.device_token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ owner_display_name: "First Owner" })
+      }
+    ));
+    const lease = await leaseResponse.json<{ lock: { lease_id: string } }>();
+    const publishResponse = await firstGroup.fetch(new Request(
+      `${API}/projects/${isolatedProjectUuid}/packages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${firstDevice.device_token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          lease_id: lease.lock.lease_id,
+          transport_name: "steam-ugc",
+          remote_id: "first-group-item",
+          project_version: 1,
+          package_checksum: "a".repeat(64),
+          package_size_bytes: 1024,
+          encryption_key_id: firstKey.key.key_id,
+          project_name: "First Group World",
+          game_id: "v_rising",
+          created_by: "First Owner"
+        })
+      }
+    ));
+    expect(publishResponse.status).toBe(201);
+
+    const firstCatalogUsingSecondCredential = await firstGroup.fetch(new Request(
+      `${API}/packages/latest`,
+      { headers: { Authorization: `Bearer ${secondDevice.device_token}` } }
+    ));
+    expect(firstCatalogUsingSecondCredential.status).toBe(401);
+
+    const firstCatalog = await firstGroup.fetch(new Request(
+      `${API}/packages/latest`,
+      { headers: { Authorization: `Bearer ${firstDevice.device_token}` } }
+    ));
+    expect((await firstCatalog.json<{ packages: PackageRecord[] }>()).packages)
+      .toHaveLength(1);
+
+    const secondCatalog = await secondGroup.fetch(new Request(
+      `${API}/packages/latest`,
+      { headers: { Authorization: `Bearer ${secondDevice.device_token}` } }
+    ));
+    expect(secondCatalog.status).toBe(200);
+    expect(await secondCatalog.json()).toEqual({ packages: [] });
   });
 
   it("rejects an invalid pairing code", async () => {
@@ -763,7 +864,7 @@ describe("group onboarding and administration", () => {
       group_empty: true
     });
 
-    const group = (env as CoordinationEnv).COORDINATION.getByName("default");
+    const group = (env as CoordinationEnv).COORDINATION.getByName("test-group");
     await runInDurableObject(
       group,
       async (_instance: CoordinationGroup, state) => {

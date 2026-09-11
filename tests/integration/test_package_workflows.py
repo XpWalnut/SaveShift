@@ -158,7 +158,7 @@ def test_verified_package_import_creates_discovered_project_and_history(
     assert imported_version.project_id == imported_project.id
     assert imported_version.version_number == 7
     assert imported_version.source_type == ProjectVersionSource.IMPORTED
-    assert imported_version.created_by == "Receiving Player"
+    assert imported_version.created_by == "Original Host"
     assert imported_version.package_checksum == calculate_sha256(package_path)
     assert imported_version.backup_path is None
     assert imported_version.notes == "Received through integration test"

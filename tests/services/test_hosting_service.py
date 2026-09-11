@@ -209,6 +209,64 @@ def test_hosting_flat_valheim_world_excludes_other_worlds(
     }
 
 
+def test_handoff_continues_from_reconciled_group_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    (Path(project.local_path) / "world.sav").write_bytes(b"group state")
+    ProjectVersionService.create_version(
+        project_id=project.id,
+        created_by="Local Host",
+        source_type=ProjectVersionSource.HOSTED,
+        version_number=4,
+    )
+    ProjectVersionService.create_version(
+        project_id=project.id,
+        created_by="Local Host",
+        source_type=ProjectVersionSource.HOSTED,
+        version_number=5,
+    )
+    group_head = ProjectVersionService.create_version(
+        project_id=project.id,
+        created_by="Group Host",
+        source_type=ProjectVersionSource.IMPORTED,
+        version_number=3,
+        package_checksum="e" * 64,
+    )
+    package_path = tmp_path / "packages" / "handoff.sspkg"
+    package_path.parent.mkdir()
+    package_path.write_bytes(b"package")
+    package_calls: list[dict[str, object]] = []
+
+    def fake_create_package(**kwargs: object) -> Path:
+        package_calls.append(kwargs)
+        return package_path
+
+    monkeypatch.setattr(
+        PackageService,
+        "create_project_package",
+        fake_create_package,
+    )
+    monkeypatch.setattr(
+        "app.services.hosting_service.calculate_sha256",
+        lambda _path: "f" * 64,
+    )
+
+    handed_off = HostingService.host_project(
+        project_id=project.id,
+        game_id=GameId.VALHEIM.value,
+        hosted_by="Current Host",
+    )
+
+    assert handed_off.version_number == 4
+    assert handed_off.parent_version_id == group_head.id
+    assert package_calls[0]["project_version"] == 4
+    metadata = package_calls[0]["metadata"]
+    assert metadata.parent_project_version == 3
+    assert metadata.parent_package_checksum == "e" * 64
+
+
 def test_package_creation_failure_does_not_record_hosted_version(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 export interface Env {
   COORDINATION: DurableObjectNamespace<CoordinationGroup>;
+  GROUP_ID?: string;
   PAIRING_CODE?: string;
   ADMIN_BOOTSTRAP_TOKEN?: string;
   LEASE_SECONDS?: string;
@@ -90,12 +91,17 @@ const CURRENT_PACKAGE_KEY = "package-encryption-key-current:v1";
 const PROJECT_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+function groupStub(env: Env): DurableObjectStub<CoordinationGroup> {
+  const groupId = env.GROUP_ID?.trim() || "default";
+  return env.COORDINATION.getByName(groupId);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
-      const group = env.COORDINATION.getByName("default");
+      const group = groupStub(env);
       return group.fetch(request);
     }
 
@@ -103,12 +109,19 @@ export default {
       return errorResponse(404, "not_found", "Endpoint not found.");
     }
 
-    const group = env.COORDINATION.getByName("default");
+    const group = groupStub(env);
     return group.fetch(request);
   }
 } satisfies ExportedHandler<Env>;
 
 export class CoordinationGroup extends DurableObject<Env> {
+  private readonly groupId: string;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.groupId = ctx.id.name ?? "legacy";
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
@@ -116,7 +129,7 @@ export class CoordinationGroup extends DurableObject<Env> {
       return jsonResponse({
         status: "ok",
         api_version: "v1",
-        provider_version: "1.4.0"
+        provider_version: "1.5.0"
       });
     }
 
@@ -357,7 +370,7 @@ export class CoordinationGroup extends DurableObject<Env> {
     // bootstrap secret. This makes a repeated bootstrap request return the
     // same credential if a deployment edge drops the original response.
     const deviceToken = await sha256(
-      `saveshift-bootstrap-device-v1:${bootstrapToken}`
+      `saveshift-bootstrap-device-v2:${this.groupId}:${bootstrapToken}`
     );
     const deviceTokenHash = await sha256(deviceToken);
 

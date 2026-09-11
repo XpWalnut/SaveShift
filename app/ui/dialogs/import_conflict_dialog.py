@@ -62,6 +62,14 @@ _STATUS_CONTENT = {
         "states in history.",
         theme.WARNING,
     ),
+    ImportConflictKind.GROUP_RECONCILIATION: (
+        "Group handoff differs from local history",
+        "This is the group's authoritative handoff, but your local timeline "
+        "is ahead of or conflicts with it. Save Shift will back up your "
+        "current files, preserve the local versions in history, and make the "
+        "group version current.",
+        theme.WARNING,
+    ),
     ImportConflictKind.OLDER: (
         "Older package blocked",
         "The package is older than the current project. Use version history "
@@ -145,9 +153,13 @@ class ImportConflictDialog(QDialog):
         )
 
         self.import_button = QPushButton(
-            "Replace With Backup"
-            if analysis.requires_replace_confirmation
-            else "Import Package"
+            "Sync to Group Version"
+            if analysis.kind == ImportConflictKind.GROUP_RECONCILIATION
+            else (
+                "Replace With Backup"
+                if analysis.requires_replace_confirmation
+                else "Import Package"
+            )
         )
         self.import_button.setStyleSheet(styles.primary_button_style())
         self.import_button.setEnabled(

@@ -55,9 +55,6 @@ class InstalledGameService:
 
             save_path = supported_game.detect_save_path()
 
-            if save_path is None:
-                continue
-
             added_games.append(
                 InstalledGameService.add_installed_game(
                     game_id=supported_game.game_id.value,

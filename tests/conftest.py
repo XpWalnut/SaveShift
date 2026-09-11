@@ -22,6 +22,7 @@ os.environ["SAVESHIFT_DATABASE_BACKUPS_PATH"] = str(
 os.environ["SAVESHIFT_SETTINGS_PATH"] = str(_test_settings_path)
 os.environ["SAVESHIFT_LOCKS_PATH"] = str(_test_locks_path)
 os.environ["SAVESHIFT_DISABLE_UPDATE_CHECKS"] = "1"
+os.environ["SAVESHIFT_DISABLE_GAME_DETECTION"] = "1"
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 

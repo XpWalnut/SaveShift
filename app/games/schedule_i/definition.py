@@ -14,8 +14,8 @@ class ScheduleIGame(SupportedGame):
     def discovery(self) -> GameDiscovery:
         return ScheduleIDiscovery()
 
-    def detect_save_path(self) -> Path | None:
-        path = (
+    def detect_save_path(self) -> Path:
+        return (
             Path.home()
             / "AppData"
             / "LocalLow"
@@ -23,5 +23,3 @@ class ScheduleIGame(SupportedGame):
             / "Schedule I"
             / "Saves"
         )
-
-        return path if path.exists() else None

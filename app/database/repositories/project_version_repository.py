@@ -31,7 +31,17 @@ class ProjectVersionRepository:
             return session.scalar(
                 select(ProjectVersion)
                 .where(ProjectVersion.project_id == project_id)
+                .order_by(ProjectVersion.id.desc())
+            )
+
+    @staticmethod
+    def get_highest_version_number(project_id: int) -> int | None:
+        with SessionLocal() as session:
+            return session.scalar(
+                select(ProjectVersion.version_number)
+                .where(ProjectVersion.project_id == project_id)
                 .order_by(ProjectVersion.version_number.desc())
+                .limit(1)
             )
 
     @staticmethod

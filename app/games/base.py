@@ -36,8 +36,12 @@ class SupportedGame(ABC):
         pass
 
     @abstractmethod
-    def detect_save_path(self) -> Path | None:
-        """Return the default save folder if it exists."""
+    def detect_save_path(self) -> Path:
+        """Return the game's expected default save location.
+
+        The location may not exist yet when a game was installed but has never
+        created a save. Callers must treat that as a valid, empty game setup.
+        """
         pass
 
     def is_running(self) -> bool:

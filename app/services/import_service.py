@@ -1,24 +1,25 @@
 from pathlib import Path
 
+from app.coordination.local_lock import ProjectOperationLock
+from app.core.logging import logger
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
+from app.database.repositories.installed_game_repository import InstalledGameRepository
 from app.database.repositories.project_repository import ProjectRepository
+from app.games.game_id import GameId
+from app.games.registry import GameRegistry
 from app.packages.checksum import calculate_sha256
 from app.packages.package_extractor import PackageExtractor
 from app.packages.package_info import PackageInfo
 from app.packages.package_reader import PackageReader
-from app.database.repositories.installed_game_repository import InstalledGameRepository
-from app.games.game_id import GameId
-from app.games.registry import GameRegistry
-from app.services.save_file_service import SaveFileService
+from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.project_service import ProjectService
 from app.services.project_version_service import (
     ProjectVersionService,
     ProjectVersionSource,
 )
-from app.coordination.local_lock import ProjectOperationLock
+from app.services.save_file_service import SaveFileService
 from app.services.session_journal_service import SessionJournalService
-from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 
 
 class ImportService:
@@ -28,8 +29,17 @@ class ImportService:
         imported_by: str,
         notes: str | None = None,
         allow_replace: bool = False,
+        allow_group_reconciliation: bool = False,
     ):
-        analysis = ImportService.analyze_import(package_path)
+        received_by = imported_by.strip()
+
+        if not received_by:
+            raise ValueError("The receiving player name is required.")
+
+        analysis = ImportService.analyze_import(
+            package_path,
+            group_authoritative=allow_group_reconciliation,
+        )
         ImportService._validate_analysis(analysis, allow_replace)
         package_info = analysis.package_info
         project = analysis.project
@@ -52,7 +62,10 @@ class ImportService:
 
         with ProjectOperationLock(project.uuid, "importing into it"):
             if analysis.project is not None:
-                analysis = ImportService.analyze_import(package_path)
+                analysis = ImportService.analyze_import(
+                    package_path,
+                    group_authoritative=allow_group_reconciliation,
+                )
                 ImportService._validate_analysis(analysis, allow_replace)
                 package_info = analysis.package_info
                 project = analysis.project
@@ -66,7 +79,7 @@ class ImportService:
                 package_path=package_path,
                 package_info=package_info,
                 project=project,
-                imported_by=imported_by,
+                received_by=received_by,
                 notes=notes,
             )
 
@@ -75,7 +88,7 @@ class ImportService:
         package_path: Path,
         package_info: PackageInfo,
         project: Project,
-        imported_by: str,
+        received_by: str,
         notes: str | None,
     ):
         extracted_path = PackageExtractor.extract(package_path)
@@ -102,10 +115,17 @@ class ImportService:
             package_info,
             parent_version,
         )
+        logger.info(
+            "Package version %s for %s received by %s; created by %s",
+            package_info.project_version,
+            package_info.project_name,
+            received_by,
+            package_info.created_by,
+        )
 
         version = ProjectVersionService.create_version(
             project_id=project.id,
-            created_by=imported_by,
+            created_by=package_info.created_by,
             source_type=ProjectVersionSource.IMPORTED,
             version_number=package_info.project_version,
             package_path=str(package_path),
@@ -159,7 +179,11 @@ class ImportService:
         return analysis.package_info
 
     @staticmethod
-    def analyze_import(package_path: Path) -> ImportAnalysis:
+    def analyze_import(
+        package_path: Path,
+        *,
+        group_authoritative: bool = False,
+    ) -> ImportAnalysis:
         package_info = PackageReader.read(package_path)
         project = ProjectRepository.get_by_uuid(package_info.project_uuid)
 
@@ -217,13 +241,21 @@ class ImportService:
         incoming_version_number = package_info.project_version
 
         if incoming_version_number < local_version_number:
-            kind = ImportConflictKind.OLDER
+            kind = (
+                ImportConflictKind.GROUP_RECONCILIATION
+                if group_authoritative
+                else ImportConflictKind.OLDER
+            )
         elif incoming_version_number == local_version_number:
             incoming_checksum = calculate_sha256(package_path)
             kind = (
                 ImportConflictKind.DUPLICATE
                 if latest_version.package_checksum == incoming_checksum
-                else ImportConflictKind.VERSION_COLLISION
+                else (
+                    ImportConflictKind.GROUP_RECONCILIATION
+                    if group_authoritative
+                    else ImportConflictKind.VERSION_COLLISION
+                )
             )
         elif ImportService._matches_package_parent(
             package_info,

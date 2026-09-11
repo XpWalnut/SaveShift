@@ -411,6 +411,24 @@ def test_older_package_is_blocked(
     assert analysis.is_blocked
 
 
+def test_older_group_handoff_can_reconcile_local_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _create_project(tmp_path)
+    _create_version(project.id, version=6)
+    _mock_package(monkeypatch, _package_info(version=5))
+
+    analysis = ImportService.analyze_import(
+        tmp_path / "group-handoff.sspkg",
+        group_authoritative=True,
+    )
+
+    assert analysis.kind == ImportConflictKind.GROUP_RECONCILIATION
+    assert not analysis.is_blocked
+    assert analysis.requires_replace_confirmation
+
+
 @pytest.mark.parametrize(
     ("incoming_checksum", "expected_kind"),
     [

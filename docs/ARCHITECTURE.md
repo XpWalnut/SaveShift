@@ -40,7 +40,7 @@ The update service reads GitHub Releases, compares semantic versions, selects th
 
 The desktop coordinates project leases through a provider-neutral protocol and a versioned HTTPS adapter. Hosting retains and renews a lease until export or application exit. Import and restore use temporary leases. Project lock status is read in a background worker and refreshed on project cards without blocking the Qt UI. Every local destructive workflow also takes an operating-system file lock so concurrent Save Shift processes cannot mutate the same project simultaneously.
 
-The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with a SQLite-backed Durable Object. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
+The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with one SQLite-backed Durable Object per group. Provisioning assigns a cryptographically random immutable group identity and uses it as the Durable Object name. Consequently, each group's devices, locks, encryption keys, and package catalog occupy separate storage even if an earlier group's Worker cleanup is delayed or fails. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
 
 The normal onboarding path uses single-use group invitations and administrator-managed devices. Cloudflare account provisioning is a separate adapter in `app/coordination/cloudflare_provisioning.py`: it uses browser OAuth with PKCE, uploads the bundled Worker, bootstraps the first administrator, and discards its temporary account access. The setup controller runs authorization, provisioning, invitation joins, departure, and owner-authorized Worker removal outside the Qt UI thread. Runtime lease operations never call Cloudflare's account API. The provider-neutral leave operation revokes the departing device and clears all Durable Object storage when the group becomes empty.
 
@@ -77,15 +77,17 @@ the redistributable `steam_api64.dll` from a local Steamworks SDK rather than
 committing the proprietary SDK to the repository. Manual export and import
 remain available as an offline fallback.
 
-When coordination is configured, project cards present **Receive** and
-**Hand Off** as the normal workflow. A background controller keeps Steam and
-network transfers off the Qt UI thread. Hand Off creates the final local version,
-publishes it while the current lease is still held, and releases the lease only
-after the catalog accepts the artifact. A failed publication keeps the lease for
-a safe retry. Receive verifies the encrypted download before presenting the
-existing import-conflict preview, then acquires a temporary lease for backup and
-synchronization. Without coordination, the same card positions retain manual
-Import and Export actions.
+When coordination is configured, **Host** is the normal workflow. It acquires
+the project lease, downloads and reconciles the group's latest encrypted
+package, and only then launches the game. The desktop monitors the game process;
+after a confirmed exit it creates and publishes the next version while the lease
+is still held, then releases the lease only after the catalog accepts the
+artifact. A failed publication keeps the lease for a safe manual retry. Users
+can expose manual **Receive** and **Hand Off** controls in Settings for recovery
+or troubleshooting. **Receive Shared World** remains available for the initial
+addition of a project that is not yet tracked locally. Without coordination, the
+same card positions retain manual Import and Export actions. Background
+controllers keep Steam and network transfers off the Qt UI thread.
 
 ### Core (`app/core`)
 

@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_version_repository import ProjectVersionRepository
+from app.packages.package_reader import PackageReader
 
 
 class ProjectVersionSource:
@@ -48,17 +50,54 @@ class ProjectVersionService:
 
     @staticmethod
     def get_versions_for_project(project_id: int) -> list[ProjectVersion]:
-        return ProjectVersionRepository.get_by_project(project_id)
+        return [
+            ProjectVersionService._with_package_creator(version)
+            for version in ProjectVersionRepository.get_by_project(project_id)
+        ]
 
     @staticmethod
     def get_latest_version(project_id: int) -> ProjectVersion | None:
-        return ProjectVersionRepository.get_latest(project_id)
+        version = ProjectVersionRepository.get_latest(project_id)
+
+        if version is None:
+            return None
+
+        return ProjectVersionService._with_package_creator(version)
 
     @staticmethod
     def get_next_version_number(project_id: int) -> int:
-        latest = ProjectVersionRepository.get_latest(project_id)
+        highest_version = ProjectVersionRepository.get_highest_version_number(
+            project_id
+        )
 
-        if latest is None:
+        if highest_version is None:
             return 1
 
-        return latest.version_number + 1
+        return highest_version + 1
+
+    @staticmethod
+    def _with_package_creator(version: ProjectVersion) -> ProjectVersion:
+        """Correct legacy imported attribution from the package manifest."""
+        if (
+            version.source_type != ProjectVersionSource.IMPORTED
+            or not version.package_path
+        ):
+            return version
+
+        package_path = Path(version.package_path)
+
+        if not package_path.is_file():
+            return version
+
+        try:
+            package_creator = PackageReader.read(
+                package_path,
+                verify=False,
+            ).created_by.strip()
+        except Exception:
+            return version
+
+        if package_creator:
+            version.created_by = package_creator
+
+        return version

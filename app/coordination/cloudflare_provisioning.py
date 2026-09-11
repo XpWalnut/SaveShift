@@ -308,6 +308,7 @@ class CloudflareApiClient:
         script_name: str,
         module: bytes,
         bootstrap_token: str,
+        group_id: str,
     ) -> None:
         metadata = {
             "main_module": "index.js",
@@ -323,6 +324,11 @@ class CloudflareApiClient:
                     "type": "plain_text",
                     "name": "LEASE_SECONDS",
                     "text": "900",
+                },
+                {
+                    "type": "plain_text",
+                    "name": "GROUP_ID",
+                    "text": group_id,
                 },
                 {
                     "type": "secret_text",
@@ -454,11 +460,13 @@ class CloudflareProviderProvisioner:
 
         script_name = f"saveshift-coordination-{secrets.token_hex(3)}"
         bootstrap_token = secrets.token_urlsafe(32)
+        group_id = secrets.token_hex(16)
         self.api.upload_worker(
             account_id,
             script_name,
             module,
             bootstrap_token,
+            group_id,
         )
         self.api.enable_worker_subdomain(account_id, script_name)
 
