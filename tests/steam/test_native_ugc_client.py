@@ -11,8 +11,12 @@ from app.steam.native_ugc_client import (
     _DOWNLOAD_ITEM_CALLBACK,
     _LOBBY_CREATED_CALLBACK,
     _LOBBY_ENTER_CALLBACK,
+    _GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+    _LOBBY_CHAT_MESSAGE_CALLBACK,
     _CallbackMessage,
     _DownloadItemResult,
+    _GameLobbyJoinRequested,
+    _LobbyChatMessage,
     _SUBMIT_ITEM_UPDATE_CALLBACK,
     SteamworksUgcClient,
 )
@@ -71,6 +75,11 @@ class FakeSteamApi:
         )
         self.SteamAPI_ISteamMatchmaking_GetLobbyData = FakeFunction(b"group-123")
         self.SteamAPI_ISteamMatchmaking_SetLobbyData = FakeFunction(True)
+        self.SteamAPI_ISteamMatchmaking_GetLobbyOwner = FakeFunction(
+            76561198000000001
+        )
+        self.SteamAPI_ISteamMatchmaking_SendLobbyChatMsg = FakeFunction(True)
+        self.SteamAPI_ISteamMatchmaking_GetLobbyChatEntry = FakeFunction(0)
         self.SteamAPI_ISteamUGC_CreateItem = FakeFunction(100)
         self.SteamAPI_ISteamUGC_StartItemUpdate = FakeFunction(200)
         self.SteamAPI_ISteamUGC_SetItemTitle = FakeFunction(True)
@@ -168,6 +177,48 @@ class RecoveringDownloadClient(SteamworksUgcClient):
         return [message]
 
 
+class SocialEventClient(SteamworksUgcClient):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._events_sent = False
+        super().__init__(*args, **kwargs)
+
+    def _next_callbacks(self) -> list[_CallbackMessage]:
+        if self._events_sent:
+            return []
+        self._events_sent = True
+        request = _GameLobbyJoinRequested(
+            lobby_id=109775240917155001,
+            friend_steam_id=76561198000000002,
+        )
+        chat = _LobbyChatMessage(
+            lobby_id=109775240917155001,
+            sender_steam_id=76561198000000002,
+            chat_entry_type=1,
+            chat_id=7,
+        )
+        messages = [
+            _CallbackMessage(
+                steam_user=1,
+                callback_id=_GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+                parameter=ctypes.cast(
+                    ctypes.pointer(request), ctypes.POINTER(ctypes.c_uint8)
+                ),
+                parameter_size=ctypes.sizeof(request),
+            ),
+            _CallbackMessage(
+                steam_user=1,
+                callback_id=_LOBBY_CHAT_MESSAGE_CALLBACK,
+                parameter=ctypes.cast(
+                    ctypes.pointer(chat), ctypes.POINTER(ctypes.c_uint8)
+                ),
+                parameter_size=ctypes.sizeof(chat),
+            ),
+        ]
+        messages[0]._parameter_copy = request
+        messages[1]._parameter_copy = chat
+        return messages
+
+
 def test_native_client_initializes_and_shuts_down(tmp_path: Path) -> None:
     api = FakeSteamApi(tmp_path)
 
@@ -226,6 +277,31 @@ def test_failed_publish_removes_created_item(tmp_path: Path) -> None:
         )
 
     assert api.SteamAPI_ISteamUGC_DeleteItem.calls == [(1234, 987654321)]
+
+
+def test_update_reuses_existing_workshop_item(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+    content = tmp_path / "manifest"
+    content.mkdir()
+
+    result = client.update_item(
+        "987654321",
+        content,
+        title="Save Shift Group: Family",
+        description="Signed group manifest",
+        metadata='{"revision":2}',
+        visibility=SteamUgcVisibility.UNLISTED,
+    )
+
+    assert result.published_file_id == "987654321"
+    assert api.SteamAPI_ISteamUGC_CreateItem.calls == []
+    assert api.SteamAPI_ISteamUGC_StartItemUpdate.calls == [
+        (1234, SAVESHIFT_STEAM_APP_ID, 987654321)
+    ]
+    assert api.SteamAPI_ISteamUGC_SubmitItemUpdate.calls == [
+        (1234, 200, b"Save Shift group manifest update")
+    ]
 
 
 def test_download_waits_then_returns_installed_directory(tmp_path: Path) -> None:
@@ -322,6 +398,76 @@ def test_join_and_leave_private_lobby(tmp_path: Path) -> None:
     assert api.SteamAPI_ISteamMatchmaking_LeaveLobby.calls == [
         (4234, 109775240917155001)
     ]
+
+
+def test_lobby_owner_and_binary_message_use_steam_chat(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+
+    assert client.lobby_owner("109775240917155001") == "76561198000000001"
+    client.send_lobby_message("109775240917155001", b'{"kind":"join"}')
+
+    call = api.SteamAPI_ISteamMatchmaking_SendLobbyChatMsg.calls[0]
+    assert call[0:2] == (4234, 109775240917155001)
+    assert ctypes.string_at(call[2], call[3]) == b'{"kind":"join"}'
+
+
+def test_poll_social_events_returns_join_request_and_chat_payload(
+    tmp_path: Path,
+) -> None:
+    api = FakeSteamApi(tmp_path)
+    payload = b'{"kind":"join-request"}'
+
+    def read_chat(
+        _matchmaking,
+        _lobby_id,
+        chat_id,
+        sender,
+        destination,
+        _capacity,
+        entry_type,
+    ) -> int:
+        assert chat_id == 7
+        ctypes.cast(sender, ctypes.POINTER(ctypes.c_uint64)).contents.value = (
+            76561198000000002
+        )
+        ctypes.cast(entry_type, ctypes.POINTER(ctypes.c_int)).contents.value = 1
+        ctypes.memmove(destination, payload, len(payload))
+        return len(payload)
+
+    api.SteamAPI_ISteamMatchmaking_GetLobbyChatEntry.result = read_chat
+    client = SocialEventClient(library=api)
+
+    events = client.poll_social_events()
+
+    assert events[0].lobby_id == "109775240917155001"
+    assert events[0].friend_steam_id == "76561198000000002"
+    assert events[1].sender_steam_id == "76561198000000002"
+    assert events[1].payload == payload
+
+
+def test_social_callback_is_preserved_while_another_operation_runs(
+    tmp_path: Path,
+) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+    request = _GameLobbyJoinRequested(
+        lobby_id=109775240917155001,
+        friend_steam_id=76561198000000002,
+    )
+    message = _CallbackMessage(
+        steam_user=1,
+        callback_id=_GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+        parameter=ctypes.cast(
+            ctypes.pointer(request), ctypes.POINTER(ctypes.c_uint8)
+        ),
+        parameter_size=ctypes.sizeof(request),
+    )
+    message._parameter_copy = request
+
+    client._preserve_social_callback(message)
+
+    assert client.poll_social_events()[0].friend_steam_id == "76561198000000002"
 
 
 def test_initialization_failure_uses_steam_error_message(tmp_path: Path) -> None:

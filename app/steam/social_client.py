@@ -19,6 +19,22 @@ class SteamLobby:
     lobby_id: str
 
 
+@dataclass(frozen=True)
+class SteamLobbyJoinRequest:
+    lobby_id: str
+    friend_steam_id: str
+
+
+@dataclass(frozen=True)
+class SteamLobbyMessage:
+    lobby_id: str
+    sender_steam_id: str
+    payload: bytes
+
+
+SteamSocialEvent = SteamLobbyJoinRequest | SteamLobbyMessage
+
+
 class SteamSocialClient(Protocol):
     """Steam identity and temporary-lobby operations used by group setup."""
 
@@ -55,4 +71,13 @@ class SteamSocialClient(Protocol):
         ...
 
     def set_lobby_data(self, lobby_id: str, key: str, value: str) -> None:
+        ...
+
+    def lobby_owner(self, lobby_id: str) -> str:
+        ...
+
+    def send_lobby_message(self, lobby_id: str, payload: bytes) -> None:
+        ...
+
+    def poll_social_events(self) -> list[SteamSocialEvent]:
         ...

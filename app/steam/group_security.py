@@ -52,13 +52,43 @@ class SteamMembershipCertificate:
         administrator: SteamDeviceIdentity,
         issued_at: datetime | None = None,
     ) -> "SteamMembershipCertificate":
+        return cls.issue_public_device(
+            group_id=group_id,
+            steam_id=member.steam_id,
+            device_id=member.device_id,
+            signing_public_key=member.signing_public_key,
+            agreement_public_key=member.agreement_public_key,
+            administrator=administrator,
+            issued_at=issued_at,
+        )
+
+    @classmethod
+    def issue_public_device(
+        cls,
+        *,
+        group_id: str,
+        steam_id: str,
+        device_id: str,
+        signing_public_key: str,
+        agreement_public_key: str,
+        administrator: SteamDeviceIdentity,
+        issued_at: datetime | None = None,
+    ) -> "SteamMembershipCertificate":
+        normalized_steam_id = str(steam_id).strip()
+        if not normalized_steam_id.isdigit() or int(normalized_steam_id) < 1:
+            raise ValueError("A membership requires a valid Steam account.")
+        normalized_device_id = str(uuid.UUID(device_id))
+        if len(_decode(signing_public_key)) != 32:
+            raise ValueError("A membership signing key is invalid.")
+        if len(_decode(agreement_public_key)) != 32:
+            raise ValueError("A membership agreement key is invalid.")
         unsigned = {
             "certificate_id": str(uuid.uuid4()),
             "group_id": str(uuid.UUID(group_id)),
-            "steam_id": member.steam_id,
-            "device_id": member.device_id,
-            "signing_public_key": member.signing_public_key,
-            "agreement_public_key": member.agreement_public_key,
+            "steam_id": normalized_steam_id,
+            "device_id": normalized_device_id,
+            "signing_public_key": signing_public_key,
+            "agreement_public_key": agreement_public_key,
             "issued_at_utc": (issued_at or datetime.now(UTC))
             .astimezone(UTC)
             .isoformat(),
@@ -174,6 +204,31 @@ class SteamGroupKeyEnvelope:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "SteamGroupKeyEnvelope":
+        try:
+            envelope = cls(
+                group_id=str(uuid.UUID(str(value["group_id"]))),
+                key_epoch=int(value["key_epoch"]),
+                recipient_device_id=str(
+                    uuid.UUID(str(value["recipient_device_id"]))
+                ),
+                ephemeral_public_key=str(value["ephemeral_public_key"]),
+                nonce=str(value["nonce"]),
+                ciphertext=str(value["ciphertext"]),
+            )
+            if envelope.key_epoch < 1:
+                raise ValueError("invalid key epoch")
+            if len(_decode(envelope.ephemeral_public_key)) != 32:
+                raise ValueError("invalid ephemeral key")
+            if len(_decode(envelope.nonce)) != 12:
+                raise ValueError("invalid nonce")
+            if len(_decode(envelope.ciphertext)) != 48:
+                raise ValueError("invalid encrypted group key")
+            return envelope
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("The Steam group key envelope is invalid.") from error
 
     @staticmethod
     def _wrapping_key(shared: bytes, group_id: str, key_epoch: int) -> bytes:

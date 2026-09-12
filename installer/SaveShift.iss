@@ -1,9 +1,9 @@
 #define AppName "Save Shift"
 #ifndef AppVersion
-  #define AppVersion "0.1.0-alpha.2"
+  #define AppVersion "0.1.0-alpha.4"
 #endif
 #ifndef AppVersionInfo
-  #define AppVersionInfo "0.1.0.2"
+  #define AppVersionInfo "0.1.0.4"
 #endif
 #define AppPublisher "Jacob Bourcy"
 #define AppExeName "SaveShift.exe"

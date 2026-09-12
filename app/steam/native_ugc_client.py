@@ -13,7 +13,14 @@ from app.steam.ugc_client import (
     SteamPublishedItem,
     SteamUgcVisibility,
 )
-from app.steam.social_client import SteamFriend, SteamIdentity, SteamLobby
+from app.steam.social_client import (
+    SteamFriend,
+    SteamIdentity,
+    SteamLobby,
+    SteamLobbyJoinRequest,
+    SteamLobbyMessage,
+    SteamSocialEvent,
+)
 
 
 _RESULT_OK = 1
@@ -26,6 +33,8 @@ _DOWNLOAD_ITEM_CALLBACK = 3406
 _DELETE_ITEM_CALLBACK = 3417
 _LOBBY_ENTER_CALLBACK = 504
 _LOBBY_CREATED_CALLBACK = 513
+_GAME_LOBBY_JOIN_REQUESTED_CALLBACK = 333
+_LOBBY_CHAT_MESSAGE_CALLBACK = 507
 _ITEM_STATE_INSTALLED = 4
 _ITEM_STATE_NEEDS_UPDATE = 8
 _ITEM_STATE_DOWNLOADING = 16
@@ -34,6 +43,8 @@ _TRANSIENT_DOWNLOAD_RESULTS = {2, 3, 16, 20, 50, 53}
 _FRIEND_FLAG_IMMEDIATE = 0x04
 _LOBBY_TYPE_PRIVATE = 0
 _CHAT_ROOM_ENTER_SUCCESS = 1
+_CHAT_ENTRY_TYPE_MESSAGE = 1
+_MAX_LOBBY_MESSAGE_BYTES = 4000
 
 _RESULT_MESSAGES = {
     2: "generic failure",
@@ -115,6 +126,22 @@ class _LobbyEnterResult(ctypes.Structure):
     ]
 
 
+class _GameLobbyJoinRequested(ctypes.Structure):
+    _fields_ = [
+        ("lobby_id", ctypes.c_uint64),
+        ("friend_steam_id", ctypes.c_uint64),
+    ]
+
+
+class _LobbyChatMessage(ctypes.Structure):
+    _fields_ = [
+        ("lobby_id", ctypes.c_uint64),
+        ("sender_steam_id", ctypes.c_uint64),
+        ("chat_entry_type", ctypes.c_uint8),
+        ("chat_id", ctypes.c_uint32),
+    ]
+
+
 class SteamworksUgcClient:
     """Thin ctypes binding over the official Steamworks flat UGC API."""
 
@@ -130,6 +157,7 @@ class SteamworksUgcClient:
         self.download_timeout_seconds = download_timeout_seconds
         self._lock = threading.RLock()
         self._closed = False
+        self._pending_social_callbacks: list[_CallbackMessage] = []
 
         if library is None:
             resolved_path = self.resolve_dll_path(dll_path)
@@ -330,6 +358,82 @@ class SteamworksUgcClient:
                     create_result.needs_legal_agreement
                     or submit_result.needs_legal_agreement
                 ),
+            )
+
+    def update_item(
+        self,
+        published_file_id: str,
+        content_directory: Path,
+        *,
+        title: str,
+        description: str,
+        metadata: str,
+        visibility: SteamUgcVisibility,
+    ) -> SteamPublishedItem:
+        numeric_id = self._parse_published_file_id(published_file_id)
+        content_directory = content_directory.resolve()
+        if not content_directory.is_dir():
+            raise FileNotFoundError(
+                f"Steam UGC content directory does not exist: {content_directory}"
+            )
+        with self._lock:
+            self._ensure_open()
+            update_handle = self._api.SteamAPI_ISteamUGC_StartItemUpdate(
+                self._ugc,
+                SAVESHIFT_STEAM_APP_ID,
+                numeric_id,
+            )
+            if update_handle == _INVALID_UPDATE_HANDLE:
+                raise SteamworksError("Steam could not start the Workshop item update.")
+            self._require_true(
+                "set Workshop title",
+                self._api.SteamAPI_ISteamUGC_SetItemTitle(
+                    self._ugc, update_handle, title.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop description",
+                self._api.SteamAPI_ISteamUGC_SetItemDescription(
+                    self._ugc, update_handle, description.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop metadata",
+                self._api.SteamAPI_ISteamUGC_SetItemMetadata(
+                    self._ugc, update_handle, metadata.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop visibility",
+                self._api.SteamAPI_ISteamUGC_SetItemVisibility(
+                    self._ugc, update_handle, int(visibility)
+                ),
+            )
+            self._require_true(
+                "set Workshop content",
+                self._api.SteamAPI_ISteamUGC_SetItemContent(
+                    self._ugc,
+                    update_handle,
+                    str(content_directory).encode("utf-8"),
+                ),
+            )
+            result = self._await_call(
+                self._api.SteamAPI_ISteamUGC_SubmitItemUpdate(
+                    self._ugc,
+                    update_handle,
+                    b"Save Shift group manifest update",
+                ),
+                _SubmitItemUpdateResult,
+                _SUBMIT_ITEM_UPDATE_CALLBACK,
+            )
+            self._require_ok("update Workshop item", result.result)
+            if int(result.published_file_id) != numeric_id:
+                raise SteamworksError(
+                    "Steam returned a different item after the update."
+                )
+            return SteamPublishedItem(
+                published_file_id=str(numeric_id),
+                user_needs_legal_agreement=bool(result.needs_legal_agreement),
             )
 
     @diagnostic_operation("steam.download")
@@ -566,6 +670,93 @@ class SteamworksUgcClient:
             )
             self._require_true("set lobby metadata", saved)
 
+    def lobby_owner(self, lobby_id: str) -> str:
+        with self._lock:
+            self._ensure_open()
+            owner = int(
+                self._api.SteamAPI_ISteamMatchmaking_GetLobbyOwner(
+                    self._matchmaking,
+                    self._parse_steam_id(lobby_id, "lobby"),
+                )
+            )
+            if owner < 1:
+                raise SteamworksError("Steam returned an invalid lobby owner.")
+            return str(owner)
+
+    def send_lobby_message(self, lobby_id: str, payload: bytes) -> None:
+        if not isinstance(payload, bytes) or not payload:
+            raise ValueError("A Steam lobby message cannot be empty.")
+        if len(payload) > _MAX_LOBBY_MESSAGE_BYTES:
+            raise ValueError("A Steam lobby message cannot exceed 4000 bytes.")
+        buffer = ctypes.create_string_buffer(payload, len(payload))
+        with self._lock:
+            self._ensure_open()
+            sent = self._api.SteamAPI_ISteamMatchmaking_SendLobbyChatMsg(
+                self._matchmaking,
+                self._parse_steam_id(lobby_id, "lobby"),
+                buffer,
+                len(payload),
+            )
+            self._require_true("send lobby invitation data", sent)
+
+    def poll_social_events(self) -> list[SteamSocialEvent]:
+        with self._lock:
+            self._ensure_open()
+            events: list[SteamSocialEvent] = []
+            callbacks = self._pending_social_callbacks + self._next_callbacks()
+            self._pending_social_callbacks = []
+            for message in callbacks:
+                if message.callback_id == _GAME_LOBBY_JOIN_REQUESTED_CALLBACK:
+                    request = ctypes.cast(
+                        message.parameter,
+                        ctypes.POINTER(_GameLobbyJoinRequested),
+                    ).contents
+                    events.append(
+                        SteamLobbyJoinRequest(
+                            lobby_id=str(int(request.lobby_id)),
+                            friend_steam_id=str(int(request.friend_steam_id)),
+                        )
+                    )
+                elif message.callback_id == _LOBBY_CHAT_MESSAGE_CALLBACK:
+                    notice = ctypes.cast(
+                        message.parameter,
+                        ctypes.POINTER(_LobbyChatMessage),
+                    ).contents
+                    if int(notice.chat_entry_type) != _CHAT_ENTRY_TYPE_MESSAGE:
+                        continue
+                    sender = ctypes.c_uint64()
+                    entry_type = ctypes.c_int()
+                    payload = ctypes.create_string_buffer(
+                        _MAX_LOBBY_MESSAGE_BYTES
+                    )
+                    size = int(
+                        self._api.SteamAPI_ISteamMatchmaking_GetLobbyChatEntry(
+                            self._matchmaking,
+                            int(notice.lobby_id),
+                            int(notice.chat_id),
+                            ctypes.byref(sender),
+                            payload,
+                            len(payload),
+                            ctypes.byref(entry_type),
+                        )
+                    )
+                    if size > 0 and entry_type.value == _CHAT_ENTRY_TYPE_MESSAGE:
+                        events.append(
+                            SteamLobbyMessage(
+                                lobby_id=str(int(notice.lobby_id)),
+                                sender_steam_id=str(sender.value),
+                                payload=bytes(payload.raw[:size]),
+                            )
+                        )
+            return events
+
+    def _preserve_social_callback(self, message: _CallbackMessage) -> None:
+        if message.callback_id in {
+            _GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+            _LOBBY_CHAT_MESSAGE_CALLBACK,
+        }:
+            self._pending_social_callbacks.append(message)
+
     def close(self) -> None:
         if not self._closed:
             self._closed = True
@@ -592,6 +783,7 @@ class SteamworksUgcClient:
         while time.monotonic() < deadline:
             for message in self._next_callbacks():
                 if message.callback_id != _STEAM_API_CALL_COMPLETED_CALLBACK:
+                    self._preserve_social_callback(message)
                     continue
 
                 completed = ctypes.cast(
@@ -653,6 +845,7 @@ class SteamworksUgcClient:
 
             for message in self._next_callbacks():
                 if message.callback_id != _DOWNLOAD_ITEM_CALLBACK:
+                    self._preserve_social_callback(message)
                     continue
 
                 result = ctypes.cast(
@@ -850,6 +1043,26 @@ class SteamworksUgcClient:
             "SteamAPI_ISteamMatchmaking_SetLobbyData": (
                 [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_char_p],
                 ctypes.c_bool,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyOwner": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_SendLobbyChatMsg": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int],
+                ctypes.c_bool,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyChatEntry": (
+                [
+                    ctypes.c_void_p,
+                    ctypes.c_uint64,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_uint64),
+                    ctypes.c_void_p,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_int),
+                ],
+                ctypes.c_int,
             ),
             "SteamAPI_ISteamUGC_CreateItem": (
                 [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int],

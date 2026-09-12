@@ -6,6 +6,10 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Steam-native group foundations: authenticated friend-list invitation lobbies,
+  signed per-device membership certificates, a stable signed Workshop manifest,
+  per-member encrypted group-key envelopes, revocation key rotation, and
+  authenticated lobby enrollment without exposing private keys.
 - Administrator-controlled world unsharing, which removes the world from the
   group catalog while preserving the local save and Save Shift history.
 - Editable local group names, with generated Cloudflare Worker identifiers
