@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -94,6 +94,14 @@ migration.
 - The UI will say **Available**, **Hosted by ...**, **Offline status unknown**,
   or **Fork needs attention** instead of implying a lock that Steam cannot
   guarantee.
+- Hosting a shared world requires a Steam connection by default. A user may
+  explicitly choose **Play Offline as a Fork**, which creates a new local
+  project identity before launch and never publishes back into the group
+  automatically.
+- Losing Steam connectivity during an already-running hosted session does not
+  discard the player's work. Save Shift packages it locally, marks it as a
+  pending branch, and reconciles it against the refreshed group head after
+  connectivity returns.
 
 ## Migration
 
@@ -117,9 +125,9 @@ migration.
   authenticated Steam accounts that accepted them.
 - Group membership and package contents remain end-to-end protected from
   unrelated Steam users who can see or guess a Workshop item.
-- Strict offline mutual exclusion is replaced by optimistic concurrency and
-  explicit fork detection. This limitation must be visible in the product and
-  tests.
+- Strict offline mutual exclusion is replaced by an online-only synchronized
+  workflow and explicit local forks. This limitation must be visible in the
+  product and tests; offline play is never presented as synchronized hosting.
 - The group administrator remains necessary for membership changes and key
   rotation. Losing every administrator private key requires a documented group
   recovery or recreation process.
