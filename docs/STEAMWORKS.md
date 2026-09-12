@@ -128,3 +128,20 @@ separate provider.
 
 New groups created by a release build receive the updated bundled Worker
 automatically.
+
+## Branding assets
+
+Steam artwork is managed in the Steamworks dashboard; it is not included in a
+SteamPipe depot upload. The repository keeps the supplied source artwork in:
+
+- `assets/icons/SaveShift.png` — square 1254 x 1254 source artwork.
+- `assets/steam/SaveShift-Banner.png` — wide 1834 x 857 Steam artwork.
+
+Upload the wide image manually to the intended Steamworks graphical-asset slot
+when its required dimensions and crop match that slot. Keep the repository file
+as the uncropped source if Steamworks requires additional capsule variants.
+
+`assets/icons/SaveShift.ico` is a generated multi-resolution Windows icon. It
+contains 16, 24, 32, 48, 64, 128, and 256 pixel variants and is already shared
+by the application window, PyInstaller executable, Inno Setup installer, Start
+menu shortcut, and optional desktop shortcut.
