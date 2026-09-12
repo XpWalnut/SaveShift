@@ -20,6 +20,8 @@ class CoordinationGroupSettings:
     provider_kind: str = ""
     cloudflare_account_id: str = ""
     cloudflare_script_name: str = ""
+    steam_manifest_item_id: str = ""
+    steam_administrator_steam_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -425,6 +427,14 @@ class SettingsService:
                         raw_group,
                         "cloudflare_script_name",
                     ),
+                    steam_manifest_item_id=SettingsService._string(
+                        raw_group,
+                        "steam_manifest_item_id",
+                    ),
+                    steam_administrator_steam_id=SettingsService._string(
+                        raw_group,
+                        "steam_administrator_steam_id",
+                    ),
                 )
             )
         return tuple(groups)
@@ -447,4 +457,6 @@ class SettingsService:
             "provider_kind": group.provider_kind,
             "cloudflare_account_id": group.cloudflare_account_id,
             "cloudflare_script_name": group.cloudflare_script_name,
+            "steam_manifest_item_id": group.steam_manifest_item_id,
+            "steam_administrator_steam_id": group.steam_administrator_steam_id,
         }

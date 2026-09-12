@@ -9,6 +9,8 @@ from app.steam.native_ugc_client import (
     _CREATE_ITEM_CALLBACK,
     _DELETE_ITEM_CALLBACK,
     _DOWNLOAD_ITEM_CALLBACK,
+    _LOBBY_CREATED_CALLBACK,
+    _LOBBY_ENTER_CALLBACK,
     _CallbackMessage,
     _DownloadItemResult,
     _SUBMIT_ITEM_UPDATE_CALLBACK,
@@ -44,6 +46,31 @@ class FakeSteamApi:
         self.SteamAPI_ManualDispatch_FreeLastCallback = FakeFunction()
         self.SteamAPI_ManualDispatch_GetAPICallResult = FakeFunction(True)
         self.SteamAPI_SteamUGC_v021 = FakeFunction(1234)
+        self.SteamAPI_SteamUser_v023 = FakeFunction(2234)
+        self.SteamAPI_SteamFriends_v018 = FakeFunction(3234)
+        self.SteamAPI_SteamMatchmaking_v009 = FakeFunction(4234)
+        self.SteamAPI_ISteamUser_GetSteamID = FakeFunction(76561198000000001)
+        self.SteamAPI_ISteamFriends_GetPersonaName = FakeFunction(b"Jake")
+        self.SteamAPI_ISteamFriends_GetFriendCount = FakeFunction(2)
+        self.SteamAPI_ISteamFriends_GetFriendByIndex = FakeFunction(
+            lambda _friends, index, _flags: 76561198000000002 + index
+        )
+        self.SteamAPI_ISteamFriends_GetFriendPersonaName = FakeFunction(
+            lambda _friends, steam_id: (
+                b"Hunter" if steam_id == 76561198000000002 else b"Dad"
+            )
+        )
+        self.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog = FakeFunction()
+        self.SteamAPI_ISteamMatchmaking_CreateLobby = FakeFunction(500)
+        self.SteamAPI_ISteamMatchmaking_JoinLobby = FakeFunction(600)
+        self.SteamAPI_ISteamMatchmaking_LeaveLobby = FakeFunction()
+        self.SteamAPI_ISteamMatchmaking_InviteUserToLobby = FakeFunction(True)
+        self.SteamAPI_ISteamMatchmaking_GetNumLobbyMembers = FakeFunction(2)
+        self.SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex = FakeFunction(
+            lambda _matchmaking, _lobby, index: 76561198000000001 + index
+        )
+        self.SteamAPI_ISteamMatchmaking_GetLobbyData = FakeFunction(b"group-123")
+        self.SteamAPI_ISteamMatchmaking_SetLobbyData = FakeFunction(True)
         self.SteamAPI_ISteamUGC_CreateItem = FakeFunction(100)
         self.SteamAPI_ISteamUGC_StartItemUpdate = FakeFunction(200)
         self.SteamAPI_ISteamUGC_SetItemTitle = FakeFunction(True)
@@ -99,6 +126,11 @@ class StubbedResultClient(SteamworksUgcClient):
             result.needs_legal_agreement = False
         elif expected_callback == _DELETE_ITEM_CALLBACK:
             result.published_file_id = 987654321
+        elif expected_callback == _LOBBY_CREATED_CALLBACK:
+            result.lobby_id = 109775240917155001
+        elif expected_callback == _LOBBY_ENTER_CALLBACK:
+            result.lobby_id = 109775240917155001
+            result.chat_room_enter_response = 1
         else:
             raise AssertionError(f"Unexpected callback: {expected_callback}")
 
@@ -236,6 +268,60 @@ def test_delete_waits_for_matching_confirmation(tmp_path: Path) -> None:
     client.delete_item("987654321")
 
     assert api.SteamAPI_ISteamUGC_DeleteItem.calls == [(1234, 987654321)]
+
+
+def test_social_identity_and_friends_use_authenticated_steam_account(
+    tmp_path: Path,
+) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+
+    assert client.current_identity().steam_id == "76561198000000001"
+    assert client.current_identity().persona_name == "Jake"
+    assert [(friend.steam_id, friend.persona_name) for friend in client.list_friends()] == [
+        ("76561198000000002", "Hunter"),
+        ("76561198000000003", "Dad"),
+    ]
+
+
+def test_private_lobby_supports_metadata_invites_and_members(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+
+    lobby = client.create_private_lobby(metadata={"saveshift_group": "group-123"})
+    client.invite_friend(lobby.lobby_id, "76561198000000002")
+    client.open_invite_overlay(lobby.lobby_id)
+
+    assert lobby.lobby_id == "109775240917155001"
+    assert client.lobby_data(lobby.lobby_id, "saveshift_group") == "group-123"
+    assert client.lobby_members(lobby.lobby_id) == [
+        "76561198000000001",
+        "76561198000000002",
+    ]
+    assert api.SteamAPI_ISteamMatchmaking_SetLobbyData.calls == [
+        (4234, 109775240917155001, b"saveshift_group", b"group-123")
+    ]
+    assert api.SteamAPI_ISteamMatchmaking_InviteUserToLobby.calls == [
+        (4234, 109775240917155001, 76561198000000002)
+    ]
+    assert api.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog.calls == [
+        (3234, 109775240917155001)
+    ]
+
+
+def test_join_and_leave_private_lobby(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+
+    lobby = client.join_lobby("109775240917155001")
+    client.leave_lobby(lobby.lobby_id)
+
+    assert api.SteamAPI_ISteamMatchmaking_JoinLobby.calls == [
+        (4234, 109775240917155001)
+    ]
+    assert api.SteamAPI_ISteamMatchmaking_LeaveLobby.calls == [
+        (4234, 109775240917155001)
+    ]
 
 
 def test_initialization_failure_uses_steam_error_message(tmp_path: Path) -> None:

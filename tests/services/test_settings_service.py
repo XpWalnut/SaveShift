@@ -170,6 +170,32 @@ def test_group_can_be_renamed_without_changing_its_connection() -> None:
     assert renamed.coordination_device_token == "family-secret"
 
 
+def test_steam_native_group_manifest_coordinates_are_persisted(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "settings.json"
+    group = CoordinationGroupSettings(
+        group_id="steam-family",
+        name="Family worlds",
+        device_id="device-1",
+        provider_kind="steam",
+        is_administrator=True,
+        steam_manifest_item_id="3797671909",
+        steam_administrator_steam_id="76561198000000001",
+    )
+    settings = AppSettings(coordination_groups=(group,)).with_active_group(
+        group.group_id
+    )
+
+    SettingsService.save(settings, path)
+    restored = SettingsService.load(path).active_coordination_group
+
+    assert restored is not None
+    assert restored.provider_kind == "steam"
+    assert restored.steam_manifest_item_id == "3797671909"
+    assert restored.steam_administrator_steam_id == "76561198000000001"
+
+
 def test_generated_cloudflare_script_name_is_not_shown_as_group_name(
     tmp_path: Path,
 ) -> None:
