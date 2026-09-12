@@ -81,6 +81,9 @@ from app.ui.dialogs.update_dialog import UpdateAvailableDialog
 from app.updates.controller import UpdateController
 from app.updates.models import UpdateRelease
 from app.updates.service import UpdateService
+from app.steam.group_invitation import JoinedSteamGroup
+from app.steam.group_manifest import SteamGroupManifest
+from app.steam.native_group_service import CreatedSteamGroup
 
 
 def discover_all_projects() -> None:
@@ -143,6 +146,21 @@ class MainWindow(QMainWindow):
         self.group_setup_controller = GroupSetupController(self)
         self.group_setup_controller.create_completed.connect(
             self._group_created
+        )
+        self.group_setup_controller.steam_create_completed.connect(
+            self._steam_group_created
+        )
+        self.group_setup_controller.steam_invitation_ready.connect(
+            self._steam_invitation_ready
+        )
+        self.group_setup_controller.steam_member_admitted.connect(
+            self._steam_member_admitted
+        )
+        self.group_setup_controller.steam_join_waiting.connect(
+            self._steam_join_waiting
+        )
+        self.group_setup_controller.steam_join_completed.connect(
+            self._steam_group_joined
         )
         self.group_setup_controller.join_completed.connect(
             self._group_joined
@@ -472,7 +490,15 @@ class MainWindow(QMainWindow):
         self.invite_friend_button.setVisible(
             connected and self.settings.coordination_is_administrator
         )
-        self.shared_projects_button.setVisible(connected)
+        active_group = self.settings.active_coordination_group
+        self.shared_projects_button.setVisible(
+            connected
+            and (
+                active_group is None
+                or active_group.provider_kind != "steam"
+                or self.coordination_manager is not None
+            )
+        )
 
         self.detect_games_button.setToolTip(
             "Scan every Steam library for supported installed games, including "
@@ -482,12 +508,17 @@ class MainWindow(QMainWindow):
             "Create a private group and become its administrator."
         )
         self.join_group_button.setToolTip(
-            "Paste a single-use invitation from a friend. Save Shift will then "
-            "detect games and check for shared worlds automatically."
+            "Join through a Steam friend invitation, or use a legacy provider "
+            "invitation while existing groups are being migrated."
         )
-        self.invite_friend_button.setToolTip(
-            "Copy a single-use invitation that you can send to one friend."
-        )
+        if active_group is not None and active_group.provider_kind == "steam":
+            self.invite_friend_button.setToolTip(
+                "Open Steam's friend invite overlay and securely add one device."
+            )
+        else:
+            self.invite_friend_button.setToolTip(
+                "Copy a single-use invitation that you can send to one friend."
+            )
         self.shared_projects_button.setToolTip(
             "Check this group for worlds that have not been added to this computer."
         )
@@ -656,7 +687,11 @@ class MainWindow(QMainWindow):
             )
             candidate = candidate.upsert_group(active_group)
 
-        if candidate.coordination_enabled:
+        steam_native = bool(
+            candidate.active_coordination_group is not None
+            and candidate.active_coordination_group.provider_kind == "steam"
+        )
+        if candidate.coordination_enabled and not steam_native:
             if not candidate.coordination_server_url:
                 QMessageBox.warning(
                     self,
@@ -816,11 +851,10 @@ class MainWindow(QMainWindow):
         self._pending_coordination_device_name = device_name
         self._pending_coordination_group_name = group_name
         self._show_group_setup_progress(
-            "Sign in to Cloudflare in your browser. Save Shift will create "
-            "and verify the group automatically."
+            "Creating the signed group manifest through Steam…"
         )
 
-        if not self.group_setup_controller.create_group(device_name):
+        if not self.group_setup_controller.create_steam_group(group_name):
             self._close_group_setup_progress()
 
     def _begin_join_group(
@@ -837,12 +871,45 @@ class MainWindow(QMainWindow):
                 "Enter a name for this computer before joining a group.",
             )
             return
-        invitation_text, accepted = QInputDialog.getMultiLineText(
+        methods = [
+            "Steam friend invitation (recommended)",
+            "Legacy provider invitation code",
+        ]
+        method, selected = QInputDialog.getItem(
             self,
             "Join Save Shift Group",
+            "How are you joining?",
+            methods,
+            0,
+            False,
+        )
+        if not selected:
+            return
+        if method == methods[0]:
+            self._pending_coordination_profile_name = profile_name
+            self._pending_coordination_device_name = device_name
+            self._pending_coordination_group_name = ""
+            self._show_group_setup_progress(
+                "Waiting for a Steam friend invitation. Ask the group "
+                "administrator to choose Invite a Friend now, then accept it "
+                "in Steam."
+            )
+            if not self.group_setup_controller.join_steam_group():
+                self._close_group_setup_progress()
+            return
+
+        self._begin_join_legacy_group(device_name, profile_name)
+
+    def _begin_join_legacy_group(
+        self,
+        device_name: str,
+        profile_name: str,
+    ) -> None:
+        invitation_text, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Join Legacy Save Shift Group",
             "Paste the invitation from your friend:",
         )
-
         if not accepted:
             return
 
@@ -876,6 +943,95 @@ class MainWindow(QMainWindow):
 
         if not self.group_setup_controller.join_group(invitation, device_name):
             self._close_group_setup_progress()
+
+    def _steam_group_created(self, created: CreatedSteamGroup) -> None:
+        self._close_group_setup_progress()
+        group = CoordinationGroupSettings(
+            group_id=created.manifest.group_id,
+            name=created.manifest.name,
+            device_id=created.identity.device_id,
+            device_name=self._pending_coordination_device_name,
+            is_administrator=True,
+            provider_kind="steam",
+            steam_manifest_item_id=created.manifest_item_id,
+            steam_administrator_steam_id=(
+                created.manifest.administrator_steam_id
+            ),
+        )
+        settings = replace(
+            self.settings.upsert_group(group),
+            player_display_name=self._pending_coordination_profile_name,
+        )
+        if not self._apply_coordination_settings(settings):
+            return
+        QMessageBox.information(
+            self,
+            "Steam Group Created",
+            "The signed Steam group is ready. Choose Invite a Friend to open "
+            "Steam's friend list and add another computer.",
+        )
+
+    def _steam_invitation_ready(self, _lobby_id: str) -> None:
+        if self._group_setup_progress is not None:
+            self._group_setup_progress.setLabelText(
+                "Steam's invite window is open. Select one friend and wait "
+                "while Save Shift securely enrolls their computer."
+            )
+
+    def _steam_member_admitted(self, manifest: SteamGroupManifest) -> None:
+        self._close_group_setup_progress()
+        QMessageBox.information(
+            self,
+            "Friend Added",
+            f"A Steam friend joined {manifest.name}. The signed group manifest "
+            "is now at revision " + str(manifest.revision) + ".",
+        )
+
+    def _steam_join_waiting(self) -> None:
+        logger.info("Waiting for a Steam group invitation callback.")
+
+    def _steam_group_joined(self, joined: JoinedSteamGroup) -> None:
+        self._close_group_setup_progress()
+        manifest = joined.manifest
+        member = next(
+            (
+                item
+                for item in manifest.active_members
+                if item.device_id == joined.device_id
+                and item.steam_id == joined.steam_id
+            ),
+            None,
+        )
+        if member is None:
+            QMessageBox.warning(
+                self,
+                "Group Not Saved",
+                "The joined manifest did not contain this computer.",
+            )
+            return
+        device_id = joined.device_id
+        group = CoordinationGroupSettings(
+            group_id=manifest.group_id,
+            name=manifest.name,
+            device_id=device_id,
+            device_name=self._pending_coordination_device_name,
+            is_administrator=device_id == manifest.administrator_device_id,
+            provider_kind="steam",
+            steam_manifest_item_id=joined.manifest_item_id,
+            steam_administrator_steam_id=manifest.administrator_steam_id,
+        )
+        settings = replace(
+            self.settings.upsert_group(group),
+            player_display_name=self._pending_coordination_profile_name,
+        )
+        if not self._apply_coordination_settings(settings):
+            return
+        QMessageBox.information(
+            self,
+            "Steam Group Joined",
+            f"This computer securely joined {manifest.name}.",
+        )
+        self._detect_steam_games(show_messages=False)
 
     def _group_created(self, created: CreatedGroup) -> None:
         self._close_group_setup_progress()
@@ -962,6 +1118,19 @@ class MainWindow(QMainWindow):
         )
 
         if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        active_group = self.settings.active_coordination_group
+        if active_group is not None and active_group.provider_kind == "steam":
+            if not self._clear_local_group_settings():
+                return
+            detail = (
+                "The Steam group was removed from this computer."
+                if active_group.is_administrator
+                else "The Steam group was removed from this computer. Ask the "
+                "administrator to revoke this computer so the group key rotates."
+            )
+            QMessageBox.information(self, "Group Removed", detail)
             return
 
         self._show_group_setup_progress("Removing this computer from the group…")
@@ -1099,6 +1268,25 @@ class MainWindow(QMainWindow):
                 "Administrator Required",
                 "Only the group administrator can create invitations.",
             )
+            return
+
+        active_group = self.settings.active_coordination_group
+        if active_group is not None and active_group.provider_kind == "steam":
+            if not active_group.steam_manifest_item_id:
+                QMessageBox.warning(
+                    self,
+                    "Invitation Failed",
+                    "This Steam group has no saved manifest item.",
+                )
+                return
+            self._show_group_setup_progress(
+                "Opening Steam's friend invite overlay…"
+            )
+            if not self.group_setup_controller.invite_steam_member(
+                active_group.steam_manifest_item_id,
+                active_group.group_id,
+            ):
+                self._close_group_setup_progress()
             return
 
         try:
@@ -3053,6 +3241,22 @@ class MainWindow(QMainWindow):
         if confirmed != QMessageBox.StandardButton.Yes:
             return
 
+        if group.provider_kind == "steam":
+            ProjectRepository.associate_group(project.id, None)
+            self.project_lock_statuses.pop(project.uuid, None)
+            logger.info(
+                "Removed project %s from Steam group %s.",
+                project.uuid,
+                group.group_id,
+            )
+            self.load_projects()
+            QMessageBox.information(
+                self,
+                "World Unshared",
+                f"{project.name} is now a local world on this computer.",
+            )
+            return
+
         try:
             provider = HttpCoordinationProvider(
                 group.server_url,
@@ -3234,6 +3438,8 @@ class MainWindow(QMainWindow):
     def _create_coordination_manager(
         settings: AppSettings,
     ) -> CoordinationManager | None:
+        if settings.coordination_provider_kind == "steam":
+            return None
         if (
             not settings.coordination_enabled
             or not settings.coordination_server_url
@@ -3444,6 +3650,16 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         manager = self.coordination_manager
+
+        if self.group_setup_controller.running:
+            QMessageBox.information(
+                self,
+                "Group Setup In Progress",
+                "Finish the Steam group invitation or wait for it to time out "
+                "before closing Save Shift.",
+            )
+            event.ignore()
+            return
 
         if self._automatic_session_project is not None:
             QMessageBox.warning(

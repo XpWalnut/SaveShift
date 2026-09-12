@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 
 from app.core.settings import AppSettings
 from app.core.distribution import DistributionChannel, detect_distribution_channel
-from app.coordination.cloudflare_provisioning import CloudflareOAuthConfig
 from app.ui import styles, theme
 from app.version import APP_VERSION
 
@@ -131,9 +130,9 @@ class SettingsDialog(QDialog):
         coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
 
         coordination_description = QLabel(
-            "Create or join a group so Save Shift can prevent two friends from "
-            "changing the same world at the same time. Save files are still "
-            "shared through .sspkg packages."
+            "Create or join groups through Steam friends. Existing Cloudflare "
+            "groups remain available while Save Shift migrates their shared "
+            "worlds and coordination safely."
         )
         coordination_description.setWordWrap(True)
         coordination_description.setStyleSheet(
@@ -148,6 +147,12 @@ class SettingsDialog(QDialog):
         )
         self._paired_device_id = settings.coordination_device_id
         self._is_administrator = settings.coordination_is_administrator
+        active_group = settings.active_coordination_group
+        self._provider_kind = (
+            active_group.provider_kind
+            if active_group is not None
+            else settings.coordination_provider_kind
+        )
 
         self.group_selector = QComboBox()
         self.group_selector.setObjectName("CoordinationGroupSelector")
@@ -206,8 +211,7 @@ class SettingsDialog(QDialog):
         self.create_group_button.clicked.connect(
             lambda: self._request_coordination_action(self.ACTION_CREATE_GROUP)
         )
-        oauth_available = CloudflareOAuthConfig.from_environment().available
-        self.create_group_button.setEnabled(oauth_available)
+        self.create_group_button.setEnabled(True)
 
         self.join_group_button = QPushButton("Join Group")
         self.join_group_button.setStyleSheet(styles.secondary_button_style())
@@ -263,11 +267,11 @@ class SettingsDialog(QDialog):
             f"color: {theme.TEXT_SECONDARY};"
         )
 
-        if not oauth_available and not self._paired_device_id:
+        if not self._paired_device_id:
             self.coordination_setup_note.setText(
-                "Creating a group is unavailable until this Save Shift build "
-                "is registered with Cloudflare. You can still join a group or "
-                "configure a custom provider."
+                "New groups use Steam identity, friend invitations, and signed "
+                "Workshop data. Custom provider settings below are retained "
+                "for existing groups."
             )
 
         paired = bool(self._paired_device_id)
@@ -277,7 +281,7 @@ class SettingsDialog(QDialog):
             paired and self._is_administrator
         )
         self.manage_devices_button.setVisible(
-            paired and self._is_administrator
+            paired and self._is_administrator and self._provider_kind != "steam"
         )
         self.claim_administrator_button.setVisible(False)
         self.leave_group_button.setVisible(paired)
@@ -423,8 +427,14 @@ class SettingsDialog(QDialog):
             )
         elif self._paired_device_id:
             role = "group administrator" if self._is_administrator else "group member"
-            status = f"Status: Connected as a {role}."
+            if self._provider_kind == "steam":
+                status = f"Status: Connected through Steam as a {role}."
+            else:
+                status = f"Status: Connected as a {role}."
         else:
-            status = "Status: Not paired. Enter the pairing code before saving."
+            status = (
+                "Status: Not paired with an active group. Create one or join "
+                "through a Steam friend."
+            )
 
         self.coordination_status_label.setText(status)

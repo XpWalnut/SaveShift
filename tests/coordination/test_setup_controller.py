@@ -31,6 +31,24 @@ def test_setup_controller_creates_group_off_ui_thread(qtbot) -> None:
     qtbot.waitUntil(lambda: not controller.running, timeout=2000)
 
 
+def test_setup_controller_creates_steam_group_off_ui_thread(qtbot) -> None:
+    created = object()
+
+    class FakeSteamService:
+        def create_group(self, name: str):
+            assert name == "Family Worlds"
+            return created
+
+    controller = GroupSetupController(
+        steam_service_factory=FakeSteamService,
+    )
+    with qtbot.waitSignal(controller.steam_create_completed) as signal:
+        assert controller.create_steam_group("Family Worlds")
+
+    assert signal.args == [created]
+    assert not controller.running
+
+
 def test_setup_controller_joins_group_off_ui_thread(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,

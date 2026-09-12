@@ -115,6 +115,8 @@ class JoinedSteamGroup:
     manifest_item_id: str
     manifest: SteamGroupManifest
     group_key: bytes
+    device_id: str
+    steam_id: str
 
 
 class SteamGroupInvitationService:
@@ -218,6 +220,8 @@ class SteamGroupInvitationService:
             manifest_item_id=response.manifest_item_id,
             manifest=manifest,
             group_key=manifest.group_key_for(identity),
+            device_id=identity.device_id,
+            steam_id=identity.steam_id,
         )
 
 

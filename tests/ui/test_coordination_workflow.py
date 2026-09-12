@@ -17,9 +17,15 @@ from app.core.settings import (
 )
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
+from app.database.repositories.project_repository import ProjectRepository
 from app.services.hosting_service import HostingService
 from app.ui.main_window import MainWindow
 from app.ui.widgets.project_card import ProjectCard
+from app.steam.device_identity import SteamDeviceIdentityStore
+from app.steam.group_invitation import JoinedSteamGroup
+from app.steam.native_group_service import CreatedSteamGroup
+from app.steam.group_manifest import SteamGroupManifest
+from tests.steam.test_device_identity import MemoryProtector
 
 
 PROJECT_UUID = "12345678-1234-4678-9234-567812345678"
@@ -249,6 +255,160 @@ def test_created_group_is_saved_as_cloudflare_administrator(
     assert saved_settings[0].player_display_name == "Alice"
     assert window.coordination_manager is not None
     assert messages[0][0] == "Group Created"
+
+
+def test_created_steam_group_is_persisted_without_cloudflare_credentials(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    window.settings = AppSettings()
+    window._pending_coordination_profile_name = "Alice"
+    window._pending_coordination_device_name = "Alice PC"
+    identity = SteamDeviceIdentityStore(
+        tmp_path / "identity.json", protector=MemoryProtector()
+    ).load_or_create("76561198000000001")
+    manifest, _ = SteamGroupManifest.create("Family Worlds", identity)
+    saved: list[AppSettings] = []
+    messages: list[str] = []
+    monkeypatch.setattr(SettingsService, "save", saved.append)
+    monkeypatch.setattr(window, "load_projects", lambda: None)
+    monkeypatch.setattr(window, "_refresh_project_lock_statuses", lambda: None)
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda _parent, title, _message: messages.append(title),
+    )
+
+    window._steam_group_created(
+        CreatedSteamGroup(manifest, "3797671909", identity)
+    )
+
+    group = saved[0].active_coordination_group
+    assert group is not None
+    assert group.provider_kind == "steam"
+    assert group.group_id == manifest.group_id
+    assert group.steam_manifest_item_id == "3797671909"
+    assert group.server_url == ""
+    assert group.device_token == ""
+    assert window.coordination_manager is None
+    assert messages == ["Steam Group Created"]
+
+
+def test_steam_group_invitation_uses_steam_controller(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    group = CoordinationGroupSettings(
+        group_id="steam-group",
+        name="Friends",
+        device_id="device-123",
+        is_administrator=True,
+        provider_kind="steam",
+        steam_manifest_item_id="3797671909",
+    )
+    window.settings = AppSettings().upsert_group(group)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(window, "_show_group_setup_progress", lambda _text: None)
+    monkeypatch.setattr(
+        window.group_setup_controller,
+        "invite_steam_member",
+        lambda item_id, group_id: calls.append((item_id, group_id)) or True,
+    )
+
+    window._create_group_invitation()
+
+    assert calls == [("3797671909", "steam-group")]
+
+
+def test_joined_steam_group_is_persisted_for_the_enrolled_device(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    window.settings = AppSettings()
+    window._pending_coordination_profile_name = "Hunter"
+    window._pending_coordination_device_name = "Hunter PC"
+    administrator = SteamDeviceIdentityStore(
+        tmp_path / "administrator.json", protector=MemoryProtector()
+    ).load_or_create("76561198000000001")
+    member = SteamDeviceIdentityStore(
+        tmp_path / "member.json", protector=MemoryProtector()
+    ).load_or_create("76561198000000002")
+    manifest, group_key = SteamGroupManifest.create("Valheim Crew", administrator)
+    manifest = manifest.add_member(member, group_key, administrator)
+    saved: list[AppSettings] = []
+    messages: list[str] = []
+    monkeypatch.setattr(SettingsService, "save", saved.append)
+    monkeypatch.setattr(window, "load_projects", lambda: None)
+    monkeypatch.setattr(window, "_detect_steam_games", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda _parent, title, _message: messages.append(title),
+    )
+
+    window._steam_group_joined(
+        JoinedSteamGroup(
+            manifest_item_id="3797671909",
+            manifest=manifest,
+            group_key=group_key,
+            device_id=member.device_id,
+            steam_id=member.steam_id,
+        )
+    )
+
+    group = saved[0].active_coordination_group
+    assert group is not None
+    assert group.provider_kind == "steam"
+    assert group.device_id == member.device_id
+    assert group.is_administrator is False
+    assert group.name == "Valheim Crew"
+    assert messages == ["Steam Group Joined"]
+
+
+def test_unsharing_steam_world_only_removes_its_local_group_association(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    group = CoordinationGroupSettings(
+        group_id="steam-group",
+        name="Friends",
+        device_id="device-123",
+        is_administrator=True,
+        provider_kind="steam",
+        steam_manifest_item_id="3797671909",
+    )
+    window.settings = AppSettings().upsert_group(group)
+    project = _project(tmp_path)
+    project.coordination_group_id = group.group_id
+    associations: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.information",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ProjectRepository,
+        "associate_group",
+        lambda pid, gid: associations.append((pid, gid)),
+    )
+    monkeypatch.setattr(window, "load_projects", lambda: None)
+    monkeypatch.setattr(
+        window.group_setup_controller,
+        "invite_steam_member",
+        lambda *_args: pytest.fail("Unsharing must not open a Steam invitation."),
+    )
+
+    window._unshare_project(project)
+
+    assert associations == [(project.id, None)]
 
 
 def test_leaving_group_clears_local_coordination_credentials(
