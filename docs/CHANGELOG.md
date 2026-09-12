@@ -6,6 +6,10 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Administrator-controlled world unsharing, which removes the world from the
+  group catalog while preserving the local save and Save Shift history.
+- Editable local group names, with generated Cloudflare Worker identifiers
+  replaced by a friendly default label.
 - Multiple persisted groups with an active-group selector, creation and join
   flows that remain available while connected, and per-group invitations,
   computer management, departure, locks, and package catalogs.
@@ -16,6 +20,12 @@ All notable changes to Save Shift are documented here. The project is currently 
   group.
 - New neon pixel-art branding assets for the Windows application icon and
   Steamworks banner artwork.
+- A responsive portal-art header with the pixel Save Shift wordmark, plus a
+  vaporwave interface palette, cyan and magenta controls, and retro monospace
+  typography throughout the desktop app.
+- A newly named multi-resolution Windows icon wired directly into PyInstaller,
+  the application window, installer, Start Menu shortcut, desktop shortcut,
+  uninstaller, and `.sspkg` file association to avoid stale blank icons.
 - An optional World Journal prompt for completed hosted sessions, including a
   persistent "don't ask again" choice and a matching Settings toggle.
 - A Shared Projects group inbox that discovers the newest Steam handoff for
@@ -81,6 +91,11 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Service, package, integration, and UI regression coverage for journal workflows.
 
 ### Changed
+
+- Improved the default-window layout with compact sidebar action rows and a
+  responsive hero that grows on wide displays without stretching its artwork.
+- Added a restrained vaporwave-orange accent to card outlines, section
+  dividers, and scrollbars.
 
 - Hosting retains and renews its project lease until export or application exit.
 - Import and restore fail before touching save files when a remote lock cannot be verified.

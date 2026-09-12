@@ -369,6 +369,12 @@ class HttpCoordinationProvider:
                 "The coordination provider returned invalid package data."
             ) from error
 
+    def remove_project(self, project_uuid: str) -> None:
+        self._request_json(
+            method="DELETE",
+            path=self._package_path(project_uuid),
+        )
+
     def get_package_encryption_key(
         self,
         key_id: str | None = None,

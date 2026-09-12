@@ -68,6 +68,11 @@ def _jpeg_dimensions(path: Path) -> tuple[int, int]:
 def test_branding_source_artwork_dimensions() -> None:
     assert _png_dimensions(ROOT / "assets/icons/SaveShift.png") == (1254, 1254)
     assert _png_dimensions(ROOT / "assets/steam/SaveShift-Banner.png") == (1834, 857)
+    assert _png_dimensions(ROOT / "assets/ui/SaveShift-Wordmark.png") == (
+        2155,
+        730,
+    )
+    assert _png_color_type(ROOT / "assets/ui/SaveShift-Wordmark.png") == 6
 
 
 def test_steam_ready_artwork_dimensions() -> None:
@@ -90,7 +95,7 @@ def test_steam_ready_artwork_dimensions() -> None:
 
 
 def test_windows_icon_contains_required_sizes() -> None:
-    assert _ico_dimensions(ROOT / "assets/icons/SaveShift.ico") == {
+    required_sizes = {
         (16, 16),
         (24, 24),
         (32, 32),
@@ -99,3 +104,17 @@ def test_windows_icon_contains_required_sizes() -> None:
         (128, 128),
         (256, 256),
     }
+    assert _ico_dimensions(ROOT / "assets/icons/SaveShift.ico") == required_sizes
+    assert _ico_dimensions(
+        ROOT / "assets/icons/SaveShift-Vaporwave.ico"
+    ) == required_sizes
+
+
+def test_build_and_installer_use_vaporwave_icon_and_header_assets() -> None:
+    spec = (ROOT / "SaveShift.spec").read_text(encoding="utf-8")
+    installer = (ROOT / "installer/SaveShift.iss").read_text(encoding="utf-8")
+
+    assert "assets/icons/SaveShift-Vaporwave.ico" in spec
+    assert "assets/steam/SaveShift-LibraryHero-3840x1240.png" in spec
+    assert "assets/ui/SaveShift-Wordmark.png" in spec
+    assert "SaveShift-Vaporwave.ico" in installer

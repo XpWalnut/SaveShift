@@ -101,6 +101,21 @@ class AppSettings:
             coordination_cloudflare_script_name="",
         )
 
+    def rename_group(self, group_id: str, name: str) -> "AppSettings":
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("Group name cannot be empty.")
+        group = next(
+            (item for item in self.coordination_groups if item.group_id == group_id),
+            None,
+        )
+        if group is None:
+            raise ValueError(f"Coordination group not found: {group_id}")
+        return self.upsert_group(
+            replace(group, name=normalized_name),
+            make_active=group_id == self.active_coordination_group_id,
+        )
+
     def _with_group_mirror(
         self,
         group: CoordinationGroupSettings,
@@ -368,6 +383,8 @@ class SettingsService:
             name = SettingsService._string(raw_group, "name")
             if not group_id or not name:
                 continue
+            if name.lower().startswith("saveshift-coordination-"):
+                name = "My Save Shift Group"
             token = ""
             protected = SettingsService._string(
                 raw_group,

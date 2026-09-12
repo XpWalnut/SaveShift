@@ -69,6 +69,7 @@ from app.services.session_journal_service import SessionJournalService
 from app.ui import styles, theme
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
+from app.ui.widgets.brand_header import BrandHeader
 from app.ui.dialogs.history_dialog import HistoryDialog
 from app.ui.dialogs.getting_started_dialog import GettingStartedDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
@@ -99,6 +100,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Save Shift")
         self.setMinimumSize(950, 650)
+        self.resize(1180, 800)
 
         self.startup_package_path = startup_package_path
         self.distribution_channel = detect_distribution_channel()
@@ -218,8 +220,8 @@ class MainWindow(QMainWindow):
 
         self.selected_installed_game_id: int | None = None
 
-        self.title = QLabel("Save Shift")
-        self.title.setStyleSheet("font-size: 28px; font-weight: bold;")
+        self.brand_header = BrandHeader(self)
+        self.title = self.brand_header
 
         self.subtitle = QLabel("Seamlessly hand off self-hosted co-op game worlds between friends.")
         self.subtitle.setStyleSheet(f"font-size: 14px; color: {theme.TEXT_SECONDARY};")
@@ -298,6 +300,8 @@ class MainWindow(QMainWindow):
         self.active_group_selector.currentIndexChanged.connect(
             self._active_group_selected
         )
+        self.rename_group_button = QPushButton("Rename")
+        self.rename_group_button.clicked.connect(self._rename_active_group)
 
         self.create_group_button = QPushButton("Create Group")
         self.create_group_button.clicked.connect(self.create_group_from_home)
@@ -324,6 +328,7 @@ class MainWindow(QMainWindow):
             self.remove_button,
             self.create_group_button,
             self.join_group_button,
+            self.rename_group_button,
             self.invite_friend_button,
             self.shared_projects_button,
             self.how_it_works_button,
@@ -335,18 +340,31 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.installed_game_heading)
         left_panel.addWidget(self.installed_game_scroll, 1)
         left_panel.addSpacing(theme.SPACING)
-        left_panel.addWidget(self.add_button)
+        game_actions = QHBoxLayout()
+        game_actions.setSpacing(theme.SPACING_SMALL)
+        game_actions.addWidget(self.add_button)
+        game_actions.addWidget(self.remove_button)
+        left_panel.addLayout(game_actions)
         left_panel.addWidget(self.detect_games_button)
-        left_panel.addWidget(self.remove_button)
         left_panel.addSpacing(theme.SPACING)
         left_panel.addWidget(self.group_heading)
-        left_panel.addWidget(self.active_group_selector)
-        left_panel.addWidget(self.create_group_button)
-        left_panel.addWidget(self.join_group_button)
+        group_selector_row = QHBoxLayout()
+        group_selector_row.setSpacing(theme.SPACING_SMALL)
+        group_selector_row.addWidget(self.active_group_selector, 1)
+        group_selector_row.addWidget(self.rename_group_button)
+        left_panel.addLayout(group_selector_row)
+        group_actions = QHBoxLayout()
+        group_actions.setSpacing(theme.SPACING_SMALL)
+        group_actions.addWidget(self.create_group_button)
+        group_actions.addWidget(self.join_group_button)
+        left_panel.addLayout(group_actions)
         left_panel.addWidget(self.invite_friend_button)
         left_panel.addWidget(self.shared_projects_button)
-        left_panel.addWidget(self.how_it_works_button)
-        left_panel.addWidget(self.settings_button)
+        help_actions = QHBoxLayout()
+        help_actions.setSpacing(theme.SPACING_SMALL)
+        help_actions.addWidget(self.how_it_works_button)
+        help_actions.addWidget(self.settings_button)
+        left_panel.addLayout(help_actions)
         left_panel.addStretch()
 
         left_container = QWidget()
@@ -367,12 +385,13 @@ class MainWindow(QMainWindow):
         content_layout.setStretch(1, 7)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(theme.SPACING)
         layout.addWidget(self.title)
         layout.addWidget(self.subtitle)
         layout.addSpacing(theme.SPACING)
         layout.addLayout(content_layout)
+        layout.setContentsMargins(16, 0, 16, 16)
 
         container = QWidget()
         container.setLayout(layout)
@@ -446,6 +465,7 @@ class MainWindow(QMainWindow):
             self.active_group_selector.setCurrentIndex(active_index)
         self.active_group_selector.blockSignals(False)
         self.active_group_selector.setVisible(bool(self.settings.coordination_groups))
+        self.rename_group_button.setVisible(bool(self.settings.coordination_groups))
         self.group_heading.setVisible(bool(self.settings.coordination_groups))
         self.create_group_button.setVisible(True)
         self.join_group_button.setVisible(True)
@@ -471,6 +491,9 @@ class MainWindow(QMainWindow):
         self.shared_projects_button.setToolTip(
             "Check this group for worlds that have not been added to this computer."
         )
+        self.rename_group_button.setToolTip(
+            "Change how the selected group is named on this computer."
+        )
         self.how_it_works_button.setToolTip(
             "Learn the Receive, Host, play, and Hand Off workflow."
         )
@@ -480,6 +503,27 @@ class MainWindow(QMainWindow):
         if not isinstance(group_id, str) or not group_id:
             return
         self._switch_active_group(group_id)
+
+    def _rename_active_group(self) -> None:
+        group = self.settings.active_coordination_group
+        if group is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "Rename Group",
+            "Group name:",
+            text=group.name,
+        )
+        name = name.strip()
+        if not accepted or not name or name == group.name:
+            return
+        try:
+            settings = self.settings.rename_group(group.group_id, name)
+        except ValueError as error:
+            QMessageBox.warning(self, "Group Not Renamed", str(error))
+            return
+        if self._apply_coordination_settings(settings):
+            logger.info("Renamed coordination group %s to %s.", group.group_id, name)
 
     def _switch_active_group(self, group_id: str) -> bool:
         if group_id == self.settings.active_coordination_group_id:
@@ -1424,7 +1468,7 @@ class MainWindow(QMainWindow):
             section_heading.setObjectName("ProjectScopeHeading")
             section_heading.setStyleSheet(
                 f"font-size: 16px; font-weight: bold; color: {theme.TEXT_SECONDARY}; "
-                f"border-bottom: 1px solid {theme.CARD_BORDER}; padding: 8px 0;"
+                f"border-bottom: 1px solid {theme.ORANGE}; padding: 8px 0;"
             )
             self.project_layout.addWidget(section_heading)
             for project in scoped_projects:
@@ -2587,6 +2631,13 @@ class MainWindow(QMainWindow):
                 if self.settings.active_coordination_group is not None
                 else None
             ),
+            on_unshare=(
+                self._unshare_project
+                if group is not None
+                and group.group_id == self.settings.active_coordination_group_id
+                and group.is_administrator
+                else None
+            ),
         )
         self._apply_project_lock_status(project.uuid, card)
 
@@ -2973,6 +3024,58 @@ class MainWindow(QMainWindow):
             group.group_id,
         )
         self.load_projects()
+
+    def _unshare_project(self, project: Project) -> None:
+        group = self._group_by_id(project.coordination_group_id)
+        if group is None or group.group_id != self.settings.active_coordination_group_id:
+            QMessageBox.information(
+                self,
+                "Select the World's Group",
+                "Select this world's group before unsharing it.",
+            )
+            return
+        if not group.is_administrator:
+            QMessageBox.warning(
+                self,
+                "Administrator Required",
+                "Only the group administrator can unshare a world.",
+            )
+            return
+        if not self._can_change_active_group():
+            return
+        confirmed = QMessageBox.question(
+            self,
+            "Unshare World",
+            f"Remove {project.name} from {group.name}?\n\n"
+            "The local save and its Save Shift history will be kept, but the "
+            "world will stop appearing in this group's shared catalog.",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            provider = HttpCoordinationProvider(
+                group.server_url,
+                device_token=group.device_token,
+            )
+            provider.remove_project(project.uuid)
+        except CoordinationError as error:
+            QMessageBox.warning(self, "World Not Unshared", str(error))
+            return
+
+        ProjectRepository.associate_group(project.id, None)
+        self.project_lock_statuses.pop(project.uuid, None)
+        logger.info(
+            "Removed project %s from coordination group %s.",
+            project.uuid,
+            group.group_id,
+        )
+        self.load_projects()
+        QMessageBox.information(
+            self,
+            "World Unshared",
+            f"{project.name} is now a local world on this computer.",
+        )
 
     def _get_player_display_name(self) -> str | None:
         if self.settings.player_display_name:

@@ -4,6 +4,12 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 
 ## Alpha stabilization
 
+- Build the Steam-native coordination foundation described in ADR-0007:
+  authenticated Steam identities, friend-list lobby invitations, device keys,
+  signed group manifests, and UGC discovery behind provider-neutral contracts.
+- Keep existing Cloudflare groups compatible while Steam-native groups are
+  tested across physical computers; do not silently convert active worlds.
+
 - Publish the registered Save Shift Steamworks configuration and validate encrypted UGC transfers between two licensed accounts.
 - Validate the connected project-card Receive and Hand Off controls across two licensed Steam accounts.
 - Replace manual package sharing as the normal coordinated handoff path while retaining export/import as an offline fallback.
@@ -28,7 +34,8 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 ## Later possibilities
 
 - Package signing and a signed Windows installer.
-- Alternative coordination adapters implementing the stable `/api/v1` contract.
+- Retire Cloudflare provisioning after Steam-native groups preserve membership,
+  package discovery, revocation, and fork recovery in multi-PC testing.
 - Additional backup strategies and retention policies.
 - Additional operating-system support.
 

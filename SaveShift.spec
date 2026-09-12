@@ -23,7 +23,12 @@ a = Analysis(
     pathex=[],
     binaries=steam_binaries,
     datas=[
-        ('assets/icons/SaveShift.ico', 'assets/icons'),
+        ('assets/icons/SaveShift-Vaporwave.ico', 'assets/icons'),
+        (
+            'assets/steam/SaveShift-LibraryHero-3840x1240.png',
+            'assets/steam',
+        ),
+        ('assets/ui/SaveShift-Wordmark.png', 'assets/ui'),
         (
             'app/resources/cloudflare/index.js',
             'app/resources/cloudflare',
@@ -50,7 +55,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name='SaveShift',
-    icon='assets/icons/SaveShift.ico',
+    icon='assets/icons/SaveShift-Vaporwave.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

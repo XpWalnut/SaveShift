@@ -24,6 +24,7 @@ class ProjectCard(QFrame):
             group_name: str | None = None,
             group_active: bool = True,
             on_share=None,
+            on_unshare=None,
             parent=None,
     ) -> None:
         super().__init__(parent)
@@ -99,6 +100,7 @@ class ProjectCard(QFrame):
         self.history_button = QPushButton("History")
         self.journal_button = QPushButton("Journal")
         self.share_button = QPushButton("Share")
+        self.unshare_button = QPushButton("Unshare")
 
         self.host_button.setToolTip(
             "Reserve the world, receive the latest group version, and launch "
@@ -125,8 +127,9 @@ class ProjectCard(QFrame):
                 self.history_button,
                 self.journal_button,
                 self.share_button,
+                self.unshare_button,
         ):
-            button.setMinimumWidth(105)
+            button.setMinimumWidth(82)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.host_button)
@@ -135,6 +138,7 @@ class ProjectCard(QFrame):
         button_row.addWidget(self.history_button)
         button_row.addWidget(self.journal_button)
         button_row.addWidget(self.share_button)
+        button_row.addWidget(self.unshare_button)
         button_row.addStretch()
 
         self.host_button.clicked.connect(
@@ -167,6 +171,14 @@ class ProjectCard(QFrame):
             )
         else:
             self.share_button.setVisible(False)
+
+        if on_unshare is not None and group_name is not None:
+            self.unshare_button.clicked.connect(lambda: on_unshare(project))
+            self.unshare_button.setToolTip(
+                "Remove this world from the group catalog and keep the local copy."
+            )
+        else:
+            self.unshare_button.setVisible(False)
 
         self.show_coordination_disabled()
 

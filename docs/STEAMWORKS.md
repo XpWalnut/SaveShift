@@ -154,7 +154,8 @@ Assets** for the Store Header Capsule and Library Header fields. Upload the
 Hero and Library Logo respectively. Keep the larger repository files as
 uncropped sources for any additional capsule variants.
 
-`assets/icons/SaveShift.ico` is a generated multi-resolution Windows icon. It
+`assets/icons/SaveShift-Vaporwave.ico` is the current generated multi-resolution
+Windows icon. It
 contains 16, 24, 32, 48, 64, 128, and 256 pixel variants and is already shared
 by the application window, PyInstaller executable, Inno Setup installer, Start
 menu shortcut, and optional desktop shortcut.

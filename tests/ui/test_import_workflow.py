@@ -123,6 +123,31 @@ def test_project_card_visibly_distinguishes_local_and_shared_worlds(
     assert not shared.share_button.isVisibleTo(shared)
 
 
+def test_shared_project_card_offers_unshare_to_group_administrator(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    unshared: list[Project] = []
+    project = _project(tmp_path)
+    card = ProjectCard(
+        project=project,
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        group_name="Family Valheim",
+        on_unshare=unshared.append,
+    )
+    qtbot.addWidget(card)
+    card.show()
+
+    assert card.unshare_button.isVisibleTo(card)
+    qtbot.mouseClick(card.unshare_button, Qt.MouseButton.LeftButton)
+    assert unshared == [project]
+
+
 def test_project_card_displays_lock_owner_and_expiration(
     qtbot,
     tmp_path: Path,

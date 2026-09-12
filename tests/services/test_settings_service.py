@@ -152,6 +152,49 @@ def test_multiple_groups_and_active_group_are_protected_and_restored(
     assert SettingsService.load(settings_path) == settings
 
 
+def test_group_can_be_renamed_without_changing_its_connection() -> None:
+    group = CoordinationGroupSettings(
+        group_id="family",
+        name="Old name",
+        server_url="https://family.example",
+        device_id="device-family",
+        device_token="family-secret",
+    )
+    settings = AppSettings(coordination_groups=(group,)).with_active_group("family")
+
+    renamed = settings.rename_group("family", "  Family Valheim  ")
+
+    assert renamed.active_coordination_group is not None
+    assert renamed.active_coordination_group.name == "Family Valheim"
+    assert renamed.coordination_server_url == "https://family.example"
+    assert renamed.coordination_device_token == "family-secret"
+
+
+def test_generated_cloudflare_script_name_is_not_shown_as_group_name(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "coordination_groups": [
+                    {
+                        "group_id": "group-1",
+                        "name": "saveshift-coordination-03fcb8",
+                    }
+                ],
+                "active_coordination_group_id": "group-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SettingsService.load(settings_path)
+
+    assert loaded.active_coordination_group is not None
+    assert loaded.active_coordination_group.name == "My Save Shift Group"
+
+
 def test_legacy_single_group_is_migrated_with_stable_identity(
     tmp_path: Path,
     monkeypatch,

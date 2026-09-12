@@ -1,4 +1,3 @@
-from pathlib import Path
 import sys
 
 from PySide6.QtGui import QIcon
@@ -7,10 +6,8 @@ from PySide6.QtWidgets import QApplication
 from app.database.database import init_db
 from app.ui.main_window import MainWindow
 from app.core.logging import logger
-
-def get_resource_path(relative_path: str) -> Path:
-    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-    return base_path / relative_path
+from app.core.resources import get_resource_path
+from app.ui import styles
 
 def main() -> None:
     logger.info("Save Shift started")
@@ -25,8 +22,11 @@ def main() -> None:
             startup_package_path = candidate
 
     app = QApplication(sys.argv)
+    app.setStyleSheet(styles.application_style())
 
-    icon = QIcon(str(get_resource_path("assets/icons/SaveShift.ico")))
+    icon = QIcon(
+        str(get_resource_path("assets/icons/SaveShift-Vaporwave.ico"))
+    )
     app.setWindowIcon(icon)
 
     window = MainWindow(
