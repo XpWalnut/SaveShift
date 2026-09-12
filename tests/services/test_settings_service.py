@@ -37,6 +37,21 @@ def test_manual_transfer_controls_are_opt_in(tmp_path: Path) -> None:
     assert SettingsService.load(settings_path).manual_transfer_controls
 
 
+def test_session_journal_prompt_preference_is_saved_and_loaded(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+
+    SettingsService.save(
+        AppSettings(prompt_for_session_journal=False),
+        settings_path,
+    )
+
+    loaded = SettingsService.load(settings_path)
+
+    assert not loaded.prompt_for_session_journal
+
+
 def test_coordination_credential_is_protected_at_rest(
     tmp_path: Path,
     monkeypatch,

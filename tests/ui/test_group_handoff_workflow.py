@@ -20,6 +20,7 @@ from app.package_transport.models import PackageArtifact
 from app.services.hosting_service import HostingService
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
+from app.services.session_journal_service import SessionJournalService
 from app.ui.main_window import MainWindow
 
 
@@ -375,10 +376,6 @@ def test_handoff_publishes_version_then_releases_lease_on_success(
     hosted_version = _version(package_path)
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        "app.ui.main_window.QMessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
-    )
-    monkeypatch.setattr(
         "app.ui.main_window.QMessageBox.information",
         lambda _parent, title, message: messages.append((title, message)),
     )
@@ -386,6 +383,11 @@ def test_handoff_publishes_version_then_releases_lease_on_success(
         HostingService,
         "host_project",
         lambda **_kwargs: hosted_version,
+    )
+    window._request_session_journal_entry = lambda _project: (
+        True,
+        None,
+        None,
     )
 
     window.handoff_project(project)
@@ -423,16 +425,60 @@ def test_automatic_handoff_completes_without_success_dialog(
     window._pending_handoff_version = version
     window._automatic_handoff_in_progress = True
     messages: list[str] = []
+    journal_prompts: list[Project] = []
     monkeypatch.setattr(
         "app.ui.main_window.QMessageBox.information",
         lambda *_args: messages.append("shown"),
+    )
+    window._request_session_journal_entry = lambda selected: (
+        journal_prompts.append(selected) or (True, None, None)
     )
 
     window._group_handoff_published(object())
 
     assert provider.released == [lease]
     assert messages == []
+    assert journal_prompts == [project]
     assert "handed off as Version 8" in window.statusBar().currentMessage()
+
+
+def test_automatic_handoff_records_journal_after_upload(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    package_path = tmp_path / "hosted.sspkg"
+    package_path.write_bytes(b"package")
+    version = _version(package_path)
+    window.coordination_manager.acquire_hosting_lease(project.uuid, "Bob")
+    window._pending_handoff_project = project
+    window._pending_handoff_version = version
+    window._automatic_handoff_in_progress = True
+    journal_calls: list[dict[str, object]] = []
+    window._request_session_journal_entry = lambda selected: (
+        True,
+        "Defeated the boss",
+        "The group cleared the first dungeon.",
+    )
+    monkeypatch.setattr(
+        SessionJournalService,
+        "create_entry",
+        lambda **kwargs: journal_calls.append(kwargs),
+    )
+
+    window._group_handoff_published(object())
+
+    assert journal_calls == [
+        {
+            "project_id": project.id,
+            "title": "Defeated the boss",
+            "body": "The group cleared the first dungeon.",
+            "created_by": version.created_by,
+            "project_version_number": version.version_number,
+        }
+    ]
 
 
 def test_receive_downloads_previews_locks_and_imports(

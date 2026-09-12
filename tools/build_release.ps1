@@ -29,10 +29,39 @@ Write-Host ""
 
 Push-Location ".\coordination\cloudflare"
 try {
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --prod=false
 
     if ($LASTEXITCODE -ne 0) {
         throw "Coordination dependencies could not be installed."
+    }
+
+    $RequiredCommandLinks = @(
+        ".\node_modules\.bin\tsc.cmd",
+        ".\node_modules\.bin\vitest.cmd",
+        ".\node_modules\.bin\wrangler.cmd"
+    )
+    $MissingCommandLinks = @(
+        $RequiredCommandLinks | Where-Object { -not (Test-Path $_) }
+    )
+
+    if ($MissingCommandLinks.Count -gt 0) {
+        Write-Host "Repairing incomplete coordination dependencies..."
+        pnpm install --frozen-lockfile --prod=false --force
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Coordination dependencies could not be repaired."
+        }
+
+        $MissingCommandLinks = @(
+            $RequiredCommandLinks | Where-Object { -not (Test-Path $_) }
+        )
+
+        if ($MissingCommandLinks.Count -gt 0) {
+            throw (
+                "Coordination command links are still missing after repair: " +
+                ($MissingCommandLinks -join ", ")
+            )
+        }
     }
 
     pnpm run typecheck

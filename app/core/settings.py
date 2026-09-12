@@ -11,6 +11,7 @@ from app.core.secrets import SecretProtectionError, SecretProtector
 class AppSettings:
     automatic_update_checks: bool = True
     manual_transfer_controls: bool = False
+    prompt_for_session_journal: bool = True
     player_display_name: str = ""
     coordination_enabled: bool = False
     coordination_server_url: str = ""
@@ -44,6 +45,12 @@ class SettingsService:
         automatic_update_checks = SettingsService._boolean(
             data,
             "automatic_update_checks",
+            True,
+            path,
+        )
+        prompt_for_session_journal = SettingsService._boolean(
+            data,
+            "prompt_for_session_journal",
             True,
             path,
         )
@@ -84,6 +91,7 @@ class SettingsService:
         return AppSettings(
             automatic_update_checks=automatic_update_checks,
             manual_transfer_controls=manual_transfer_controls,
+            prompt_for_session_journal=prompt_for_session_journal,
             player_display_name=SettingsService._string(
                 data,
                 "player_display_name",
@@ -132,6 +140,7 @@ class SettingsService:
         data = {
             "automatic_update_checks": settings.automatic_update_checks,
             "manual_transfer_controls": settings.manual_transfer_controls,
+            "prompt_for_session_journal": settings.prompt_for_session_journal,
             "player_display_name": settings.player_display_name,
             "coordination_enabled": settings.coordination_enabled,
             "coordination_server_url": settings.coordination_server_url,
