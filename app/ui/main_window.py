@@ -5,12 +5,14 @@ from datetime import UTC, datetime
 import os
 import platform
 from pathlib import Path
+import uuid
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -30,7 +32,11 @@ from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.core.logging import logger
 from app.core.distribution import detect_distribution_channel
-from app.core.settings import AppSettings, SettingsService
+from app.core.settings import (
+    AppSettings,
+    CoordinationGroupSettings,
+    SettingsService,
+)
 from app.coordination.errors import (
     CoordinationConfigurationError,
     CoordinationError,
@@ -97,6 +103,19 @@ class MainWindow(QMainWindow):
         self.startup_package_path = startup_package_path
         self.distribution_channel = detect_distribution_channel()
         self.settings = SettingsService.load()
+        if (
+            self.settings.legacy_group_migration_pending
+            and self.settings.active_coordination_group is not None
+        ):
+            migrated_count = ProjectRepository.associate_unassigned(
+                self.settings.active_coordination_group.group_id
+            )
+            SettingsService.save(self.settings)
+            logger.info(
+                "Migrated %s existing project(s) to coordination group %s.",
+                migrated_count,
+                self.settings.active_coordination_group.group_id,
+            )
         self.coordination_manager = self._create_coordination_manager(
             self.settings
         )
@@ -135,6 +154,7 @@ class MainWindow(QMainWindow):
         self._group_setup_progress: QProgressDialog | None = None
         self._pending_coordination_profile_name = ""
         self._pending_coordination_device_name = ""
+        self._pending_coordination_group_name = ""
         self._leaving_group = False
         self.package_handoff_controller = PackageHandoffController(self)
         self.package_handoff_controller.publish_completed.connect(
@@ -272,6 +292,13 @@ class MainWindow(QMainWindow):
         self.remove_button = QPushButton("Remove Game")
         self.remove_button.clicked.connect(self.remove_selected_game)
 
+        self.group_heading = QLabel("Groups")
+        self.active_group_selector = QComboBox()
+        self.active_group_selector.setObjectName("ActiveGroupSelector")
+        self.active_group_selector.currentIndexChanged.connect(
+            self._active_group_selected
+        )
+
         self.create_group_button = QPushButton("Create Group")
         self.create_group_button.clicked.connect(self.create_group_from_home)
 
@@ -311,6 +338,9 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(self.add_button)
         left_panel.addWidget(self.detect_games_button)
         left_panel.addWidget(self.remove_button)
+        left_panel.addSpacing(theme.SPACING)
+        left_panel.addWidget(self.group_heading)
+        left_panel.addWidget(self.active_group_selector)
         left_panel.addWidget(self.create_group_button)
         left_panel.addWidget(self.join_group_button)
         left_panel.addWidget(self.invite_friend_button)
@@ -405,8 +435,20 @@ class MainWindow(QMainWindow):
 
     def _refresh_group_buttons(self) -> None:
         connected = self.settings.coordination_enabled
-        self.create_group_button.setVisible(not connected)
-        self.join_group_button.setVisible(not connected)
+        self.active_group_selector.blockSignals(True)
+        self.active_group_selector.clear()
+        for group in self.settings.coordination_groups:
+            self.active_group_selector.addItem(group.name, group.group_id)
+        active_index = self.active_group_selector.findData(
+            self.settings.active_coordination_group_id
+        )
+        if active_index >= 0:
+            self.active_group_selector.setCurrentIndex(active_index)
+        self.active_group_selector.blockSignals(False)
+        self.active_group_selector.setVisible(bool(self.settings.coordination_groups))
+        self.group_heading.setVisible(bool(self.settings.coordination_groups))
+        self.create_group_button.setVisible(True)
+        self.join_group_button.setVisible(True)
         self.invite_friend_button.setVisible(
             connected and self.settings.coordination_is_administrator
         )
@@ -432,6 +474,44 @@ class MainWindow(QMainWindow):
         self.how_it_works_button.setToolTip(
             "Learn the Receive, Host, play, and Hand Off workflow."
         )
+
+    def _active_group_selected(self, _index: int) -> None:
+        group_id = self.active_group_selector.currentData()
+        if not isinstance(group_id, str) or not group_id:
+            return
+        self._switch_active_group(group_id)
+
+    def _switch_active_group(self, group_id: str) -> bool:
+        if group_id == self.settings.active_coordination_group_id:
+            return True
+        if not self._can_change_active_group():
+            self._refresh_group_buttons()
+            return False
+        try:
+            settings = self.settings.with_active_group(group_id)
+        except ValueError:
+            return False
+        return self._apply_coordination_settings(settings)
+
+    def _can_change_active_group(self) -> bool:
+        if self.package_handoff_controller.running:
+            QMessageBox.information(
+                self,
+                "Transfer In Progress",
+                "Wait for the current package transfer before changing groups.",
+            )
+            return False
+        if (
+            self.coordination_manager is not None
+            and self.coordination_manager.active_leases
+        ):
+            QMessageBox.warning(
+                self,
+                "Project Lock Active",
+                "Finish the hosted session before changing groups.",
+            )
+            return False
+        return True
 
     def show_settings(self) -> None:
         dialog = SettingsDialog(
@@ -475,6 +555,10 @@ class MainWindow(QMainWindow):
             self._begin_leave_group()
             return
 
+        if coordination_action == "switch_group":
+            self._switch_active_group(dialog.selected_group_id)
+            return
+
         if (
             self.coordination_manager is not None
             and self.coordination_manager.active_leases
@@ -512,6 +596,21 @@ class MainWindow(QMainWindow):
             coordination_server_url=dialog.coordination_server_url,
             coordination_device_name=dialog.coordination_device_name,
         )
+
+        active_group = candidate.active_coordination_group
+        if active_group is not None and candidate.coordination_enabled:
+            active_group = replace(
+                active_group,
+                server_url=candidate.coordination_server_url,
+                device_name=candidate.coordination_device_name,
+                device_id=candidate.coordination_device_id,
+                device_token=candidate.coordination_device_token,
+                is_administrator=candidate.coordination_is_administrator,
+                provider_kind=candidate.coordination_provider_kind,
+                cloudflare_account_id=candidate.coordination_cloudflare_account_id,
+                cloudflare_script_name=candidate.coordination_cloudflare_script_name,
+            )
+            candidate = candidate.upsert_group(active_group)
 
         if candidate.coordination_enabled:
             if not candidate.coordination_server_url:
@@ -584,6 +683,39 @@ class MainWindow(QMainWindow):
                     coordination_is_administrator=device.administrator,
                 )
 
+        active_group = candidate.active_coordination_group
+        if active_group is not None and candidate.coordination_enabled:
+            candidate = candidate.upsert_group(
+                replace(
+                    active_group,
+                    server_url=candidate.coordination_server_url,
+                    device_name=candidate.coordination_device_name,
+                    device_id=candidate.coordination_device_id,
+                    device_token=candidate.coordination_device_token,
+                    is_administrator=candidate.coordination_is_administrator,
+                    provider_kind=candidate.coordination_provider_kind,
+                    cloudflare_account_id=(
+                        candidate.coordination_cloudflare_account_id
+                    ),
+                    cloudflare_script_name=(
+                        candidate.coordination_cloudflare_script_name
+                    ),
+                )
+            )
+        elif candidate.coordination_enabled:
+            candidate = candidate.upsert_group(
+                CoordinationGroupSettings(
+                    group_id=str(uuid.uuid4()),
+                    name="Custom group",
+                    server_url=candidate.coordination_server_url,
+                    device_id=candidate.coordination_device_id,
+                    device_name=candidate.coordination_device_name,
+                    device_token=candidate.coordination_device_token,
+                    is_administrator=candidate.coordination_is_administrator,
+                    provider_kind=candidate.coordination_provider_kind or "custom",
+                )
+            )
+
         try:
             SettingsService.save(candidate)
         except Exception as error:
@@ -617,6 +749,8 @@ class MainWindow(QMainWindow):
         device_name: str,
         profile_name: str,
     ) -> None:
+        if not self._can_change_active_group():
+            return
         if not device_name:
             QMessageBox.warning(
                 self,
@@ -625,8 +759,18 @@ class MainWindow(QMainWindow):
             )
             return
 
+        group_name, accepted = QInputDialog.getText(
+            self,
+            "Name Your Group",
+            "Give this group a name (for example, Family Valheim):",
+        )
+        group_name = group_name.strip()
+        if not accepted or not group_name:
+            return
+
         self._pending_coordination_profile_name = profile_name
         self._pending_coordination_device_name = device_name
+        self._pending_coordination_group_name = group_name
         self._show_group_setup_progress(
             "Sign in to Cloudflare in your browser. Save Shift will create "
             "and verify the group automatically."
@@ -640,6 +784,8 @@ class MainWindow(QMainWindow):
         device_name: str,
         profile_name: str,
     ) -> None:
+        if not self._can_change_active_group():
+            return
         if not device_name:
             QMessageBox.warning(
                 self,
@@ -670,8 +816,18 @@ class MainWindow(QMainWindow):
             )
             return
 
+        group_name, named = QInputDialog.getText(
+            self,
+            "Name This Group",
+            "Choose a name for this group on this computer:",
+        )
+        group_name = group_name.strip()
+        if not named or not group_name:
+            return
+
         self._pending_coordination_profile_name = profile_name
         self._pending_coordination_device_name = device_name
+        self._pending_coordination_group_name = group_name
         self._show_group_setup_progress("Connecting this computer to the group…")
 
         if not self.group_setup_controller.join_group(invitation, device_name):
@@ -679,18 +835,21 @@ class MainWindow(QMainWindow):
 
     def _group_created(self, created: CreatedGroup) -> None:
         self._close_group_setup_progress()
+        group = CoordinationGroupSettings(
+            group_id=str(uuid.uuid4()),
+            name=self._pending_coordination_group_name or "New group",
+            server_url=created.provider_url,
+            device_id=created.device.device_id,
+            device_name=self._pending_coordination_device_name,
+            device_token=created.device.device_token,
+            is_administrator=True,
+            provider_kind="cloudflare",
+            cloudflare_account_id=created.account_id,
+            cloudflare_script_name=created.script_name,
+        )
         settings = replace(
-            self.settings,
+            self.settings.upsert_group(group),
             player_display_name=self._pending_coordination_profile_name,
-            coordination_enabled=True,
-            coordination_server_url=created.provider_url,
-            coordination_device_id=created.device.device_id,
-            coordination_device_name=self._pending_coordination_device_name,
-            coordination_device_token=created.device.device_token,
-            coordination_is_administrator=True,
-            coordination_provider_kind="cloudflare",
-            coordination_cloudflare_account_id=created.account_id,
-            coordination_cloudflare_script_name=created.script_name,
         )
         if not self._apply_coordination_settings(settings):
             return
@@ -708,18 +867,18 @@ class MainWindow(QMainWindow):
         device: PairedDevice,
     ) -> None:
         self._close_group_setup_progress()
+        group = CoordinationGroupSettings(
+            group_id=str(uuid.uuid4()),
+            name=self._pending_coordination_group_name or "Joined group",
+            server_url=invitation.provider_url,
+            device_id=device.device_id,
+            device_name=self._pending_coordination_device_name,
+            device_token=device.device_token,
+            is_administrator=device.administrator,
+        )
         settings = replace(
-            self.settings,
+            self.settings.upsert_group(group),
             player_display_name=self._pending_coordination_profile_name,
-            coordination_enabled=True,
-            coordination_server_url=invitation.provider_url,
-            coordination_device_id=device.device_id,
-            coordination_device_name=self._pending_coordination_device_name,
-            coordination_device_token=device.device_token,
-            coordination_is_administrator=device.administrator,
-            coordination_provider_kind="",
-            coordination_cloudflare_account_id="",
-            coordination_cloudflare_script_name="",
         )
         if not self._apply_coordination_settings(settings):
             return
@@ -810,18 +969,11 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Group Left", message)
 
     def _clear_local_group_settings(self) -> bool:
-        settings = replace(
-            self.settings,
-            coordination_enabled=False,
-            coordination_server_url="",
-            coordination_device_id="",
-            coordination_device_name="",
-            coordination_device_token="",
-            coordination_is_administrator=False,
-            coordination_provider_kind="",
-            coordination_cloudflare_account_id="",
-            coordination_cloudflare_script_name="",
-        )
+        group_id = self.settings.active_coordination_group_id
+        settings = self.settings.without_group(group_id)
+        if group_id:
+            for project in ProjectRepository.get_for_group(group_id):
+                ProjectRepository.associate_group(project.id, None)
         return self._apply_coordination_settings(settings)
 
     def _group_setup_failed(self, message: str) -> None:
@@ -882,6 +1034,7 @@ class MainWindow(QMainWindow):
 
         self.settings = settings
         self.coordination_manager = self._create_coordination_manager(settings)
+        self.project_lock_statuses.clear()
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -1027,6 +1180,11 @@ class MainWindow(QMainWindow):
             self.settings,
             coordination_is_administrator=True,
         )
+        active_group = settings.active_coordination_group
+        if active_group is not None:
+            settings = settings.upsert_group(
+                replace(active_group, is_administrator=True)
+            )
 
         if not self._apply_coordination_settings(settings):
             return
@@ -1250,13 +1408,32 @@ class MainWindow(QMainWindow):
             self.project_layout.addStretch()
             return
 
-        for project in projects:
-            card = self._create_project_card(
-                project=project,
-                installed_game=selected_game,
+        local_projects = [
+            project for project in projects if not project.coordination_group_id
+        ]
+        shared_projects = [
+            project for project in projects if project.coordination_group_id
+        ]
+        for heading_text, scoped_projects in (
+            ("Local worlds", local_projects),
+            ("Shared worlds", shared_projects),
+        ):
+            if not scoped_projects:
+                continue
+            section_heading = QLabel(heading_text)
+            section_heading.setObjectName("ProjectScopeHeading")
+            section_heading.setStyleSheet(
+                f"font-size: 16px; font-weight: bold; color: {theme.TEXT_SECONDARY}; "
+                f"border-bottom: 1px solid {theme.CARD_BORDER}; padding: 8px 0;"
             )
-            self.project_cards[project.uuid] = card
-            self.project_layout.addWidget(card)
+            self.project_layout.addWidget(section_heading)
+            for project in scoped_projects:
+                card = self._create_project_card(
+                    project=project,
+                    installed_game=selected_game,
+                )
+                self.project_cards[project.uuid] = card
+                self.project_layout.addWidget(card)
 
         self.project_layout.addStretch()
         self._refresh_project_lock_statuses()
@@ -1420,6 +1597,9 @@ class MainWindow(QMainWindow):
 
 
     def host_project(self, project: Project) -> None:
+        if not self._activate_project_group(project):
+            return
+        coordinated = self._project_is_coordinated(project)
         if (
             self._automatic_session_project is not None
             and self._automatic_session_project.uuid != project.uuid
@@ -1439,7 +1619,7 @@ class MainWindow(QMainWindow):
             return
 
         supported_game = GameRegistry.get_by_game_id(installed_game.game_id)
-        if self.settings.coordination_enabled and supported_game is not None:
+        if coordinated and supported_game is not None:
             try:
                 game_running = supported_game.is_running()
             except Exception as error:
@@ -1487,7 +1667,7 @@ class MainWindow(QMainWindow):
             project.uuid,
         )
 
-        if self.settings.coordination_enabled:
+        if coordinated:
             try:
                 provider = self._require_coordination_manager().provider
             except CoordinationError as error:
@@ -1614,7 +1794,7 @@ class MainWindow(QMainWindow):
                     "The latest group version was received first. Use Hand Off "
                     "when you are finished; that will create and share the next "
                     "version."
-                    if self.settings.coordination_enabled
+                    if self._project_is_coordinated(project)
                     else (
                         "No new project version was created. Use Export when "
                         "you are finished to save the next version."
@@ -1791,7 +1971,7 @@ class MainWindow(QMainWindow):
         lease_acquired_here = False
 
         try:
-            if self.settings.coordination_enabled:
+            if self._project_is_coordinated(project):
                 manager = self._require_coordination_manager()
 
                 if not manager.has_active_lease(project.uuid):
@@ -2087,8 +2267,11 @@ class MainWindow(QMainWindow):
         )
 
     def receive_or_import_project(self, project: Project) -> None:
-        if not self.settings.coordination_enabled:
+        if not self._project_is_coordinated(project):
             self.import_package()
+            return
+
+        if not self._activate_project_group(project):
             return
 
         self._begin_group_receive(project.uuid, project.name, project)
@@ -2152,9 +2335,11 @@ class MainWindow(QMainWindow):
             return
 
         self._listing_shared_projects = True
+        active_group = self.settings.active_coordination_group
+        group_name = active_group.name if active_group is not None else "your group"
         self._show_package_handoff_progress(
             "Shared Projects",
-            "Checking your group for shared projects…",
+            f"Checking {group_name} for shared projects…",
         )
         if not self.package_handoff_controller.list_latest_packages(provider):
             self._listing_shared_projects = False
@@ -2163,24 +2348,27 @@ class MainWindow(QMainWindow):
     def _shared_projects_loaded(self, result: object) -> None:
         self._listing_shared_projects = False
         self._close_package_handoff_progress()
-        packages = (
-            [
-                package
-                for package in result
-                if isinstance(package, CatalogPackage)
-                and ProjectRepository.get_by_uuid(
+        packages: list[CatalogPackage] = []
+        if isinstance(result, list):
+            for package in result:
+                if not isinstance(package, CatalogPackage):
+                    continue
+                existing = ProjectRepository.get_by_uuid(
                     package.artifact.project_uuid
-                ) is None
-            ]
-            if isinstance(result, list)
-            else []
-        )
+                )
+                if existing is None or not existing.coordination_group_id:
+                    packages.append(package)
 
         if not packages:
+            active_group = self.settings.active_coordination_group
+            group_name = (
+                active_group.name if active_group is not None else "this group"
+            )
             QMessageBox.information(
                 self,
                 "No New Shared Projects",
-                "No group project is waiting to be added on this computer.",
+                f"No project from {group_name} is waiting to be added on "
+                "this computer.",
             )
             return
 
@@ -2203,7 +2391,7 @@ class MainWindow(QMainWindow):
         )
 
     def handoff_or_export_project(self, project: Project) -> None:
-        if not self.settings.coordination_enabled:
+        if not self._project_is_coordinated(project):
             self.export_project(project)
             return
 
@@ -2215,6 +2403,11 @@ class MainWindow(QMainWindow):
         *,
         automatic: bool = False,
     ) -> None:
+        if not self._project_is_coordinated(project):
+            self.export_project(project)
+            return
+        if not self._activate_project_group(project):
+            return
         if self.package_handoff_controller.running:
             QMessageBox.information(
                 self,
@@ -2368,6 +2561,7 @@ class MainWindow(QMainWindow):
     ) -> ProjectCard:
         latest_version = ProjectVersionService.get_latest_version(project.id)
         latest_journal = SessionJournalService.get_latest_entry(project.id)
+        group = self._group_by_id(project.coordination_group_id)
 
         card = ProjectCard(
             project=project,
@@ -2383,10 +2577,20 @@ class MainWindow(QMainWindow):
             on_join=self.join_hosted_project,
             latest_journal=latest_journal,
             on_journal=self.show_journal,
+            group_name=group.name if group is not None else None,
+            group_active=(
+                group is None
+                or group.group_id == self.settings.active_coordination_group_id
+            ),
+            on_share=(
+                self._share_project_with_active_group
+                if self.settings.active_coordination_group is not None
+                else None
+            ),
         )
         self._apply_project_lock_status(project.uuid, card)
 
-        if self.settings.coordination_enabled:
+        if self._project_is_coordinated(project):
             card.import_button.setText("Receive")
             card.export_button.setText("Hand Off")
             card.import_button.setVisible(
@@ -2506,12 +2710,22 @@ class MainWindow(QMainWindow):
             with self._temporary_coordination_lease(
                 analysis.package_info.project_uuid,
                 player_name,
+                force_coordination=True,
             ):
                 version = ImportService.import_package(
                     package_path=package_path,
                     imported_by=player_name,
                     allow_replace=analysis.requires_replace_confirmation,
                     allow_group_reconciliation=True,
+                )
+            imported_project = ProjectRepository.get_by_uuid(
+                analysis.package_info.project_uuid
+            )
+            active_group = self.settings.active_coordination_group
+            if imported_project is not None and active_group is not None:
+                ProjectRepository.associate_group(
+                    imported_project.id,
+                    active_group.group_id,
                 )
         except CoordinationError as error:
             package_path.unlink(missing_ok=True)
@@ -2699,6 +2913,67 @@ class MainWindow(QMainWindow):
 
         raise ValueError(f"Installed game not found for project: {project.name}")
 
+    def _group_by_id(
+        self,
+        group_id: str | None,
+    ) -> CoordinationGroupSettings | None:
+        if not group_id:
+            return None
+        return next(
+            (
+                group
+                for group in self.settings.coordination_groups
+                if group.group_id == group_id
+            ),
+            None,
+        )
+
+    def _project_is_coordinated(self, project: Project) -> bool:
+        return bool(project.coordination_group_id) or (
+            self.settings.coordination_enabled
+            and not self.settings.coordination_groups
+        )
+
+    def _activate_project_group(self, project: Project) -> bool:
+        group_id = project.coordination_group_id
+        if not group_id:
+            return True
+        if self._group_by_id(group_id) is None:
+            QMessageBox.warning(
+                self,
+                "Group Unavailable",
+                "This world belongs to a group that is no longer configured "
+                "on this computer. Share it with another group or leave it local.",
+            )
+            return False
+        return self._switch_active_group(group_id)
+
+    def _share_project_with_active_group(self, project: Project) -> None:
+        group = self.settings.active_coordination_group
+        if group is None:
+            QMessageBox.information(
+                self,
+                "No Active Group",
+                "Create or join a group before sharing this world.",
+            )
+            return
+        confirmed = QMessageBox.question(
+            self,
+            "Share World",
+            f"Share {project.name} with {group.name}?\n\n"
+            "Its future Host sessions and package catalog will be scoped to "
+            "this group.",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+        ProjectRepository.associate_group(project.id, group.group_id)
+        logger.info(
+            "Associated project %s with coordination group %s.",
+            project.uuid,
+            group.group_id,
+        )
+        self.load_projects()
+
     def _get_player_display_name(self) -> str | None:
         if self.settings.player_display_name:
             return self.settings.player_display_name
@@ -2738,17 +3013,34 @@ class MainWindow(QMainWindow):
         if not self.project_cards:
             return
 
-        if not self.settings.coordination_enabled:
-            for project_uuid, card in self.project_cards.items():
-                self._apply_project_lock_status(project_uuid, card)
+        active_project_uuids = [
+            project_uuid
+            for project_uuid, card in self.project_cards.items()
+            if card.project.coordination_group_id
+            == self.settings.active_coordination_group_id
+        ]
+        for project_uuid, card in self.project_cards.items():
+            if not card.project.coordination_group_id:
+                card.show_local()
+            elif project_uuid not in active_project_uuids:
+                group = self._group_by_id(card.project.coordination_group_id)
+                card.show_inactive_group(group.name if group else "another group")
+
+        if not self.settings.coordination_enabled or not active_project_uuids:
+            for project_uuid in active_project_uuids:
+                self._apply_project_lock_status(
+                    project_uuid,
+                    self.project_cards[project_uuid],
+                )
             return
 
         if self.coordination_manager is None:
-            for card in self.project_cards.values():
-                card.show_lock_unavailable()
+            for project_uuid in active_project_uuids:
+                self.project_cards[project_uuid].show_lock_unavailable()
             return
 
-        for project_uuid, card in self.project_cards.items():
+        for project_uuid in active_project_uuids:
+            card = self.project_cards[project_uuid]
             if (
                 project_uuid not in self.project_lock_statuses
                 and not self.coordination_manager.has_active_lease(
@@ -2759,7 +3051,7 @@ class MainWindow(QMainWindow):
 
         self.lock_status_controller.refresh(
             self.coordination_manager.provider,
-            list(self.project_cards),
+            active_project_uuids,
         )
 
     def _lock_statuses_loaded(
@@ -2776,6 +3068,13 @@ class MainWindow(QMainWindow):
 
         for project_uuid, card in self.project_cards.items():
             if (
+                not card.project.coordination_group_id
+                or card.project.coordination_group_id
+                != self.settings.active_coordination_group_id
+            ):
+                self._apply_project_lock_status(project_uuid, card)
+                continue
+            if (
                 self.coordination_manager is not None
                 and self.coordination_manager.has_active_lease(project_uuid)
             ):
@@ -2788,6 +3087,16 @@ class MainWindow(QMainWindow):
         project_uuid: str,
         card: ProjectCard,
     ) -> None:
+        if not card.project.coordination_group_id:
+            card.show_local()
+            return
+        if (
+            card.project.coordination_group_id
+            != self.settings.active_coordination_group_id
+        ):
+            group = self._group_by_id(card.project.coordination_group_id)
+            card.show_inactive_group(group.name if group else "another group")
+            return
         if not self.settings.coordination_enabled:
             card.show_coordination_disabled()
             return
@@ -2855,7 +3164,14 @@ class MainWindow(QMainWindow):
         project_uuid: str,
         owner_display_name: str,
     ) -> None:
-        if not self.settings.coordination_enabled:
+        project = ProjectRepository.get_by_uuid(project_uuid)
+        if project is None:
+            if not (
+                self.settings.coordination_enabled
+                and not self.settings.coordination_groups
+            ):
+                return
+        elif not self._project_is_coordinated(project):
             return
 
         lease = self._require_coordination_manager().acquire_hosting_lease(
@@ -2874,8 +3190,23 @@ class MainWindow(QMainWindow):
         self,
         project_uuid: str,
         owner_display_name: str,
+        *,
+        force_coordination: bool = False,
     ) -> Generator[None, None, None]:
-        if not self.settings.coordination_enabled:
+        project = ProjectRepository.get_by_uuid(project_uuid)
+        if not force_coordination and (
+            (
+                project is None
+                and not (
+                    self.settings.coordination_enabled
+                    and not self.settings.coordination_groups
+                )
+            )
+            or (
+                project is not None
+                and not self._project_is_coordinated(project)
+            )
+        ):
             yield
             return
 

@@ -2,6 +2,7 @@ import platform
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -25,6 +26,7 @@ class SettingsDialog(QDialog):
     ACTION_MANAGE_DEVICES = "manage_devices"
     ACTION_CLAIM_ADMINISTRATOR = "claim_administrator"
     ACTION_LEAVE_GROUP = "leave_group"
+    ACTION_SWITCH_GROUP = "switch_group"
 
     def __init__(
         self,
@@ -125,7 +127,7 @@ class SettingsDialog(QDialog):
                 "Save Shift's official GitHub releases."
             )
 
-        coordination_heading = QLabel("Project Coordination")
+        coordination_heading = QLabel("Groups & Project Coordination")
         coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
 
         coordination_description = QLabel(
@@ -146,6 +148,24 @@ class SettingsDialog(QDialog):
         )
         self._paired_device_id = settings.coordination_device_id
         self._is_administrator = settings.coordination_is_administrator
+
+        self.group_selector = QComboBox()
+        self.group_selector.setObjectName("CoordinationGroupSelector")
+        for group in settings.coordination_groups:
+            self.group_selector.addItem(group.name, group.group_id)
+        active_index = self.group_selector.findData(
+            settings.active_coordination_group_id
+        )
+        if active_index >= 0:
+            self.group_selector.setCurrentIndex(active_index)
+        self.switch_group_button = QPushButton("Switch")
+        self.switch_group_button.setStyleSheet(styles.secondary_button_style())
+        self.switch_group_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_SWITCH_GROUP)
+        )
+        group_row = QHBoxLayout()
+        group_row.addWidget(self.group_selector, 1)
+        group_row.addWidget(self.switch_group_button)
 
         self.coordination_server_input = QLineEdit(
             settings.coordination_server_url
@@ -225,13 +245,17 @@ class SettingsDialog(QDialog):
             lambda: self._request_coordination_action(self.ACTION_LEAVE_GROUP)
         )
 
-        coordination_action_row = QHBoxLayout()
-        coordination_action_row.addWidget(self.create_group_button)
-        coordination_action_row.addWidget(self.join_group_button)
-        coordination_action_row.addWidget(self.create_invitation_button)
-        coordination_action_row.addWidget(self.manage_devices_button)
-        coordination_action_row.addWidget(self.claim_administrator_button)
-        coordination_action_row.addWidget(self.leave_group_button)
+        coordination_setup_row = QHBoxLayout()
+        coordination_setup_row.addWidget(self.create_group_button)
+        coordination_setup_row.addWidget(self.join_group_button)
+        coordination_setup_row.addStretch()
+
+        coordination_management_row = QHBoxLayout()
+        coordination_management_row.addWidget(self.create_invitation_button)
+        coordination_management_row.addWidget(self.manage_devices_button)
+        coordination_management_row.addWidget(self.claim_administrator_button)
+        coordination_management_row.addWidget(self.leave_group_button)
+        coordination_management_row.addStretch()
 
         self.coordination_setup_note = QLabel()
         self.coordination_setup_note.setWordWrap(True)
@@ -247,8 +271,8 @@ class SettingsDialog(QDialog):
             )
 
         paired = bool(self._paired_device_id)
-        self.create_group_button.setVisible(not paired)
-        self.join_group_button.setVisible(not paired)
+        self.create_group_button.setVisible(True)
+        self.join_group_button.setVisible(True)
         self.create_invitation_button.setVisible(
             paired and self._is_administrator
         )
@@ -306,8 +330,12 @@ class SettingsDialog(QDialog):
         layout.addSpacing(theme.SPACING)
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)
+        if self.group_selector.count():
+            layout.addWidget(QLabel("Active group"))
+            layout.addLayout(group_row)
         layout.addWidget(self.coordination_enabled_checkbox)
-        layout.addLayout(coordination_action_row)
+        layout.addLayout(coordination_setup_row)
+        layout.addLayout(coordination_management_row)
         layout.addWidget(self.coordination_setup_note)
         layout.addWidget(self.advanced_coordination_checkbox)
         layout.addLayout(coordination_form)
@@ -351,6 +379,11 @@ class SettingsDialog(QDialog):
     @property
     def coordination_pairing_code(self) -> str:
         return self.coordination_pairing_code_input.text().strip()
+
+    @property
+    def selected_group_id(self) -> str:
+        value = self.group_selector.currentData()
+        return value if isinstance(value, str) else ""
 
     def _request_check(self) -> None:
         self.check_requested = True

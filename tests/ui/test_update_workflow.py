@@ -148,7 +148,7 @@ def test_settings_dialog_shows_administrator_actions_after_pairing(qtbot) -> Non
     assert dialog.create_invitation_button.isVisible()
     assert dialog.manage_devices_button.isVisible()
     assert dialog.leave_group_button.isVisible()
-    assert not dialog.create_group_button.isVisible()
+    assert dialog.create_group_button.isVisible()
     assert "group administrator" in dialog.coordination_status_label.text()
 
 

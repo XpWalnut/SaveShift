@@ -10,7 +10,11 @@ from app.coordination.manager import CoordinationManager
 from app.coordination.models import LockLease, PairedDevice
 from app.coordination.cloudflare_provisioning import CreatedGroup
 from app.coordination.setup_controller import GroupLeaveOutcome
-from app.core.settings import AppSettings, SettingsService
+from app.core.settings import (
+    AppSettings,
+    CoordinationGroupSettings,
+    SettingsService,
+)
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.services.hosting_service import HostingService
@@ -89,6 +93,44 @@ def test_configured_settings_create_provider_neutral_manager() -> None:
     assert manager is not None
     assert manager.provider.base_url == "https://locks.example.com"
     assert manager.provider.device_token == "secret-token"
+
+
+def test_switching_groups_rebuilds_manager_with_selected_credentials(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    family = CoordinationGroupSettings(
+        group_id="family",
+        name="Family",
+        server_url="https://family.example",
+        device_id="family-device",
+        device_token="family-token",
+    )
+    friends = CoordinationGroupSettings(
+        group_id="friends",
+        name="Friends",
+        server_url="https://friends.example",
+        device_id="friends-device",
+        device_token="friends-token",
+    )
+    window.settings = AppSettings(
+        coordination_groups=(family, friends),
+    ).with_active_group("family")
+    window.coordination_manager = MainWindow._create_coordination_manager(
+        window.settings
+    )
+    saved: list[AppSettings] = []
+    monkeypatch.setattr(SettingsService, "save", saved.append)
+    monkeypatch.setattr(window, "load_projects", lambda: None)
+    monkeypatch.setattr(window, "_refresh_project_lock_statuses", lambda: None)
+
+    assert window._switch_active_group("friends")
+
+    assert saved[-1].active_coordination_group_id == "friends"
+    assert window.coordination_manager is not None
+    assert window.coordination_manager.provider.base_url == "https://friends.example"
+    assert window.coordination_manager.provider.device_token == "friends-token"
 
 
 def test_player_name_is_requested_once_then_reused(

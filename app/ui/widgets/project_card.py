@@ -21,6 +21,9 @@ class ProjectCard(QFrame):
             on_join=None,
             latest_journal: SessionJournalEntry | None = None,
             on_journal=None,
+            group_name: str | None = None,
+            group_active: bool = True,
+            on_share=None,
             parent=None,
     ) -> None:
         super().__init__(parent)
@@ -37,6 +40,26 @@ class ProjectCard(QFrame):
 
         title = QLabel(f"🌍 {project.name}")
         title.setStyleSheet("font-size: 20px; font-weight: bold;")
+
+        self.scope_badge = QLabel(
+            f"Shared · {group_name}" if group_name else "Local"
+        )
+        self.scope_badge.setObjectName("ProjectScopeBadge")
+        self.scope_badge.setToolTip(
+            "This world is synchronized only with members of this group."
+            if group_name
+            else "This world stays on this computer until you share it with a group."
+        )
+        badge_color = theme.SUCCESS if group_name else theme.TEXT_SECONDARY
+        self.scope_badge.setStyleSheet(
+            f"color: {badge_color}; border: 1px solid {badge_color}; "
+            "border-radius: 8px; padding: 2px 8px; font-weight: bold;"
+        )
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(title)
+        title_row.addStretch()
+        title_row.addWidget(self.scope_badge)
 
         game_label = QLabel(f"🎮 {installed_game.display_name}")
         game_label.setObjectName("SecondaryText")
@@ -75,6 +98,7 @@ class ProjectCard(QFrame):
         self.export_button = QPushButton("Export")
         self.history_button = QPushButton("History")
         self.journal_button = QPushButton("Journal")
+        self.share_button = QPushButton("Share")
 
         self.host_button.setToolTip(
             "Reserve the world, receive the latest group version, and launch "
@@ -100,6 +124,7 @@ class ProjectCard(QFrame):
                 self.export_button,
                 self.history_button,
                 self.journal_button,
+                self.share_button,
         ):
             button.setMinimumWidth(105)
 
@@ -109,6 +134,7 @@ class ProjectCard(QFrame):
         button_row.addWidget(self.export_button)
         button_row.addWidget(self.history_button)
         button_row.addWidget(self.journal_button)
+        button_row.addWidget(self.share_button)
         button_row.addStretch()
 
         self.host_button.clicked.connect(
@@ -134,10 +160,18 @@ class ProjectCard(QFrame):
         else:
             self.journal_button.setEnabled(False)
 
+        if on_share is not None and group_name is None:
+            self.share_button.clicked.connect(lambda: on_share(project))
+            self.share_button.setToolTip(
+                "Associate this local world with the active group."
+            )
+        else:
+            self.share_button.setVisible(False)
+
         self.show_coordination_disabled()
 
         layout = QVBoxLayout()
-        layout.addWidget(title)
+        layout.addLayout(title_row)
         layout.addWidget(game_label)
         layout.addSpacing(8)
         layout.addWidget(version_label)
@@ -157,6 +191,9 @@ class ProjectCard(QFrame):
         layout.setSpacing(theme.SPACING_SMALL)
 
         self.setLayout(layout)
+
+        if group_name and not group_active:
+            self.show_inactive_group(group_name)
 
     def _perform_primary_action(self) -> None:
         if self.host_button.property("saveshift_action") == "join":
@@ -199,6 +236,20 @@ class ProjectCard(QFrame):
             "Project lock: Local protection only — coordination disabled"
         )
         self.lock_status_label.setStyleSheet("")
+
+    def show_local(self) -> None:
+        self.show_host_action()
+        self.lock_status_label.setText(
+            "Local world · not shared with a group"
+        )
+        self.lock_status_label.setStyleSheet("")
+
+    def show_inactive_group(self, group_name: str) -> None:
+        self.show_host_action()
+        self.lock_status_label.setText(
+            f"Shared with {group_name} · select this group to synchronize"
+        )
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
 
     def show_lock_checking(self) -> None:
         self.show_host_action()

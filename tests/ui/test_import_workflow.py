@@ -90,6 +90,39 @@ def test_project_card_import_button_opens_global_import_workflow(
     assert import_calls == [True]
 
 
+def test_project_card_visibly_distinguishes_local_and_shared_worlds(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    local = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        on_share=lambda _project: None,
+    )
+    shared = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        group_name="Family Valheim",
+    )
+    qtbot.addWidget(local)
+    qtbot.addWidget(shared)
+
+    assert local.scope_badge.text() == "Local"
+    assert local.share_button.isVisibleTo(local)
+    assert shared.scope_badge.text() == "Shared · Family Valheim"
+    assert not shared.share_button.isVisibleTo(shared)
+
+
 def test_project_card_displays_lock_owner_and_expiration(
     qtbot,
     tmp_path: Path,

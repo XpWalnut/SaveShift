@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from app.core.settings import AppSettings, SettingsService
+import json
+
+from app.core.settings import (
+    AppSettings,
+    CoordinationGroupSettings,
+    SettingsService,
+)
 from app.core.secrets import SecretProtector
 
 
@@ -105,3 +111,73 @@ def test_invalid_automatic_update_value_is_ignored(tmp_path: Path) -> None:
     )
 
     assert SettingsService.load(settings_path) == AppSettings()
+
+
+def test_multiple_groups_and_active_group_are_protected_and_restored(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(SecretProtector, "protect", lambda value: f"safe:{value}")
+    monkeypatch.setattr(
+        SecretProtector,
+        "unprotect",
+        lambda value: value.removeprefix("safe:"),
+    )
+    family = CoordinationGroupSettings(
+        group_id="family",
+        name="Family Valheim",
+        server_url="https://family.example",
+        device_id="device-family",
+        device_token="family-secret",
+    )
+    friends = CoordinationGroupSettings(
+        group_id="friends",
+        name="Friends V Rising",
+        server_url="https://friends.example",
+        device_id="device-friends",
+        device_token="friends-secret",
+        is_administrator=True,
+    )
+    settings = AppSettings(
+        coordination_groups=(family, friends),
+    ).with_active_group("friends")
+
+    SettingsService.save(settings, settings_path)
+    stored = settings_path.read_text(encoding="utf-8")
+
+    assert '"device_token":' not in stored
+    assert '"device_token_protected": "family-secret"' not in stored
+    assert '"device_token_protected": "friends-secret"' not in stored
+    assert SettingsService.load(settings_path) == settings
+
+
+def test_legacy_single_group_is_migrated_with_stable_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(SecretProtector, "unprotect", lambda _value: "token")
+    settings_path.write_text(
+        json.dumps(
+            {
+                "coordination_enabled": True,
+                "coordination_server_url": "https://original.example",
+                "coordination_device_id": "device-1",
+                "coordination_device_token_protected": "protected",
+                "coordination_cloudflare_script_name": "Family worlds",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = SettingsService.load(settings_path)
+    second = SettingsService.load(settings_path)
+
+    assert first.legacy_group_migration_pending
+    assert len(first.coordination_groups) == 1
+    assert first.active_coordination_group is not None
+    assert first.active_coordination_group.name == "Family worlds"
+    assert first.active_coordination_group.group_id == (
+        second.active_coordination_group.group_id
+    )

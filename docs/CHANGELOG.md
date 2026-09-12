@@ -6,6 +6,14 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Multiple persisted groups with an active-group selector, creation and join
+  flows that remain available while connected, and per-group invitations,
+  computer management, departure, locks, and package catalogs.
+- Explicit Local worlds and Shared worlds sections, group-name badges, and a
+  Share action that associates a local world with the active group.
+- Schema version 4 project-to-group associations and a backward-compatible
+  migration that keeps existing coordinated worlds attached to the original
+  group.
 - New neon pixel-art branding assets for the Windows application icon and
   Steamworks banner artwork.
 - An optional World Journal prompt for completed hosted sessions, including a

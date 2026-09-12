@@ -60,8 +60,8 @@ def test_connected_home_screen_surfaces_invite_and_shared_worlds(
 
     window._refresh_group_buttons()
 
-    assert window.create_group_button.isHidden()
-    assert window.join_group_button.isHidden()
+    assert not window.create_group_button.isHidden()
+    assert not window.join_group_button.isHidden()
     assert not window.invite_friend_button.isHidden()
     assert not window.shared_projects_button.isHidden()
 

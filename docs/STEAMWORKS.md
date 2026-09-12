@@ -137,9 +137,22 @@ SteamPipe depot upload. The repository keeps the supplied source artwork in:
 - `assets/icons/SaveShift.png` — square 1254 x 1254 source artwork.
 - `assets/steam/SaveShift-Banner.png` — wide 1834 x 857 Steam artwork.
 
-Upload the wide image manually to the intended Steamworks graphical-asset slot
-when its required dimensions and crop match that slot. Keep the repository file
-as the uncropped source if Steamworks requires additional capsule variants.
+Steam-ready exports derived from those originals are:
+
+- `assets/steam/SaveShift-ShortcutIcon-512.png` — **Shortcut Icon**.
+- `assets/steam/SaveShift-AppIcon-184.jpg` — **App Icon**.
+- `assets/steam/SaveShift-Header-920x430.png` — **Store Header Capsule** and
+  **Library Header**.
+- `assets/steam/SaveShift-LibraryHero-3840x1240.png` — **Library Hero**.
+- `assets/steam/SaveShift-LibraryLogo-1280x720.png` — transparent **Library
+  Logo**.
+
+Upload the Shortcut Icon and App Icon under **App Admin > Installation > Client
+Images**. Upload the 920 x 430 header under **Edit Store Page > Graphical
+Assets** for the Store Header Capsule and Library Header fields. Upload the
+3840 x 1240 background and transparent 1280 x 720 title artwork as the Library
+Hero and Library Logo respectively. Keep the larger repository files as
+uncropped sources for any additional capsule variants.
 
 `assets/icons/SaveShift.ico` is a generated multi-resolution Windows icon. It
 contains 16, 24, 32, 48, 64, 128, and 256 pixel variants and is already shared

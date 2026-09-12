@@ -37,6 +37,38 @@ class ProjectRepository:
             )
 
     @staticmethod
+    def get_for_group(group_id: str) -> list[Project]:
+        with SessionLocal() as session:
+            return (
+                session.query(Project)
+                .filter(Project.coordination_group_id == group_id)
+                .order_by(Project.name)
+                .all()
+            )
+
+    @staticmethod
+    def associate_group(project_id: int, group_id: str | None) -> Project:
+        with SessionLocal() as session:
+            project = session.get(Project, project_id)
+            if project is None:
+                raise ValueError(f"Project not found: {project_id}")
+            project.coordination_group_id = group_id
+            session.commit()
+            session.refresh(project)
+            return project
+
+    @staticmethod
+    def associate_unassigned(group_id: str) -> int:
+        with SessionLocal() as session:
+            count = (
+                session.query(Project)
+                .filter(Project.coordination_group_id.is_(None))
+                .update({Project.coordination_group_id: group_id})
+            )
+            session.commit()
+            return int(count)
+
+    @staticmethod
     def get_by_local_path(local_path: Path) -> Project | None:
         expected = str(local_path.resolve(strict=False)).casefold()
 
@@ -127,6 +159,7 @@ class ProjectRepository:
             project_uuid: str,
             name: str,
             local_path: Path,
+            coordination_group_id: str | None = None,
     ) -> Project:
         with SessionLocal() as session:
             project = Project(
@@ -134,6 +167,7 @@ class ProjectRepository:
                 uuid=project_uuid,
                 name=name,
                 local_path=str(local_path),
+                coordination_group_id=coordination_group_id,
             )
 
             session.add(project)
