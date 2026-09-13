@@ -54,6 +54,13 @@ checks provider responses, downloads to a temporary sibling file, and validates
 the package UUID, version, byte length, ZIP contents, and SHA-256 checksum before
 atomically replacing the destination.
 
+The package reader treats every received `.sspkg` as hostile even when its
+sender is an authenticated group member. Version-1 archives must contain exactly
+the regular files declared by the manifest, with matching checksums and safe,
+case-unique relative paths. Links, special files, encrypted ZIP entries,
+unsupported compression, Windows device or alternate-stream names, traversal,
+and excessive member or expanded-byte counts are rejected before extraction.
+
 `PackageHandoffService` composes the verified byte transport with the separate
 coordination catalog. Publication requires the project's active lease, uploads
 the immutable payload first, registers its descriptor second, and removes the

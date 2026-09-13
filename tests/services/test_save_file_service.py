@@ -105,3 +105,25 @@ def test_chunked_valheim_sync_manages_entire_dedicated_directory(tmp_path: Path)
 
     assert not (root / "obsolete.chunk").exists()
     assert (root / "region.chunk").read_bytes() == b"region"
+
+
+def test_sync_rejects_destination_symlink_that_escapes_project(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    source = tmp_path / "source"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    source.mkdir()
+    outside.mkdir()
+    (source / "linked").mkdir()
+    (source / "linked" / "world.sav").write_bytes(b"untrusted")
+    try:
+        (root / "linked").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("Creating directory symlinks is unavailable on this computer.")
+
+    with pytest.raises(ValueError, match="outside its expected directory"):
+        SaveFileService.synchronize_project(_project("World", root), source)
+
+    assert not (outside / "world.sav").exists()

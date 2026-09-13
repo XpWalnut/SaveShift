@@ -6,6 +6,13 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Hardened package imports against malicious archives from an authorized group
+  member: imports now reject path traversal and Windows device/alternate-stream
+  paths, undeclared payloads, duplicate and case-colliding entries, links and
+  special files, unsupported or ZIP-encrypted entries, oversized metadata,
+  excessive file counts, archives that expand beyond bounded limits, and local
+  symlink or junction paths that would redirect synchronization outside the
+  selected save directory.
 - Side-by-side Cloudflare and Steam-native coordination selected per group.
   Steam-native groups now encrypt with manifest key epochs, publish signed
   ancestry descriptors through stable member-owned indexes, discover the one

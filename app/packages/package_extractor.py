@@ -8,6 +8,7 @@ import shutil
 from app.core.config import AppConfig
 from app.core.logging import logger
 from app.packages.package_reader import PackageReader
+from app.packages.archive_policy import validate_archive_structure
 
 
 class PackageExtractor:
@@ -30,21 +31,24 @@ class PackageExtractor:
             extraction_root,
         )
 
-        with ZipFile(package_path, "r") as package:
-            for archive_name in package.namelist():
-                if not archive_name.startswith("files/"):
-                    continue
+        try:
+            resolved_root = extraction_root.resolve()
+            with ZipFile(package_path, "r") as package:
+                _manifest, _checksums, save_entries = validate_archive_structure(
+                    package
+                )
+                for entry in save_entries:
+                    relative_name = entry.filename.removeprefix("files/")
+                    target_path = extraction_root / Path(relative_name)
+                    if not target_path.resolve().is_relative_to(resolved_root):
+                        raise ValueError("Package extraction path escaped its boundary.")
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
 
-                relative_name = archive_name.removeprefix("files/")
-
-                if not relative_name:
-                    continue
-
-                target_path = extraction_root / relative_name
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-
-                with package.open(archive_name) as source, target_path.open("wb") as target:
-                    shutil.copyfileobj(source, target)
+                    with package.open(entry) as source, target_path.open("xb") as target:
+                        shutil.copyfileobj(source, target, length=1024 * 1024)
+        except Exception:
+            shutil.rmtree(extraction_root, ignore_errors=True)
+            raise
 
         logger.info("Package extracted successfully to %s", extraction_root)
 
