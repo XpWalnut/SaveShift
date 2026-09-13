@@ -27,6 +27,7 @@ from app.steam.package_lineage import (
     SteamPackageForkError,
     SteamPackageLineage,
 )
+from app.steam.native_provider import SteamNativeCoordinationProvider
 from app.steam.package_index import SteamMemberPackageIndex
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.social_client import (
@@ -57,6 +58,7 @@ __all__ = [
     "SteamPackageDiscoveryResult",
     "SteamPackageForkError",
     "SteamPackageLineage",
+    "SteamNativeCoordinationProvider",
     "SteamMemberPackageIndex",
     "SteamMemberPackageIndexTransport",
     "JoinedSteamGroup",

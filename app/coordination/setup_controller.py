@@ -24,6 +24,7 @@ from app.steam.group_invitation import (
     SteamGroupInvitationService,
 )
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
 from app.steam.social_client import SteamLobbyJoinRequest, SteamLobbyMessage
 
@@ -186,10 +187,24 @@ class JoinSteamGroupTask(QRunnable):
             membership_requested = False
             while time.monotonic() < deadline:
                 for event in client.poll_social_events():
-                    if isinstance(event, SteamLobbyJoinRequest):
+                    if (
+                        isinstance(event, SteamLobbyJoinRequest)
+                        and not membership_requested
+                    ):
                         client.join_lobby(event.lobby_id)
                         lobby_id = event.lobby_id
-                        invitation.request_membership(lobby_id, identity)
+                        group_id = client.lobby_data(
+                            lobby_id,
+                            "saveshift_group_id",
+                        )
+                        package_index = SteamMemberPackageIndexTransport(
+                            client
+                        ).publish(group_id=group_id, publisher=identity)
+                        invitation.request_membership(
+                            lobby_id,
+                            identity,
+                            package_index.workshop_item_id,
+                        )
                         membership_requested = True
                     elif (
                         membership_requested

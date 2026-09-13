@@ -84,6 +84,7 @@ from app.updates.service import UpdateService
 from app.steam.group_invitation import JoinedSteamGroup
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.native_group_service import CreatedSteamGroup
+from app.steam.native_provider import SteamNativeCoordinationProvider
 
 
 def discover_all_projects() -> None:
@@ -954,6 +955,7 @@ class MainWindow(QMainWindow):
             is_administrator=True,
             provider_kind="steam",
             steam_manifest_item_id=created.manifest_item_id,
+            steam_package_index_item_id=created.package_index_item_id,
             steam_administrator_steam_id=(
                 created.manifest.administrator_steam_id
             ),
@@ -1010,6 +1012,22 @@ class MainWindow(QMainWindow):
             )
             return
         device_id = joined.device_id
+        package_index = next(
+            (
+                item
+                for item in manifest.member_package_indexes
+                if item.device_id == device_id
+            ),
+            None,
+        )
+        if package_index is None:
+            QMessageBox.warning(
+                self,
+                "Group Not Saved",
+                "The joined manifest did not contain this computer's Steam "
+                "package index. Ask the group administrator to invite you again.",
+            )
+            return
         group = CoordinationGroupSettings(
             group_id=manifest.group_id,
             name=manifest.name,
@@ -1018,6 +1036,7 @@ class MainWindow(QMainWindow):
             is_administrator=device_id == manifest.administrator_device_id,
             provider_kind="steam",
             steam_manifest_item_id=joined.manifest_item_id,
+            steam_package_index_item_id=package_index.workshop_item_id,
             steam_administrator_steam_id=manifest.administrator_steam_id,
         )
         settings = replace(
@@ -3439,7 +3458,30 @@ class MainWindow(QMainWindow):
         settings: AppSettings,
     ) -> CoordinationManager | None:
         if settings.coordination_provider_kind == "steam":
-            return None
+            group = settings.active_coordination_group
+            if (
+                group is None
+                or not group.steam_manifest_item_id
+                or not group.steam_package_index_item_id
+                or not group.device_id
+            ):
+                logger.warning(
+                    "Steam coordination is missing its manifest, package index, "
+                    "or device identity."
+                )
+                return None
+            try:
+                return CoordinationManager(
+                    SteamNativeCoordinationProvider(
+                        group_id=group.group_id,
+                        manifest_item_id=group.steam_manifest_item_id,
+                        package_index_item_id=group.steam_package_index_item_id,
+                        device_id=group.device_id,
+                    )
+                )
+            except (CoordinationConfigurationError, ValueError) as error:
+                logger.warning("Steam coordination is not configured: %s", error)
+                return None
         if (
             not settings.coordination_enabled
             or not settings.coordination_server_url
@@ -3461,6 +3503,16 @@ class MainWindow(QMainWindow):
 
     def _require_coordination_manager(self) -> CoordinationManager:
         if self.coordination_manager is None:
+            group = self.settings.active_coordination_group
+            if (
+                group is not None
+                and group.provider_kind == "steam"
+                and not group.steam_package_index_item_id
+            ):
+                raise CoordinationConfigurationError(
+                    "This Steam test group was created before package indexes "
+                    "were added. Recreate the group and invite its members again."
+                )
             raise CoordinationConfigurationError(
                 "Project coordination is enabled, but this computer is not "
                 "paired. Open Settings and pair it with the provider."

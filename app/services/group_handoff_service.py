@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -34,17 +35,18 @@ class GroupHandoffService:
         client = client_factory()
 
         try:
-            transport = GroupHandoffService._transport(
-                client,
-                provider,
-                legal_agreement_handler,
-            )
-            return PackageHandoffService.publish(
-                package_path,
-                lease,
-                transport,
-                provider,
-            )
+            with GroupHandoffService._provider_client_scope(provider, client):
+                transport = GroupHandoffService._transport(
+                    client,
+                    provider,
+                    legal_agreement_handler,
+                )
+                return PackageHandoffService.publish(
+                    package_path,
+                    lease,
+                    transport,
+                    provider,
+                )
         finally:
             GroupHandoffService._close_client(client)
 
@@ -67,17 +69,18 @@ class GroupHandoffService:
         client = client_factory()
 
         try:
-            transport = GroupHandoffService._transport(
-                client,
-                provider,
-                None,
-            )
-            result = PackageHandoffService.download_latest(
-                project_uuid,
-                destination_path,
-                transport,
-                provider,
-            )
+            with GroupHandoffService._provider_client_scope(provider, client):
+                transport = GroupHandoffService._transport(
+                    client,
+                    provider,
+                    None,
+                )
+                result = PackageHandoffService.download_latest(
+                    project_uuid,
+                    destination_path,
+                    transport,
+                    provider,
+                )
 
             if result is None:
                 destination_path.unlink(missing_ok=True)
@@ -116,3 +119,8 @@ class GroupHandoffService:
 
         if callable(close):
             close()
+
+    @staticmethod
+    def _provider_client_scope(provider, client: SteamUgcClient):
+        binder = getattr(provider, "use_ugc_client", None)
+        return binder(client) if callable(binder) else nullcontext()

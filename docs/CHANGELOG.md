@@ -6,6 +6,12 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Side-by-side Cloudflare and Steam-native coordination selected per group.
+  Steam-native groups now encrypt with manifest key epochs, publish signed
+  ancestry descriptors through stable member-owned indexes, discover the one
+  valid group head, and stop a handoff when another member advanced the head
+  after hosting began. Existing Cloudflare groups retain their current provider
+  and behavior.
 - A guarded schema-4-to-schema-3 database downgrade tool for temporarily
   returning to the `develop` build, with a verified backup and automatic restore
   on failure.

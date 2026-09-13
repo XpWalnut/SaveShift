@@ -10,16 +10,31 @@ from tests.steam.test_device_identity import MemoryProtector
 class FakeSteamClient:
     def __init__(self) -> None:
         self.closed = False
-        self.published_content = ""
+        self.published_content: list[str] = []
+        self.updated_content: dict[str, str] = {}
+        self.next_item_id = 3797671909
 
     def current_identity(self) -> SteamIdentity:
         return SteamIdentity("76561198000000001", "Jake")
 
     def publish_item(self, content_directory: Path, **_kwargs: object):
-        self.published_content = next(content_directory.iterdir()).read_text(
-            encoding="utf-8"
+        self.published_content.append(
+            next(content_directory.iterdir()).read_text(encoding="utf-8")
         )
-        return SteamPublishedItem("3797671909")
+        item_id = str(self.next_item_id)
+        self.next_item_id += 1
+        return SteamPublishedItem(item_id)
+
+    def update_item(
+        self,
+        published_file_id: str,
+        content_directory: Path,
+        **_kwargs: object,
+    ) -> SteamPublishedItem:
+        self.updated_content[published_file_id] = next(
+            content_directory.iterdir()
+        ).read_text(encoding="utf-8")
+        return SteamPublishedItem(published_file_id)
 
     def close(self) -> None:
         self.closed = True
@@ -41,7 +56,9 @@ def test_create_group_binds_manifest_to_signed_in_steam_account(
 
     assert created.manifest.name == "Family Worlds"
     assert created.manifest.administrator_steam_id == "76561198000000001"
-    assert created.manifest_item_id == "3797671909"
+    assert created.manifest_item_id == "3797671910"
+    assert created.package_index_item_id == "3797671909"
     assert created.identity.device_id == created.manifest.administrator_device_id
-    assert '"signature"' in client.published_content
+    assert '"signature"' in client.published_content[-1]
+    assert '"signature"' in client.updated_content["3797671909"]
     assert client.closed

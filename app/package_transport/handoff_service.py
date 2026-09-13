@@ -73,17 +73,23 @@ class PackageHandoffService:
         transport: PackageTransport,
         catalog: PackageCatalogProvider,
     ) -> tuple[CatalogPackage, Path] | None:
-        with diagnostic_operation("catalog.project_versions"):
-            packages = catalog.list_packages(project_uuid)
-        logger.info("catalog.project_versions count=%d", len(packages))
-
-        if not packages:
-            return None
-
-        latest = max(
-            packages,
-            key=lambda package: package.artifact.project_version,
-        )
+        latest_selector = getattr(catalog, "latest_package", None)
+        if callable(latest_selector):
+            with diagnostic_operation("catalog.project_head"):
+                latest = latest_selector(project_uuid)
+            logger.info("catalog.project_head found=%s", latest is not None)
+            if latest is None:
+                return None
+        else:
+            with diagnostic_operation("catalog.project_versions"):
+                packages = catalog.list_packages(project_uuid)
+            logger.info("catalog.project_versions count=%d", len(packages))
+            if not packages:
+                return None
+            latest = max(
+                packages,
+                key=lambda package: package.artifact.project_version,
+            )
 
         if latest.artifact.project_uuid != project_uuid:
             raise PackageTransferIntegrityError(

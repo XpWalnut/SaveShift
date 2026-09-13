@@ -181,6 +181,7 @@ def test_steam_native_group_manifest_coordinates_are_persisted(
         provider_kind="steam",
         is_administrator=True,
         steam_manifest_item_id="3797671909",
+        steam_package_index_item_id="3797671910",
         steam_administrator_steam_id="76561198000000001",
     )
     settings = AppSettings(coordination_groups=(group,)).with_active_group(
@@ -193,6 +194,7 @@ def test_steam_native_group_manifest_coordinates_are_persisted(
     assert restored is not None
     assert restored.provider_kind == "steam"
     assert restored.steam_manifest_item_id == "3797671909"
+    assert restored.steam_package_index_item_id == "3797671910"
     assert restored.steam_administrator_steam_id == "76561198000000001"
 
 

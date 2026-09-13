@@ -254,7 +254,7 @@ class SteamGroupManifest:
             for item in self.members
             if item.certificate_id not in set(revoked)
         )
-        envelopes = tuple(
+        new_envelopes = tuple(
             SteamGroupKeyEnvelope.seal(
                 group_id=self.group_id,
                 key_epoch=epoch,
@@ -264,13 +264,19 @@ class SteamGroupManifest:
             )
             for item in active_after
         )
+        active_device_ids = {item.device_id for item in active_after}
+        retained_envelopes = tuple(
+            item
+            for item in self.key_envelopes
+            if item.recipient_device_id in active_device_ids
+        )
         updated = replace(
             self,
             schema_version=self.SCHEMA_VERSION,
             revision=self.revision + 1,
             key_epoch=epoch,
             revoked_certificate_ids=revoked,
-            key_envelopes=envelopes,
+            key_envelopes=retained_envelopes + new_envelopes,
             member_package_indexes=tuple(
                 item
                 for item in self.member_package_indexes
@@ -290,20 +296,27 @@ class SteamGroupManifest:
             if member.certificate_id not in revoked
         )
 
-    def group_key_for(self, identity: SteamDeviceIdentity) -> bytes:
+    def group_key_for(
+        self,
+        identity: SteamDeviceIdentity,
+        key_epoch: int | None = None,
+    ) -> bytes:
         if not any(member.device_id == identity.device_id for member in self.active_members):
             raise ValueError("This device is not an active group member.")
+        epoch = self.key_epoch if key_epoch is None else key_epoch
+        if epoch < 1 or epoch > self.key_epoch:
+            raise ValueError("The requested group-key epoch is invalid.")
         envelope = next(
             (
                 item
                 for item in self.key_envelopes
                 if item.recipient_device_id == identity.device_id
-                and item.key_epoch == self.key_epoch
+                and item.key_epoch == epoch
             ),
             None,
         )
         if envelope is None:
-            raise ValueError("The manifest has no current key for this device.")
+            raise ValueError("The manifest has no requested key for this device.")
         return envelope.open(identity)
 
     def verify(self) -> bool:
@@ -494,6 +507,12 @@ class SteamGroupManifest:
         for envelope in self.key_envelopes:
             if envelope.group_id != self.group_id:
                 raise ValueError("A group-key envelope belongs to another group.")
+        envelope_coordinates = [
+            (item.key_epoch, item.recipient_device_id)
+            for item in self.key_envelopes
+        ]
+        if len(envelope_coordinates) != len(set(envelope_coordinates)):
+            raise ValueError("The manifest contains duplicate group-key envelopes.")
         indexed_devices = [item.device_id for item in self.member_package_indexes]
         indexed_items = [
             item.workshop_item_id for item in self.member_package_indexes

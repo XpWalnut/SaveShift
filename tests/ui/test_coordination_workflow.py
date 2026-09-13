@@ -281,7 +281,7 @@ def test_created_steam_group_is_persisted_without_cloudflare_credentials(
     )
 
     window._steam_group_created(
-        CreatedSteamGroup(manifest, "3797671909", identity)
+        CreatedSteamGroup(manifest, "3797671909", identity, "3797671910")
     )
 
     group = saved[0].active_coordination_group
@@ -289,9 +289,10 @@ def test_created_steam_group_is_persisted_without_cloudflare_credentials(
     assert group.provider_kind == "steam"
     assert group.group_id == manifest.group_id
     assert group.steam_manifest_item_id == "3797671909"
+    assert group.steam_package_index_item_id == "3797671910"
     assert group.server_url == ""
     assert group.device_token == ""
-    assert window.coordination_manager is None
+    assert window.coordination_manager is not None
     assert messages == ["Steam Group Created"]
 
 
@@ -338,7 +339,12 @@ def test_joined_steam_group_is_persisted_for_the_enrolled_device(
         tmp_path / "member.json", protector=MemoryProtector()
     ).load_or_create("76561198000000002")
     manifest, group_key = SteamGroupManifest.create("Valheim Crew", administrator)
-    manifest = manifest.add_member(member, group_key, administrator)
+    manifest = manifest.add_member(
+        member,
+        group_key,
+        administrator,
+        package_index_item_id="3797671910",
+    )
     saved: list[AppSettings] = []
     messages: list[str] = []
     monkeypatch.setattr(SettingsService, "save", saved.append)
@@ -365,6 +371,7 @@ def test_joined_steam_group_is_persisted_for_the_enrolled_device(
     assert group.device_id == member.device_id
     assert group.is_administrator is False
     assert group.name == "Valheim Crew"
+    assert group.steam_package_index_item_id == "3797671910"
     assert messages == ["Steam Group Joined"]
 
 

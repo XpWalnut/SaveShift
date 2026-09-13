@@ -77,6 +77,7 @@ def test_revocation_rotates_key_and_removes_member_envelope(tmp_path: Path) -> N
         administrator.device_id
     ]
     assert updated.group_key_for(administrator) == replacement_key
+    assert updated.group_key_for(administrator, 1) == group_key
     with pytest.raises(ValueError, match="not an active group member"):
         updated.group_key_for(member)
 

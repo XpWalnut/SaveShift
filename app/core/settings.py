@@ -21,6 +21,7 @@ class CoordinationGroupSettings:
     cloudflare_account_id: str = ""
     cloudflare_script_name: str = ""
     steam_manifest_item_id: str = ""
+    steam_package_index_item_id: str = ""
     steam_administrator_steam_id: str = ""
 
 
@@ -431,6 +432,10 @@ class SettingsService:
                         raw_group,
                         "steam_manifest_item_id",
                     ),
+                    steam_package_index_item_id=SettingsService._string(
+                        raw_group,
+                        "steam_package_index_item_id",
+                    ),
                     steam_administrator_steam_id=SettingsService._string(
                         raw_group,
                         "steam_administrator_steam_id",
@@ -458,5 +463,6 @@ class SettingsService:
             "cloudflare_account_id": group.cloudflare_account_id,
             "cloudflare_script_name": group.cloudflare_script_name,
             "steam_manifest_item_id": group.steam_manifest_item_id,
+            "steam_package_index_item_id": group.steam_package_index_item_id,
             "steam_administrator_steam_id": group.steam_administrator_steam_id,
         }

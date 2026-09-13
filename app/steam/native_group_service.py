@@ -8,6 +8,7 @@ from app.steam.device_identity import (
 )
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
 from app.steam.ugc_client import SteamUgcClient
 
@@ -17,6 +18,7 @@ class CreatedSteamGroup:
     manifest: SteamGroupManifest
     manifest_item_id: str
     identity: SteamDeviceIdentity
+    package_index_item_id: str
 
 
 class SteamNativeGroupService:
@@ -37,10 +39,22 @@ class SteamNativeGroupService:
 
     def create_group(self, name: str) -> CreatedSteamGroup:
         client = self.client_factory()
+        package_index_item_id = ""
         try:
             steam_identity = client.current_identity()
             identity = self.identity_store.load_or_create(steam_identity.steam_id)
             manifest, _group_key = SteamGroupManifest.create(name, identity)
+            package_index = SteamMemberPackageIndexTransport(
+                client,
+                self.temporary_directory,
+                self.legal_agreement_handler,
+            ).publish(group_id=manifest.group_id, publisher=identity)
+            package_index_item_id = package_index.workshop_item_id
+            manifest = manifest.set_member_package_index(
+                device_id=identity.device_id,
+                workshop_item_id=package_index.workshop_item_id,
+                administrator=identity,
+            )
             transport = SteamGroupManifestTransport(
                 client,
                 self.temporary_directory,
@@ -51,7 +65,15 @@ class SteamNativeGroupService:
                 manifest=manifest,
                 manifest_item_id=manifest_item_id,
                 identity=identity,
+                package_index_item_id=package_index.workshop_item_id,
             )
+        except Exception:
+            if package_index_item_id:
+                try:
+                    client.delete_item(package_index_item_id)
+                except Exception:
+                    pass
+            raise
         finally:
             close = getattr(client, "close", None)
             if callable(close):
