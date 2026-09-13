@@ -72,15 +72,18 @@ migration.
 - A package contains a signed descriptor with the group ID, world UUID,
   version ID, parent descriptor hash, publisher Steam ID, publisher device key,
   timestamp, encrypted payload checksum, and Workshop item ID.
-- Each member publishes packages under their own Steam account. Group members
-  discover candidates by querying the known members' Save Shift UGC and reject
+- Each member publishes packages under their own Steam account and maintains one
+  stable, signed package-index item whose ID is pinned into the group manifest.
+  Group members follow those indexes to unlisted package items and reject
   descriptors without a valid active membership signature.
 - Local history stores all accepted descriptor heads. The normal path advances
   from exactly one known parent; packages with the same parent form an explicit
   fork and require recovery rather than silently choosing the largest version
   number.
-- Stable per-publisher index items may be added if direct UGC queries prove too
-  slow or unreliable during physical-computer testing.
+- Package discovery does not depend on querying a member's Workshop list: Steam
+  does not return another user's unlisted items there unless the caller is already
+  subscribed. Direct item downloads preserve unlisted visibility and first-use
+  discovery.
 
 ### Hosting semantics
 

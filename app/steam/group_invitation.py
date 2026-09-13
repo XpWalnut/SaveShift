@@ -30,6 +30,7 @@ class SteamGroupJoinRequest:
     device_id: str
     signing_public_key: str
     agreement_public_key: str
+    package_index_item_id: str
     signature: str
 
     @classmethod
@@ -37,6 +38,7 @@ class SteamGroupJoinRequest:
         cls,
         group_id: str,
         identity: SteamDeviceIdentity,
+        package_index_item_id: str,
     ) -> "SteamGroupJoinRequest":
         unsigned = {
             "group_id": str(uuid.UUID(group_id)),
@@ -44,6 +46,7 @@ class SteamGroupJoinRequest:
             "device_id": identity.device_id,
             "signing_public_key": identity.signing_public_key,
             "agreement_public_key": identity.agreement_public_key,
+            "package_index_item_id": cls._item_id(package_index_item_id),
         }
         return cls(**unsigned, signature=identity.sign(_canonical_json(unsigned)))
 
@@ -58,6 +61,7 @@ class SteamGroupJoinRequest:
             signing_key = _decode(self.signing_public_key)
             if len(signing_key) != 32 or len(_decode(self.agreement_public_key)) != 32:
                 return False
+            self._item_id(self.package_index_item_id)
             Ed25519PublicKey.from_public_bytes(signing_key).verify(
                 _decode(signature),
                 _canonical_json(unsigned),
@@ -65,6 +69,13 @@ class SteamGroupJoinRequest:
         except (InvalidSignature, TypeError, ValueError):
             return False
         return True
+
+    @staticmethod
+    def _item_id(value: str) -> str:
+        normalized = str(value).strip()
+        if not normalized.isdigit() or int(normalized) < 1:
+            raise ValueError("The member package-index item is invalid.")
+        return normalized
 
     def to_message(self) -> bytes:
         return _message("join-request", asdict(self))
@@ -152,13 +163,18 @@ class SteamGroupInvitationService:
         self,
         lobby_id: str,
         identity: SteamDeviceIdentity,
+        package_index_item_id: str,
     ) -> SteamGroupJoinRequest:
         if self.social.current_identity().steam_id != identity.steam_id:
             raise ValueError("The device identity does not match the signed-in Steam account.")
         if self.social.lobby_data(lobby_id, "saveshift_protocol") != _PROTOCOL:
             raise ValueError("This is not a Save Shift group invitation lobby.")
         group_id = self.social.lobby_data(lobby_id, "saveshift_group_id")
-        request = SteamGroupJoinRequest.create(group_id, identity)
+        request = SteamGroupJoinRequest.create(
+            group_id,
+            identity,
+            package_index_item_id,
+        )
         self.social.send_lobby_message(lobby_id, request.to_message())
         return request
 
@@ -184,6 +200,7 @@ class SteamGroupInvitationService:
             agreement_public_key=request.agreement_public_key,
             group_key=group_key,
             administrator=administrator,
+            package_index_item_id=request.package_index_item_id,
         )
         self.manifests.update(manifest_item_id, updated)
         self.social.send_lobby_message(

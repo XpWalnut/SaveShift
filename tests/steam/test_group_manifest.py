@@ -105,3 +105,42 @@ def test_non_administrator_cannot_change_manifest(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="administrator"):
         manifest.add_member(member, group_key, stranger)
+
+
+def test_administrator_pins_member_package_index(tmp_path: Path) -> None:
+    administrator = _identity(tmp_path, "administrator", "76561198000000001")
+    manifest, _group_key = SteamGroupManifest.create("Friends", administrator)
+
+    updated = manifest.set_member_package_index(
+        device_id=administrator.device_id,
+        workshop_item_id="3797671909",
+        administrator=administrator,
+    )
+
+    assert updated.revision == 2
+    assert updated.member_package_indexes[0].steam_id == administrator.steam_id
+    assert SteamGroupManifest.from_json(updated.to_json()) == updated
+
+
+def test_version_one_manifest_loads_and_upgrades_when_index_is_added(
+    tmp_path: Path,
+) -> None:
+    administrator = _identity(tmp_path, "administrator", "76561198000000001")
+    manifest, _group_key = SteamGroupManifest.create("Friends", administrator)
+    legacy = replace(
+        manifest,
+        schema_version=1,
+        member_package_indexes=(),
+        signature="",
+    )._signed(administrator)
+
+    restored = SteamGroupManifest.from_json(legacy.to_json())
+    upgraded = restored.set_member_package_index(
+        device_id=administrator.device_id,
+        workshop_item_id="3797671909",
+        administrator=administrator,
+    )
+
+    assert restored.schema_version == 1
+    assert upgraded.schema_version == SteamGroupManifest.SCHEMA_VERSION
+    assert SteamGroupManifest.from_json(upgraded.to_json()) == upgraded

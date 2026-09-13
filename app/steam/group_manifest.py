@@ -17,6 +17,34 @@ from app.steam.group_security import (
 
 
 @dataclass(frozen=True)
+class SteamMemberPackageIndexReference:
+    device_id: str
+    steam_id: str
+    workshop_item_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "device_id", str(uuid.UUID(self.device_id)))
+        if not self.steam_id.isdigit() or int(self.steam_id) < 1:
+            raise ValueError("A package index requires a valid Steam account.")
+        if not self.workshop_item_id.isdigit() or int(self.workshop_item_id) < 1:
+            raise ValueError("A package index requires a valid Workshop item.")
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "SteamMemberPackageIndexReference":
+        try:
+            return cls(
+                device_id=str(value["device_id"]),
+                steam_id=str(value["steam_id"]),
+                workshop_item_id=str(value["workshop_item_id"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("The Steam package-index reference is invalid.") from error
+
+
+@dataclass(frozen=True)
 class SteamGroupManifest:
     schema_version: int
     group_id: str
@@ -29,10 +57,11 @@ class SteamGroupManifest:
     members: tuple[SteamMembershipCertificate, ...]
     revoked_certificate_ids: tuple[str, ...]
     key_envelopes: tuple[SteamGroupKeyEnvelope, ...]
+    member_package_indexes: tuple[SteamMemberPackageIndexReference, ...]
     updated_at_utc: str
     signature: str
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     @classmethod
     def create(
@@ -73,6 +102,7 @@ class SteamGroupManifest:
             members=(certificate,),
             revoked_certificate_ids=(),
             key_envelopes=(envelope,),
+            member_package_indexes=(),
             updated_at_utc=cls._timestamp(updated_at),
             signature="",
         )
@@ -84,6 +114,7 @@ class SteamGroupManifest:
         group_key: bytes,
         administrator: SteamDeviceIdentity,
         *,
+        package_index_item_id: str | None = None,
         updated_at: datetime | None = None,
     ) -> "SteamGroupManifest":
         return self.add_public_member(
@@ -93,6 +124,7 @@ class SteamGroupManifest:
             agreement_public_key=member.agreement_public_key,
             group_key=group_key,
             administrator=administrator,
+            package_index_item_id=package_index_item_id,
             updated_at=updated_at,
         )
 
@@ -105,6 +137,7 @@ class SteamGroupManifest:
         agreement_public_key: str,
         group_key: bytes,
         administrator: SteamDeviceIdentity,
+        package_index_item_id: str | None = None,
         updated_at: datetime | None = None,
     ) -> "SteamGroupManifest":
         self._require_administrator(administrator)
@@ -131,15 +164,61 @@ class SteamGroupManifest:
             recipient_agreement_public_key=agreement_public_key,
             group_key=group_key,
         )
+        indexes = self.member_package_indexes
+        if package_index_item_id is not None:
+            indexes += (
+                SteamMemberPackageIndexReference(
+                    device_id=normalized_device_id,
+                    steam_id=str(steam_id),
+                    workshop_item_id=str(package_index_item_id),
+                ),
+            )
         updated = replace(
             self,
+            schema_version=self.SCHEMA_VERSION,
             revision=self.revision + 1,
             members=self.members + (certificate,),
             key_envelopes=self.key_envelopes + (envelope,),
+            member_package_indexes=indexes,
             updated_at_utc=self._timestamp(updated_at),
             signature="",
         )
         return updated._signed(administrator)
+
+    def set_member_package_index(
+        self,
+        *,
+        device_id: str,
+        workshop_item_id: str,
+        administrator: SteamDeviceIdentity,
+        updated_at: datetime | None = None,
+    ) -> "SteamGroupManifest":
+        self._require_administrator(administrator)
+        normalized_device_id = str(uuid.UUID(device_id))
+        member = next(
+            (item for item in self.active_members if item.device_id == normalized_device_id),
+            None,
+        )
+        if member is None:
+            raise ValueError("This device is not an active group member.")
+        reference = SteamMemberPackageIndexReference(
+            device_id=normalized_device_id,
+            steam_id=member.steam_id,
+            workshop_item_id=str(workshop_item_id),
+        )
+        indexes = tuple(
+            item
+            for item in self.member_package_indexes
+            if item.device_id != normalized_device_id
+        ) + (reference,)
+        return replace(
+            self,
+            schema_version=self.SCHEMA_VERSION,
+            revision=self.revision + 1,
+            member_package_indexes=indexes,
+            updated_at_utc=self._timestamp(updated_at),
+            signature="",
+        )._signed(administrator)
 
     def revoke_member(
         self,
@@ -187,10 +266,16 @@ class SteamGroupManifest:
         )
         updated = replace(
             self,
+            schema_version=self.SCHEMA_VERSION,
             revision=self.revision + 1,
             key_epoch=epoch,
             revoked_certificate_ids=revoked,
             key_envelopes=envelopes,
+            member_package_indexes=tuple(
+                item
+                for item in self.member_package_indexes
+                if item.device_id != normalized_device_id
+            ),
             updated_at_utc=self._timestamp(updated_at),
             signature="",
         )
@@ -244,11 +329,19 @@ class SteamGroupManifest:
                 raise ValueError("manifest must be an object")
             members = cls._objects(raw["members"], SteamMembershipCertificate)
             envelopes = cls._objects(raw["key_envelopes"], SteamGroupKeyEnvelope)
+            schema_version = int(raw["schema_version"])
+            indexes_raw = raw.get("member_package_indexes", [])
+            if schema_version >= 2 and "member_package_indexes" not in raw:
+                raise ValueError("package indexes are missing")
+            if not isinstance(indexes_raw, list) or not all(
+                isinstance(item, dict) for item in indexes_raw
+            ):
+                raise ValueError("package indexes must be a list")
             revoked_raw = raw["revoked_certificate_ids"]
             if not isinstance(revoked_raw, list):
                 raise ValueError("revocations must be a list")
             manifest = cls(
-                schema_version=int(raw["schema_version"]),
+                schema_version=schema_version,
                 group_id=str(uuid.UUID(str(raw["group_id"]))),
                 name=cls._name(str(raw["name"])),
                 revision=int(raw["revision"]),
@@ -265,6 +358,10 @@ class SteamGroupManifest:
                     str(uuid.UUID(str(item))) for item in revoked_raw
                 ),
                 key_envelopes=tuple(envelopes),
+                member_package_indexes=tuple(
+                    SteamMemberPackageIndexReference.from_dict(item)
+                    for item in indexes_raw
+                ),
                 updated_at_utc=str(raw["updated_at_utc"]),
                 signature=str(raw["signature"]),
             )
@@ -287,6 +384,9 @@ class SteamGroupManifest:
                     self.key_envelopes,
                     key=lambda item: (item.key_epoch, item.recipient_device_id),
                 )
+            ),
+            member_package_indexes=tuple(
+                sorted(self.member_package_indexes, key=lambda item: item.device_id)
             ),
         )
         signed = replace(
@@ -324,13 +424,23 @@ class SteamGroupManifest:
             ],
             "updated_at_utc": self.updated_at_utc,
         }
+        if self.schema_version >= 2:
+            value["member_package_indexes"] = [
+                item.to_dict()
+                for item in sorted(
+                    self.member_package_indexes,
+                    key=lambda entry: entry.device_id,
+                )
+            ]
         if include_signature:
             value["signature"] = self.signature
         return value
 
     def _validate(self) -> None:
-        if self.schema_version != self.SCHEMA_VERSION:
+        if self.schema_version not in (1, self.SCHEMA_VERSION):
             raise ValueError("Unsupported Steam group manifest version.")
+        if self.schema_version == 1 and self.member_package_indexes:
+            raise ValueError("A version-one manifest cannot contain package indexes.")
         uuid.UUID(self.group_id)
         uuid.UUID(self.administrator_device_id)
         self._name(self.name)
@@ -384,6 +494,19 @@ class SteamGroupManifest:
         for envelope in self.key_envelopes:
             if envelope.group_id != self.group_id:
                 raise ValueError("A group-key envelope belongs to another group.")
+        indexed_devices = [item.device_id for item in self.member_package_indexes]
+        indexed_items = [
+            item.workshop_item_id for item in self.member_package_indexes
+        ]
+        if len(indexed_devices) != len(set(indexed_devices)):
+            raise ValueError("The manifest contains duplicate package indexes.")
+        if len(indexed_items) != len(set(indexed_items)):
+            raise ValueError("Two members cannot share one package index.")
+        members_by_device = {item.device_id: item for item in self.active_members}
+        for reference in self.member_package_indexes:
+            member = members_by_device.get(reference.device_id)
+            if member is None or member.steam_id != reference.steam_id:
+                raise ValueError("A package index does not belong to an active member.")
 
     def _require_administrator(self, identity: SteamDeviceIdentity) -> None:
         if (

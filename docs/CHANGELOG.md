@@ -6,6 +6,9 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- A guarded schema-4-to-schema-3 database downgrade tool for temporarily
+  returning to the `develop` build, with a verified backup and automatic restore
+  on failure.
 - Steam-native group foundations: authenticated friend-list invitation lobbies,
   signed per-device membership certificates, a stable signed Workshop manifest,
   per-member encrypted group-key envelopes, revocation key rotation, and
@@ -13,6 +16,12 @@ All notable changes to Save Shift are documented here. The project is currently 
 - The Create Group, Join Group, and Invite a Friend screens now drive Steam's
   signed manifest and friend-lobby enrollment flow for new groups, while legacy
   provider invitations remain available for existing groups.
+- Steam package ancestry descriptors now bind each encrypted Workshop item to
+  its group, active publisher certificate, unique version ID, parent descriptor,
+  encryption epoch, payload checksum, and signature. Stable member-owned package
+  indexes make unlisted items discoverable without exposing them to Workshop
+  search. Discovery rejects spoofed, tampered, and revoked publishers and reports
+  competing children as explicit forks instead of choosing the largest version.
 - Administrator-controlled world unsharing, which removes the world from the
   group catalog while preserving the local save and Save Shift history.
 - Editable local group names, with generated Cloudflare Worker identifiers

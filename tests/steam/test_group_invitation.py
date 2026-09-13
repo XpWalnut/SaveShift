@@ -85,7 +85,7 @@ def test_lobby_invitation_enrolls_authenticated_steam_device(tmp_path: Path) -> 
     created_lobby = administrator_service.begin_invitation(
         manifest, "3797671909"
     )
-    member_service.request_membership(created_lobby.lobby_id, member)
+    member_service.request_membership(created_lobby.lobby_id, member, "3797671910")
     request_sender, request_payload = lobby.messages[-1]
     updated = administrator_service.admit_member(
         SteamLobbyMessage(created_lobby.lobby_id, request_sender, request_payload),
@@ -105,6 +105,7 @@ def test_lobby_invitation_enrolls_authenticated_steam_device(tmp_path: Path) -> 
     assert joined.manifest == updated
     assert joined.group_key == group_key
     assert any(item.device_id == member.device_id for item in updated.active_members)
+    assert updated.member_package_indexes[0].workshop_item_id == "3797671910"
 
 
 def test_join_request_rejects_spoofed_steam_sender(tmp_path: Path) -> None:
@@ -120,7 +121,7 @@ def test_join_request_rejects_spoofed_steam_sender(tmp_path: Path) -> None:
         FakeSocialClient(administrator.steam_id, lobby), transport
     )
     administrator_service.begin_invitation(manifest, "3797671909")
-    member_service.request_membership(lobby.lobby_id, member)
+    member_service.request_membership(lobby.lobby_id, member, "3797671910")
     _, payload = lobby.messages[-1]
 
     with pytest.raises(ValueError, match="could not be authenticated"):
@@ -146,7 +147,7 @@ def test_join_response_requires_original_lobby_owner(tmp_path: Path) -> None:
         FakeSocialClient(member.steam_id, lobby), transport
     )
     administrator_service.begin_invitation(manifest, "3797671909")
-    member_service.request_membership(lobby.lobby_id, member)
+    member_service.request_membership(lobby.lobby_id, member, "3797671910")
     sender, payload = lobby.messages[-1]
     administrator_service.admit_member(
         SteamLobbyMessage(lobby.lobby_id, sender, payload),
