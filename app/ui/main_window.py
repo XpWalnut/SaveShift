@@ -96,6 +96,7 @@ from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
 from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.native_ugc_client import SteamworksUgcClient
+from app.steam.social_client import SteamFriend
 from app.steam.host_session_store import (
     SteamHostSessionCheckpoint,
     SteamHostSessionStore,
@@ -175,6 +176,9 @@ class MainWindow(QMainWindow):
         )
         self.group_setup_controller.steam_create_completed.connect(
             self._steam_group_created
+        )
+        self.group_setup_controller.steam_friends_loaded.connect(
+            self._steam_friends_loaded
         )
         self.group_setup_controller.steam_invitation_ready.connect(
             self._steam_invitation_ready
@@ -566,7 +570,7 @@ class MainWindow(QMainWindow):
         )
         if active_group is not None and active_group.provider_kind == "steam":
             self.invite_friend_button.setToolTip(
-                "Open Steam's friend invite overlay and securely add one device."
+                "Choose a Steam friend and securely add their device."
             )
         else:
             self.invite_friend_button.setToolTip(
@@ -1034,16 +1038,69 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Steam Group Created",
-            "The signed Steam group is ready. Choose Invite a Friend to open "
-            "Steam's friend list and add another computer.",
+            "The signed Steam group is ready. Choose Invite a Friend to select "
+            "a Steam friend and add another computer.",
         )
 
     def _steam_invitation_ready(self, _lobby_id: str) -> None:
         if self._group_setup_progress is not None:
             self._group_setup_progress.setLabelText(
-                "Steam's invite window is open. Select one friend and wait "
-                "while Save Shift securely enrolls their computer."
+                "The Steam invitation was sent. Waiting while your friend "
+                "accepts it and Save Shift securely enrolls their computer."
             )
+
+    def _steam_friends_loaded(self, friends: list[SteamFriend]) -> None:
+        self._close_group_setup_progress()
+        if not friends:
+            QMessageBox.warning(
+                self,
+                "No Steam Friends Found",
+                "Steam did not return any friends for this account. Make sure "
+                "Steam is online and your friends list is available.",
+            )
+            return
+
+        ordered = sorted(
+            friends,
+            key=lambda friend: (friend.persona_name.casefold(), friend.steam_id),
+        )
+        labels = [
+            f"{friend.persona_name}  ·  Steam …{friend.steam_id[-6:]}"
+            for friend in ordered
+        ]
+        selected_label, accepted = QInputDialog.getItem(
+            self,
+            "Invite a Steam Friend",
+            "Choose the friend to invite to this Save Shift group:",
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        selected = ordered[labels.index(selected_label)]
+        active_group = self.settings.active_coordination_group
+        if (
+            active_group is None
+            or active_group.provider_kind != "steam"
+            or not active_group.steam_manifest_item_id
+        ):
+            QMessageBox.warning(
+                self,
+                "Invitation Failed",
+                "The active Steam group changed before the invitation was sent.",
+            )
+            return
+
+        self._show_group_setup_progress(
+            f"Sending a Steam invitation to {selected.persona_name}…"
+        )
+        if not self.group_setup_controller.invite_steam_member(
+            active_group.steam_manifest_item_id,
+            active_group.group_id,
+            selected.steam_id,
+        ):
+            self._close_group_setup_progress()
 
     def _steam_member_admitted(self, manifest: SteamGroupManifest) -> None:
         self._close_group_setup_progress()
@@ -1363,13 +1420,8 @@ class MainWindow(QMainWindow):
                     "This Steam group has no saved manifest item.",
                 )
                 return
-            self._show_group_setup_progress(
-                "Opening Steam's friend invite overlay…"
-            )
-            if not self.group_setup_controller.invite_steam_member(
-                active_group.steam_manifest_item_id,
-                active_group.group_id,
-            ):
+            self._show_group_setup_progress("Loading your Steam friends…")
+            if not self.group_setup_controller.load_steam_friends():
                 self._close_group_setup_progress()
             return
 

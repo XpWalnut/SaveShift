@@ -6,6 +6,10 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- In-app Steam friend selection for group invitations. Save Shift now sends
+  the lobby invitation directly through Steam instead of depending on the
+  Steam Overlay, which is unreliable for software-rendered desktop apps.
+
 - Signed, per-world Steam hosting presence using short-lived invisible lobbies.
   Host checks now distinguish Available, Hosted by another member, and an
   unavailable offline status without presenting Steam as a durable lock.
@@ -35,6 +39,9 @@ All notable changes to Save Shift are documented here. The project is currently 
 - A guarded schema-4-to-schema-3 database downgrade tool for temporarily
   returning to the `develop` build, with a verified backup and automatic restore
   on failure.
+- Verified pre-rollout checkpoints for Save Shift's database and settings, plus
+  a guarded restore command that first preserves the current alpha state for a
+  reversible test-group rollback.
 - Steam-native group foundations: authenticated friend-list invitation lobbies,
   signed per-device membership certificates, a stable signed Workshop manifest,
   per-member encrypted group-key envelopes, revocation key rotation, and

@@ -27,7 +27,7 @@ from app.steam.group_manifest_transport import SteamGroupManifestTransport
 from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
-from app.steam.social_client import SteamLobbyJoinRequest, SteamLobbyMessage
+from app.steam.social_client import SteamFriend, SteamLobbyJoinRequest, SteamLobbyMessage
 
 
 class GroupSetupSignals(QObject):
@@ -36,6 +36,7 @@ class GroupSetupSignals(QObject):
     leave_completed = Signal(object)
     failed = Signal(str)
     steam_create_completed = Signal(object)
+    steam_friends_loaded = Signal(object)
     steam_invitation_ready = Signal(str)
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
@@ -91,11 +92,36 @@ class CreateSteamGroupTask(QRunnable):
             self.signals.failed.emit(str(error))
 
 
+class LoadSteamFriendsTask(QRunnable):
+    def __init__(
+        self,
+        signals: GroupSetupSignals,
+        client_factory: Callable[[], SteamworksUgcClient],
+    ) -> None:
+        super().__init__()
+        self.signals = signals
+        self.client_factory = client_factory
+
+    def run(self) -> None:
+        client: SteamworksUgcClient | None = None
+        try:
+            client = self.client_factory()
+            with diagnostic_operation("steam_group.list_friends"):
+                friends = client.list_friends()
+            self.signals.steam_friends_loaded.emit(friends)
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+        finally:
+            if client is not None:
+                client.close()
+
+
 class InviteSteamMemberTask(QRunnable):
     def __init__(
         self,
         manifest_item_id: str,
         group_id: str,
+        friend_steam_id: str,
         signals: GroupSetupSignals,
         client_factory: Callable[[], SteamworksUgcClient],
         identity_store_factory: Callable[[], SteamDeviceIdentityStore],
@@ -105,6 +131,7 @@ class InviteSteamMemberTask(QRunnable):
         super().__init__()
         self.manifest_item_id = manifest_item_id
         self.group_id = group_id
+        self.friend_steam_id = friend_steam_id
         self.signals = signals
         self.client_factory = client_factory
         self.identity_store_factory = identity_store_factory
@@ -129,7 +156,11 @@ class InviteSteamMemberTask(QRunnable):
                 raise ValueError("The saved Steam group manifest does not match.")
             group_key = manifest.group_key_for(identity)
             invitation = SteamGroupInvitationService(client, transport)
-            lobby = invitation.begin_invitation(manifest, self.manifest_item_id)
+            lobby = invitation.begin_invitation(
+                manifest,
+                self.manifest_item_id,
+                self.friend_steam_id,
+            )
             lobby_id = lobby.lobby_id
             self.signals.steam_invitation_ready.emit(lobby_id)
             deadline = time.monotonic() + self.timeout_seconds
@@ -323,6 +354,7 @@ class GroupSetupController(QObject):
     leave_completed = Signal(object)
     failed = Signal(str)
     steam_create_completed = Signal(object)
+    steam_friends_loaded = Signal(object)
     steam_invitation_ready = Signal(str)
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
@@ -395,7 +427,24 @@ class GroupSetupController(QObject):
         self._thread_pool.start(task)
         return True
 
-    def invite_steam_member(self, manifest_item_id: str, group_id: str) -> bool:
+    def load_steam_friends(self) -> bool:
+        if self._running:
+            return False
+        self._running = True
+        signals = GroupSetupSignals(self)
+        task = LoadSteamFriendsTask(signals, self._steam_client_factory)
+        self._task = task
+        signals.steam_friends_loaded.connect(self._steam_friends_finished)
+        signals.failed.connect(self._failed)
+        self._thread_pool.start(task)
+        return True
+
+    def invite_steam_member(
+        self,
+        manifest_item_id: str,
+        group_id: str,
+        friend_steam_id: str,
+    ) -> bool:
         if self._running:
             return False
         self._running = True
@@ -403,6 +452,7 @@ class GroupSetupController(QObject):
         task = InviteSteamMemberTask(
             manifest_item_id,
             group_id,
+            friend_steam_id,
             signals,
             self._steam_client_factory,
             self._identity_store_factory,
@@ -488,6 +538,10 @@ class GroupSetupController(QObject):
     def _steam_create_finished(self, created: CreatedSteamGroup) -> None:
         self._finish()
         self.steam_create_completed.emit(created)
+
+    def _steam_friends_finished(self, friends: list[SteamFriend]) -> None:
+        self._finish()
+        self.steam_friends_loaded.emit(friends)
 
     def _steam_member_finished(self, manifest: object) -> None:
         self._finish()

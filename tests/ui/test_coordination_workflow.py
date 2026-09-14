@@ -25,6 +25,7 @@ from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.group_invitation import JoinedSteamGroup
 from app.steam.native_group_service import CreatedSteamGroup
 from app.steam.group_manifest import SteamGroupManifest
+from app.steam.social_client import SteamFriend
 from tests.steam.test_device_identity import MemoryProtector
 
 
@@ -310,17 +311,64 @@ def test_steam_group_invitation_uses_steam_controller(
         steam_manifest_item_id="3797671909",
     )
     window.settings = AppSettings().upsert_group(group)
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
     monkeypatch.setattr(window, "_show_group_setup_progress", lambda _text: None)
     monkeypatch.setattr(
         window.group_setup_controller,
-        "invite_steam_member",
-        lambda item_id, group_id: calls.append((item_id, group_id)) or True,
+        "load_steam_friends",
+        lambda: calls.append("load-friends") or True,
     )
 
     window._create_group_invitation()
 
-    assert calls == [("3797671909", "steam-group")]
+    assert calls == ["load-friends"]
+
+
+def test_loaded_steam_friend_is_invited_directly(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    group = CoordinationGroupSettings(
+        group_id="steam-group",
+        name="Friends",
+        device_id="device-123",
+        is_administrator=True,
+        provider_kind="steam",
+        steam_manifest_item_id="3797671909",
+    )
+    window.settings = AppSettings().upsert_group(group)
+    friends = [
+        SteamFriend("76561198000000003", "Zed"),
+        SteamFriend("76561198000000002", "Hunter"),
+    ]
+    progress: list[str] = []
+    invitations: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(window, "_close_group_setup_progress", lambda: None)
+    monkeypatch.setattr(
+        window,
+        "_show_group_setup_progress",
+        progress.append,
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QInputDialog.getItem",
+        lambda _parent, _title, _prompt, labels, *_args: (labels[0], True),
+    )
+    monkeypatch.setattr(
+        window.group_setup_controller,
+        "invite_steam_member",
+        lambda item_id, group_id, friend_id: invitations.append(
+            (item_id, group_id, friend_id)
+        )
+        or True,
+    )
+
+    window._steam_friends_loaded(friends)
+
+    assert invitations == [
+        ("3797671909", "steam-group", "76561198000000002")
+    ]
+    assert progress == ["Sending a Steam invitation to Hunter…"]
 
 
 def test_joined_steam_group_is_persisted_for_the_enrolled_device(

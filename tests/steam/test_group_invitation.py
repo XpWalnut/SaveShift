@@ -17,6 +17,7 @@ class SharedLobby:
         self.metadata: dict[str, str] = {}
         self.messages: list[tuple[str, bytes]] = []
         self.overlay_opened = False
+        self.invited_friend_id = ""
 
 
 class FakeSocialClient:
@@ -35,6 +36,10 @@ class FakeSocialClient:
     def open_invite_overlay(self, lobby_id: str) -> None:
         assert lobby_id == self.lobby.lobby_id
         self.lobby.overlay_opened = True
+
+    def invite_friend(self, lobby_id: str, friend_steam_id: str) -> None:
+        assert lobby_id == self.lobby.lobby_id
+        self.lobby.invited_friend_id = friend_steam_id
 
     def lobby_data(self, lobby_id: str, key: str) -> str:
         assert lobby_id == self.lobby.lobby_id
@@ -83,7 +88,7 @@ def test_lobby_invitation_enrolls_authenticated_steam_device(tmp_path: Path) -> 
     )
 
     created_lobby = administrator_service.begin_invitation(
-        manifest, "3797671909"
+        manifest, "3797671909", member.steam_id
     )
     member_service.request_membership(created_lobby.lobby_id, member, "3797671910")
     request_sender, request_payload = lobby.messages[-1]
@@ -100,7 +105,8 @@ def test_lobby_invitation_enrolls_authenticated_steam_device(tmp_path: Path) -> 
         member,
     )
 
-    assert lobby.overlay_opened
+    assert not lobby.overlay_opened
+    assert lobby.invited_friend_id == member.steam_id
     assert transport.updated_item_id == "3797671909"
     assert joined.manifest == updated
     assert joined.group_key == group_key
@@ -120,7 +126,9 @@ def test_join_request_rejects_spoofed_steam_sender(tmp_path: Path) -> None:
     administrator_service = SteamGroupInvitationService(
         FakeSocialClient(administrator.steam_id, lobby), transport
     )
-    administrator_service.begin_invitation(manifest, "3797671909")
+    administrator_service.begin_invitation(
+        manifest, "3797671909", member.steam_id
+    )
     member_service.request_membership(lobby.lobby_id, member, "3797671910")
     _, payload = lobby.messages[-1]
 
@@ -146,7 +154,9 @@ def test_join_response_requires_original_lobby_owner(tmp_path: Path) -> None:
     member_service = SteamGroupInvitationService(
         FakeSocialClient(member.steam_id, lobby), transport
     )
-    administrator_service.begin_invitation(manifest, "3797671909")
+    administrator_service.begin_invitation(
+        manifest, "3797671909", member.steam_id
+    )
     member_service.request_membership(lobby.lobby_id, member, "3797671910")
     sender, payload = lobby.messages[-1]
     administrator_service.admit_member(

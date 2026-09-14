@@ -5,6 +5,7 @@ import pytest
 from app.coordination.cloudflare_provisioning import CreatedGroup
 from app.coordination.models import GroupInvitation, GroupLeaveResult, PairedDevice
 from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
+from app.steam.social_client import SteamFriend
 
 
 def test_setup_controller_creates_group_off_ui_thread(qtbot) -> None:
@@ -46,6 +47,29 @@ def test_setup_controller_creates_steam_group_off_ui_thread(qtbot) -> None:
         assert controller.create_steam_group("Family Worlds")
 
     assert signal.args == [created]
+    assert not controller.running
+
+
+def test_setup_controller_loads_steam_friends_off_ui_thread(qtbot) -> None:
+    friends = [SteamFriend("76561198000000002", "Hunter")]
+
+    class FakeSteamClient:
+        closed = False
+
+        def list_friends(self):
+            return friends
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = FakeSteamClient()
+    controller = GroupSetupController(steam_client_factory=lambda: client)
+
+    with qtbot.waitSignal(controller.steam_friends_loaded) as signal:
+        assert controller.load_steam_friends()
+
+    assert signal.args == [friends]
+    assert client.closed
     assert not controller.running
 
 

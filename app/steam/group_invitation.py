@@ -145,6 +145,7 @@ class SteamGroupInvitationService:
         self,
         manifest: SteamGroupManifest,
         manifest_item_id: str,
+        friend_steam_id: str,
     ) -> SteamLobby:
         identity = self.social.current_identity()
         if identity.steam_id != manifest.administrator_steam_id:
@@ -156,7 +157,7 @@ class SteamGroupInvitationService:
                 "saveshift_manifest_item": manifest_item_id,
             }
         )
-        self.social.open_invite_overlay(lobby.lobby_id)
+        self.social.invite_friend(lobby.lobby_id, friend_steam_id)
         return lobby
 
     def request_membership(

@@ -44,7 +44,8 @@ migration.
 - A group has a random identifier, an administrator signing identity, and a
   random 256-bit package key for each encryption epoch.
 - Creating or joining a group uses a temporary private Steam lobby. The owner
-  opens Steam's friend-invite overlay, and Steam authenticates the invited
+  lets the administrator choose a friend in-app, sends that friend a lobby
+  invitation through Steam, and Steam authenticates the invited
   account when it enters the lobby.
 - The joining device sends its public keys through the lobby. The administrator
   returns a signed membership certificate, the current group manifest
@@ -133,7 +134,7 @@ group head; it never silently rebases interrupted local work.
 
 - New users no longer need a Cloudflare account, browser authorization, domain,
   Worker deployment, or third-party service configuration.
-- Invitations use the familiar Steam friend interface and are bound to the
+- Invitations use an in-app picker backed by the Steam friends list and are bound to the
   authenticated Steam accounts that accepted them.
 - Group membership and package contents remain end-to-end protected from
   unrelated Steam users who can see or guess a Workshop item.
