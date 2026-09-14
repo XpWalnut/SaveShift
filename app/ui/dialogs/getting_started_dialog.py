@@ -24,7 +24,8 @@ class GettingStartedDialog(QDialog):
 
         steps = QLabel(
             "<b>1. Choose the right group</b><br>"
-            "Create or join as many groups as you need, then select the group "
+            "Create as many groups as you need, or keep Save Shift open while "
+            "a group administrator invites you through Steam. Then select the group "
             "for the friends and worlds you are playing with.<br><br>"
             "<b>2. Share or receive once</b><br>"
             "Local worlds stay only on this computer. Use Share to associate "

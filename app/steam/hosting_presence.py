@@ -208,13 +208,17 @@ class SteamHostingPresenceService:
         candidates: dict[str, list[SteamHostPresence]] = {}
         for lobby in lobbies:
             try:
+                owner_steam_id = self.client.lobby_owner(lobby.lobby_id)
                 presence = SteamHostPresence.decode(
                     self.client.lobby_data(lobby.lobby_id, self.PRESENCE_KEY),
                     lobby_id=lobby.lobby_id,
-                    lobby_owner_steam_id=self.client.lobby_owner(lobby.lobby_id),
+                    lobby_owner_steam_id=owner_steam_id,
                     manifest=manifest,
                 )
-            except ValueError as error:
+            except Exception as error:
+                # Steam can return a lobby-list entry whose owner has already
+                # left while we are reading its metadata.  That stale lobby
+                # must not make every other world's lock status unavailable.
                 logger.warning(
                     "Rejected Steam hosting lobby %s: %s",
                     lobby.lobby_id,
@@ -223,13 +227,20 @@ class SteamHostingPresenceService:
                 continue
             if wanted is None or presence.project_uuid in wanted:
                 candidates.setdefault(presence.project_uuid, []).append(presence)
-        return {
+        found = {
             project_uuid: sorted(
                 items,
                 key=lambda item: (item.started_at_utc, int(item.lobby_id)),
             )[0]
             for project_uuid, items in candidates.items()
         }
+        logger.info(
+            "steam.hosting_presence searched=%d accepted=%d projects=%s",
+            len(lobbies),
+            sum(len(items) for items in candidates.values()),
+            ",".join(sorted(found)) or "none",
+        )
+        return found
 
     def verify_owned(self, presence: SteamHostPresence) -> None:
         identity = self.client.current_identity()

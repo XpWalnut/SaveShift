@@ -22,6 +22,7 @@ from app.services.hosting_service import HostingService
 from app.services.game_window_capture import GameWindowCapture
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
+from app.services.project_version_service import ProjectVersionService
 from app.services.session_image_service import SessionImageService
 from app.services.session_journal_service import SessionJournalService
 from app.steam.host_session_store import SteamHostSessionCheckpoint
@@ -722,6 +723,60 @@ def test_group_inbox_discovers_and_receives_unknown_project(
     assert controller.download_calls == [(PROJECT_UUID, provider)]
     assert window._pending_receive_project is None
     assert window._pending_receive_project_name == "Shared World"
+
+
+def test_idle_automatic_sync_downloads_newer_known_group_world(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    group = CoordinationGroupSettings(
+        group_id="group-1",
+        name="Friends",
+        device_id="device-1",
+        provider_kind="steam",
+        steam_manifest_item_id="100",
+        steam_package_index_item_id="101",
+    )
+    window.settings = replace(
+        window.settings.upsert_group(group),
+        manual_transfer_controls=False,
+    )
+    project = _project(tmp_path)
+    project.coordination_group_id = "group-1"
+    package = _catalog_package()
+    package = replace(
+        package,
+        artifact=replace(package.artifact, project_version=9),
+    )
+    window.project_lock_statuses[project.uuid] = None
+    monkeypatch.setattr(
+        "app.ui.main_window.ProjectRepository.get_by_uuid",
+        lambda _uuid: project,
+    )
+    monkeypatch.setattr(
+        ProjectVersionService,
+        "get_latest_version",
+        lambda _project_id: _version(tmp_path / "local.sspkg"),
+    )
+
+    class NotRunning:
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: NotRunning(),
+    )
+
+    window._automatic_catalog_refresh = True
+    window._package_catalog_loaded([package])
+
+    controller = window.package_handoff_controller
+    assert controller.download_calls == [(project.uuid, provider)]
+    assert window._automatic_receive_project == project
 
 
 def test_failed_handoff_keeps_project_lease_for_safe_retry(

@@ -139,3 +139,32 @@ def test_duplicate_hosting_lobbies_choose_the_earliest_signed_presence(
         client.set_lobby_data(lobby.lobby_id, service.PRESENCE_KEY, presence.encode())
 
     assert service.find(manifest)[project_uuid].host_display_name == "Earlier"
+
+
+def test_stale_lobby_does_not_hide_other_hosting_presence(tmp_path: Path) -> None:
+    identity, manifest = _group(tmp_path)
+    client = MemorySocialClient(identity.steam_id)
+    service = SteamHostingPresenceService(client)
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+    _lobby, created = service.create(
+        manifest=manifest,
+        identity=identity,
+        project_uuid=project_uuid,
+        host_display_name="Jake",
+    )
+    stale = client.create_searchable_lobby(
+        metadata={
+            service.PROTOCOL_KEY: SteamHostPresence.PROTOCOL,
+            service.GROUP_KEY: manifest.group_id,
+        }
+    )
+    original_owner = client.lobby_owner
+
+    def lobby_owner(lobby_id: str) -> str:
+        if lobby_id == stale.lobby_id:
+            raise RuntimeError("Steam returned an invalid lobby owner.")
+        return original_owner(lobby_id)
+
+    client.lobby_owner = lobby_owner
+
+    assert service.find(manifest)[project_uuid] == created

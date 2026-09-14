@@ -33,7 +33,7 @@ from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.core.logging import logger
 from app.core.config import AppConfig
-from app.core.distribution import detect_distribution_channel
+from app.core.distribution import DistributionChannel, detect_distribution_channel
 from app.core.settings import (
     AppSettings,
     CoordinationGroupSettings,
@@ -88,6 +88,7 @@ from app.ui.dialogs.session_image_dialog import SessionImageDialog
 from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.dialogs.shared_projects_dialog import SharedProjectsDialog
+from app.ui.dialogs.steam_friend_dialog import SteamFriendDialog
 from app.ui.dialogs.update_dialog import UpdateAvailableDialog
 from app.updates.controller import UpdateController
 from app.updates.models import UpdateRelease
@@ -213,11 +214,25 @@ class MainWindow(QMainWindow):
         self.group_setup_controller.failed.connect(
             self._group_setup_failed
         )
+        self.group_setup_controller.cancelled.connect(
+            self._group_setup_cancelled
+        )
         self._group_setup_progress: QProgressDialog | None = None
         self._pending_coordination_profile_name = ""
         self._pending_coordination_device_name = ""
         self._pending_coordination_group_name = ""
         self._leaving_group = False
+        self._closing = False
+        self.incoming_group_controller = GroupSetupController(
+            self,
+            steam_invitation_timeout_seconds=30.0,
+        )
+        self.incoming_group_controller.steam_join_completed.connect(
+            self._incoming_steam_group_joined
+        )
+        self.incoming_group_controller.failed.connect(
+            self._incoming_group_listener_failed
+        )
         self.package_handoff_controller = PackageHandoffController(self)
         self.package_handoff_controller.publish_completed.connect(
             self._group_handoff_published
@@ -226,7 +241,7 @@ class MainWindow(QMainWindow):
             self._group_package_downloaded
         )
         self.package_handoff_controller.catalog_completed.connect(
-            self._shared_projects_loaded
+            self._package_catalog_loaded
         )
         self.package_handoff_controller.legal_agreement_required.connect(
             self._open_workshop_agreement
@@ -250,6 +265,8 @@ class MainWindow(QMainWindow):
         self._pending_receive_project: Project | None = None
         self._pending_receive_project_name = ""
         self._listing_shared_projects = False
+        self._automatic_catalog_refresh = False
+        self._automatic_receive_project: Project | None = None
         self._pending_host_project: Project | None = None
         self._pending_host_manual = False
         self._automatic_session_project: Project | None = None
@@ -268,10 +285,17 @@ class MainWindow(QMainWindow):
         self.automatic_session_timer.timeout.connect(
             self._check_automatic_host_session
         )
+        self.automatic_sync_timer = QTimer(self)
+        self.automatic_sync_timer.setInterval(60 * 1000)
+        self.automatic_sync_timer.timeout.connect(
+            self._refresh_automatic_group_versions
+        )
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
             self.lock_status_timer.start()
+            if not self.settings.manual_transfer_controls:
+                self.automatic_sync_timer.start()
 
         self.update_controller = UpdateController(self)
         self.update_controller.update_available.connect(
@@ -454,7 +478,6 @@ class MainWindow(QMainWindow):
         group_actions = QHBoxLayout()
         group_actions.setSpacing(theme.SPACING_SMALL)
         group_actions.addWidget(self.create_group_button)
-        group_actions.addWidget(self.join_group_button)
         left_panel.addLayout(group_actions)
         left_panel.addWidget(self.invite_friend_button)
         left_panel.addWidget(self.shared_projects_button)
@@ -501,6 +524,13 @@ class MainWindow(QMainWindow):
         self.load_projects()
         self._refresh_group_buttons()
         QTimer.singleShot(0, self._start_automatic_game_detection)
+        if self.distribution_channel is DistributionChannel.STEAM:
+            QTimer.singleShot(0, self._start_incoming_group_listener)
+        if (
+            self.coordination_manager is not None
+            and not self.settings.manual_transfer_controls
+        ):
+            QTimer.singleShot(10_000, self._refresh_automatic_group_versions)
 
         if startup_package_path is not None:
             QTimer.singleShot(
@@ -566,7 +596,7 @@ class MainWindow(QMainWindow):
         self.rename_group_button.setVisible(bool(self.settings.coordination_groups))
         self.group_heading.setVisible(bool(self.settings.coordination_groups))
         self.create_group_button.setVisible(True)
-        self.join_group_button.setVisible(True)
+        self.join_group_button.setVisible(False)
         self.invite_friend_button.setVisible(
             connected and self.settings.coordination_is_administrator
         )
@@ -907,9 +937,14 @@ class MainWindow(QMainWindow):
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
             self.lock_status_timer.start()
+            if self.settings.manual_transfer_controls:
+                self.automatic_sync_timer.stop()
+            else:
+                self.automatic_sync_timer.start()
         else:
             self.coordination_renewal_timer.stop()
             self.lock_status_timer.stop()
+            self.automatic_sync_timer.stop()
 
         self.load_projects()
 
@@ -985,7 +1020,8 @@ class MainWindow(QMainWindow):
             self._show_group_setup_progress(
                 "Looking for a Steam friend invitation. Ask the group "
                 "administrator to choose Invite a Friend now. Save Shift will "
-                "join automatically; accepting a Steam notification is optional."
+                "join automatically; accepting a Steam notification is optional.",
+                cancellable=True,
             )
             if not self.group_setup_controller.join_steam_group():
                 self._close_group_setup_progress()
@@ -1068,9 +1104,9 @@ class MainWindow(QMainWindow):
     def _steam_invitation_ready(self, _lobby_id: str) -> None:
         if self._group_setup_progress is not None:
             self._group_setup_progress.setLabelText(
-                "The Steam invitation is ready. Have your friend choose Join "
-                "Group in Save Shift; it will find the invitation automatically. "
-                "They may also accept Steam's notification if it appears."
+                "The Steam invitation is ready. Your friend's open copy of "
+                "Save Shift will find it automatically. They may also accept "
+                "Steam's notification if it appears."
             )
 
     def _steam_friends_loaded(self, friends: list[SteamFriend]) -> None:
@@ -1084,25 +1120,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        ordered = sorted(
-            friends,
-            key=lambda friend: (friend.persona_name.casefold(), friend.steam_id),
-        )
-        labels = [
-            f"{friend.persona_name}  ·  Steam …{friend.steam_id[-6:]}"
-            for friend in ordered
-        ]
-        selected_label, accepted = QInputDialog.getItem(
-            self,
-            "Invite a Steam Friend",
-            "Choose the friend to invite to this Save Shift group:",
-            labels,
-            0,
-            False,
-        )
-        if not accepted:
+        dialog = SteamFriendDialog(friends, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        selected = ordered[labels.index(selected_label)]
+        selected = dialog.selected_friend
+        if selected is None:
+            return
         active_group = self.settings.active_coordination_group
         if (
             active_group is None
@@ -1117,7 +1140,8 @@ class MainWindow(QMainWindow):
             return
 
         self._show_group_setup_progress(
-            f"Sending a Steam invitation to {selected.persona_name}…"
+            f"Sending a Steam invitation to {selected.persona_name}…",
+            cancellable=True,
         )
         if not self.group_setup_controller.invite_steam_member(
             active_group.steam_manifest_item_id,
@@ -1197,6 +1221,37 @@ class MainWindow(QMainWindow):
             f"This computer securely joined {manifest.name}.",
         )
         self._detect_steam_games(show_messages=False)
+
+    def _start_incoming_group_listener(self) -> None:
+        if (
+            self._closing
+            or self.distribution_channel is not DistributionChannel.STEAM
+        ):
+            return
+        if not self.incoming_group_controller.running:
+            self.incoming_group_controller.join_steam_group()
+
+    def _incoming_steam_group_joined(self, joined: JoinedSteamGroup) -> None:
+        self._pending_coordination_device_name = (
+            self.settings.coordination_device_name.strip()
+            or platform.node().strip()
+            or "Windows PC"
+        )
+        self._pending_coordination_profile_name = (
+            self.settings.player_display_name.strip()
+        )
+        self._pending_coordination_group_name = ""
+        self._steam_group_joined(joined)
+        if not self._closing:
+            QTimer.singleShot(1_000, self._start_incoming_group_listener)
+
+    def _incoming_group_listener_failed(self, message: str) -> None:
+        if self._closing:
+            return
+        normalized = message.casefold()
+        if "invitation" not in normalized or "time" not in normalized:
+            logger.warning("Incoming Steam group listener: %s", message)
+        QTimer.singleShot(2_000, self._start_incoming_group_listener)
 
     def _group_created(self, created: CreatedGroup) -> None:
         self._close_group_setup_progress()
@@ -1384,10 +1439,30 @@ class MainWindow(QMainWindow):
             message or "Save Shift could not finish the group operation.",
         )
 
-    def _show_group_setup_progress(self, message: str) -> None:
-        progress = QProgressDialog(message, "", 0, 0, self)
+    def _group_setup_cancelled(self) -> None:
+        self._close_group_setup_progress()
+        self.statusBar().showMessage("Group operation cancelled.", 5_000)
+
+    def _show_group_setup_progress(
+        self,
+        message: str,
+        *,
+        cancellable: bool = False,
+    ) -> None:
+        progress = QProgressDialog(
+            message,
+            "Cancel" if cancellable else "",
+            0,
+            0,
+            self,
+        )
         progress.setWindowTitle("Save Shift Group Setup")
-        progress.setCancelButton(None)
+        if cancellable:
+            progress.canceled.connect(
+                self.group_setup_controller.cancel_current
+            )
+        else:
+            progress.setCancelButton(None)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
         progress.show()
@@ -1417,10 +1492,15 @@ class MainWindow(QMainWindow):
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
             self.lock_status_timer.start()
+            if self.settings.manual_transfer_controls:
+                self.automatic_sync_timer.stop()
+            else:
+                self.automatic_sync_timer.start()
             self._refresh_project_lock_statuses()
         else:
             self.coordination_renewal_timer.stop()
             self.lock_status_timer.stop()
+            self.automatic_sync_timer.stop()
 
         self.load_projects()
         self._refresh_group_buttons()
@@ -3031,6 +3111,156 @@ class MainWindow(QMainWindow):
             self._listing_shared_projects = False
             self._close_package_handoff_progress()
 
+    def _refresh_automatic_group_versions(self) -> None:
+        if (
+            self.settings.manual_transfer_controls
+            or not self.settings.coordination_enabled
+            or self.coordination_manager is None
+            or self.package_handoff_controller.running
+            or self._automatic_session_project is not None
+            or self._pending_host_project is not None
+            or self._pending_handoff_project is not None
+        ):
+            return
+        self._automatic_catalog_refresh = True
+        if not self.package_handoff_controller.list_latest_packages(
+            self.coordination_manager.provider
+        ):
+            self._automatic_catalog_refresh = False
+
+    def _package_catalog_loaded(self, result: object) -> None:
+        if not self._automatic_catalog_refresh:
+            self._shared_projects_loaded(result)
+            return
+        self._automatic_catalog_refresh = False
+        if not isinstance(result, list) or self.coordination_manager is None:
+            return
+
+        active_group_id = self.settings.active_coordination_group_id
+        candidates: list[tuple[CatalogPackage, Project]] = []
+        for package in result:
+            if not isinstance(package, CatalogPackage):
+                continue
+            project = ProjectRepository.get_by_uuid(package.artifact.project_uuid)
+            if project is None or project.coordination_group_id != active_group_id:
+                continue
+            latest = ProjectVersionService.get_latest_version(project.id)
+            local_version = latest.version_number if latest is not None else 0
+            if package.artifact.project_version <= local_version:
+                continue
+            # Never replace a save while a host is active or while Steam's
+            # presence check is still unknown.
+            if project.uuid not in self.project_lock_statuses:
+                continue
+            if self.project_lock_statuses[project.uuid] is not None:
+                continue
+            if self.coordination_manager.has_active_lease(project.uuid):
+                continue
+            try:
+                installed = self._get_installed_game_for_project(project)
+                supported = GameRegistry.get_by_game_id(installed.game_id)
+                if supported is not None and supported.is_running():
+                    continue
+            except Exception as error:
+                logger.warning(
+                    "Automatic receive skipped for %s because game status "
+                    "could not be checked: %s",
+                    project.uuid,
+                    error,
+                )
+                continue
+            candidates.append((package, project))
+
+        if not candidates:
+            return
+        package, project = max(
+            candidates,
+            key=lambda item: item[0].artifact.project_version,
+        )
+        self._automatic_receive_project = project
+        logger.info(
+            "Automatic receive found project=%s remote_version=%s",
+            project.uuid,
+            package.artifact.project_version,
+        )
+        if not self.package_handoff_controller.download_latest(
+            project.uuid,
+            self.coordination_manager.provider,
+        ):
+            self._automatic_receive_project = None
+
+    def _finish_automatic_group_receive(self, result: object) -> None:
+        project = self._automatic_receive_project
+        self._automatic_receive_project = None
+        if project is None or result is None:
+            return
+        catalog_package, package_path = result
+        package_path = Path(package_path)
+        try:
+            analysis = ImportService.analyze_import(
+                package_path,
+                group_authoritative=True,
+            )
+            if analysis.kind == ImportConflictKind.DUPLICATE:
+                package_path.unlink(missing_ok=True)
+                return
+            if analysis.is_blocked:
+                raise ValueError(
+                    "The latest group version could not be applied safely: "
+                    f"{analysis.kind.value}."
+                )
+            player_name = (
+                self.settings.player_display_name.strip()
+                or self.settings.coordination_device_name.strip()
+                or "Save Shift user"
+            )
+            with self._temporary_coordination_lease(
+                analysis.package_info.project_uuid,
+                player_name,
+                force_coordination=True,
+            ):
+                version = ImportService.import_package(
+                    package_path=package_path,
+                    imported_by=player_name,
+                    allow_replace=analysis.requires_replace_confirmation,
+                    allow_group_reconciliation=True,
+                )
+            imported_project = ProjectRepository.get_by_uuid(
+                analysis.package_info.project_uuid
+            )
+            active_group = self.settings.active_coordination_group
+            if imported_project is not None and active_group is not None:
+                ProjectRepository.associate_group(
+                    imported_project.id,
+                    active_group.group_id,
+                )
+            logger.info(
+                "Automatic receive applied project=%s version=%s",
+                project.uuid,
+                version.version_number,
+            )
+            self.statusBar().showMessage(
+                f"{project.name} updated automatically to Version "
+                f"{version.version_number}.",
+                15_000,
+            )
+            self.load_installed_games()
+            self.load_projects()
+            if isinstance(catalog_package, CatalogPackage):
+                self._download_session_media(catalog_package)
+        except Exception as error:
+            package_path.unlink(missing_ok=True)
+            logger.warning(
+                "Automatic receive failed for project %s: %s",
+                project.uuid,
+                error,
+            )
+            self.statusBar().showMessage(
+                f"Could not automatically update {project.name}; Save Shift "
+                "will retry.",
+                15_000,
+            )
+
     def _shared_projects_loaded(self, result: object) -> None:
         self._listing_shared_projects = False
         self._close_package_handoff_progress()
@@ -3381,6 +3611,9 @@ class MainWindow(QMainWindow):
         if self._pending_host_project is not None:
             self._finish_host_preflight(result)
             return
+        if self._automatic_receive_project is not None:
+            self._finish_automatic_group_receive(result)
+            return
 
         project_name = self._pending_receive_project_name
         self._pending_receive_project = None
@@ -3531,6 +3764,18 @@ class MainWindow(QMainWindow):
         )
 
     def _group_handoff_failed(self, message: str) -> None:
+        if self._automatic_catalog_refresh or self._automatic_receive_project is not None:
+            project = self._automatic_receive_project
+            self._automatic_catalog_refresh = False
+            self._automatic_receive_project = None
+            logger.warning("Automatic group synchronization failed: %s", message)
+            if project is not None:
+                self.statusBar().showMessage(
+                    f"Could not automatically update {project.name}; Save Shift "
+                    "will retry.",
+                    15_000,
+                )
+            return
         pending_host = self._pending_host_project
         automatic_handoff = self._automatic_handoff_in_progress
         if self._listing_shared_projects:
@@ -4492,7 +4737,10 @@ class MainWindow(QMainWindow):
         elif manager is not None:
             manager.close()
 
+        self._closing = True
+        self.incoming_group_controller.cancel_current()
         self.coordination_renewal_timer.stop()
         self.lock_status_timer.stop()
+        self.automatic_sync_timer.stop()
         event.accept()
         super().closeEvent(event)

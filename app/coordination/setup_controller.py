@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+import threading
 import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -27,7 +28,7 @@ from app.steam.group_manifest_transport import SteamGroupManifestTransport
 from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
-from app.steam.social_client import SteamFriend, SteamLobbyJoinRequest, SteamLobbyMessage
+from app.steam.social_client import SteamFriend, SteamLobbyMessage
 
 
 class GroupSetupSignals(QObject):
@@ -43,6 +44,7 @@ class GroupSetupSignals(QObject):
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
     steam_join_completed = Signal(object)
+    cancelled = Signal()
 
 
 @dataclass(frozen=True)
@@ -258,6 +260,10 @@ class InviteSteamMemberTask(QRunnable):
         self.identity_store_factory = identity_store_factory
         self.manifest_cache_factory = manifest_cache_factory
         self.timeout_seconds = timeout_seconds
+        self._cancel_requested = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
 
     def run(self) -> None:
         client: SteamworksUgcClient | None = None
@@ -294,6 +300,9 @@ class InviteSteamMemberTask(QRunnable):
                 self.signals.steam_invitation_ready.emit(lobby_id)
                 deadline = time.monotonic() + self.timeout_seconds
                 while time.monotonic() < deadline:
+                    if self._cancel_requested.is_set():
+                        self.signals.cancelled.emit()
+                        return
                     for event in client.poll_social_events():
                         if not isinstance(event, SteamLobbyMessage):
                             continue
@@ -346,6 +355,10 @@ class JoinSteamGroupTask(QRunnable):
         self.identity_store_factory = identity_store_factory
         self.manifest_cache_factory = manifest_cache_factory
         self.timeout_seconds = timeout_seconds
+        self._cancel_requested = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_requested.set()
 
     def run(self) -> None:
         client: SteamworksUgcClient | None = None
@@ -452,15 +465,17 @@ class JoinSteamGroupTask(QRunnable):
                     )
 
                 while time.monotonic() < deadline:
-                    for event in client.poll_social_events():
+                    if self._cancel_requested.is_set():
+                        self.signals.cancelled.emit()
+                        return
+                    events = (
+                        client.poll_social_events()
+                        if membership_requested
+                        else ()
+                    )
+                    for event in events:
                         if (
-                            isinstance(event, SteamLobbyJoinRequest)
-                            and not membership_requested
-                        ):
-                            request_membership(event.lobby_id)
-                        elif (
-                            membership_requested
-                            and isinstance(event, SteamLobbyMessage)
+                            isinstance(event, SteamLobbyMessage)
                             and event.lobby_id == lobby_id
                         ):
                             try:
@@ -598,6 +613,7 @@ class GroupSetupController(QObject):
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
     steam_join_completed = Signal(object)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -704,6 +720,7 @@ class GroupSetupController(QObject):
         )
         signals.steam_member_admitted.connect(self._steam_member_finished)
         signals.failed.connect(self._failed)
+        signals.cancelled.connect(self._cancelled)
         self._thread_pool.start(task)
         return True
 
@@ -771,7 +788,16 @@ class GroupSetupController(QObject):
         signals.steam_join_waiting.connect(self.steam_join_waiting.emit)
         signals.steam_join_completed.connect(self._steam_join_finished)
         signals.failed.connect(self._failed)
+        signals.cancelled.connect(self._cancelled)
         self._thread_pool.start(task)
+        return True
+
+    def cancel_current(self) -> bool:
+        task = self._task
+        cancel = getattr(task, "cancel", None)
+        if not self._running or not callable(cancel):
+            return False
+        cancel()
         return True
 
     def join_group(
@@ -864,6 +890,10 @@ class GroupSetupController(QObject):
     def _failed(self, message: str) -> None:
         self._finish()
         self.failed.emit(message)
+
+    def _cancelled(self) -> None:
+        self._finish()
+        self.cancelled.emit()
 
     def _finish(self) -> None:
         self._running = False

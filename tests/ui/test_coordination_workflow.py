@@ -348,11 +348,22 @@ def test_loaded_steam_friend_is_invited_directly(
     monkeypatch.setattr(
         window,
         "_show_group_setup_progress",
-        progress.append,
+        lambda message, **_kwargs: progress.append(message),
     )
+
+    class FriendDialog:
+        def __init__(self, choices, _parent) -> None:
+            self.selected_friend = sorted(
+                choices,
+                key=lambda friend: friend.persona_name.casefold(),
+            )[0]
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
     monkeypatch.setattr(
-        "app.ui.main_window.QInputDialog.getItem",
-        lambda _parent, _title, _prompt, labels, *_args: (labels[0], True),
+        "app.ui.main_window.SteamFriendDialog",
+        FriendDialog,
     )
     monkeypatch.setattr(
         window.group_setup_controller,
