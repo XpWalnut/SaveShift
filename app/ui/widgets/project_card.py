@@ -1,3 +1,7 @@
+from datetime import datetime
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from app.ui import theme, styles
@@ -6,6 +10,8 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.database.models.session_journal_entry import SessionJournalEntry
 from app.coordination.models import LockLease
+from app.services.session_image_service import SessionImageRecord
+from app.ui.icons import apply_icon
 
 
 class ProjectCard(QFrame):
@@ -25,6 +31,7 @@ class ProjectCard(QFrame):
             group_active: bool = True,
             on_share=None,
             on_unshare=None,
+            session_image: SessionImageRecord | None = None,
             parent=None,
     ) -> None:
         super().__init__(parent)
@@ -36,11 +43,11 @@ class ProjectCard(QFrame):
         self.setObjectName("ProjectCard")
         self.setStyleSheet(
             styles.card_style("ProjectCard")
-            + styles.primary_button_style()
+            + styles.secondary_button_style()
         )
 
-        title = QLabel(f"🌍 {project.name}")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = QLabel(project.name)
+        title.setStyleSheet("font-size: 21px; font-weight: 600;")
 
         self.scope_badge = QLabel(
             f"Shared · {group_name}" if group_name else "Local"
@@ -54,7 +61,7 @@ class ProjectCard(QFrame):
         badge_color = theme.SUCCESS if group_name else theme.TEXT_SECONDARY
         self.scope_badge.setStyleSheet(
             f"color: {badge_color}; border: 1px solid {badge_color}; "
-            "border-radius: 8px; padding: 2px 8px; font-weight: bold;"
+            "border-radius: 8px; padding: 2px 8px; font-weight: 500;"
         )
 
         title_row = QHBoxLayout()
@@ -62,15 +69,15 @@ class ProjectCard(QFrame):
         title_row.addStretch()
         title_row.addWidget(self.scope_badge)
 
-        game_label = QLabel(f"🎮 {installed_game.display_name}")
+        game_label = QLabel(installed_game.display_name)
         game_label.setObjectName("SecondaryText")
 
         if latest_version is None:
-            version_text = "📈 No versions yet"
-            updated_by_text = "👤 Nobody yet"
+            version_text = "No versions yet"
+            updated_by_text = "No sessions recorded"
         else:
-            version_text = f"📈 Main Timeline • Version {latest_version.version_number}"
-            updated_by_text = f"👤 Last updated by {latest_version.created_by}"
+            version_text = f"Main Timeline  ·  Version {latest_version.version_number}"
+            updated_by_text = f"Last played by {latest_version.created_by}"
 
         version_label = QLabel(version_text)
         version_label.setObjectName("SecondaryText")
@@ -95,12 +102,24 @@ class ProjectCard(QFrame):
         self.lock_status_label.setObjectName("SecondaryText")
 
         self.host_button = QPushButton("Host")
+        self.host_button.setStyleSheet(styles.primary_button_style())
         self.import_button = QPushButton("Import")
         self.export_button = QPushButton("Export")
         self.history_button = QPushButton("History")
         self.journal_button = QPushButton("Journal")
         self.share_button = QPushButton("Share")
         self.unshare_button = QPushButton("Unshare")
+
+        for button, icon_name, primary in (
+            (self.host_button, "play", True),
+            (self.import_button, "download", False),
+            (self.export_button, "upload", False),
+            (self.history_button, "clock", False),
+            (self.journal_button, "journal", False),
+            (self.share_button, "share", False),
+            (self.unshare_button, "unshare", False),
+        ):
+            apply_icon(button, icon_name, primary=primary)
 
         self.host_button.setToolTip(
             "Reserve the world, receive the latest group version, and launch "
@@ -182,14 +201,58 @@ class ProjectCard(QFrame):
 
         self.show_coordination_disabled()
 
+        image_label = QLabel("No session image")
+        image_label.setObjectName("SessionImage")
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setFixedSize(260, 146)
+        image_label.setStyleSheet(
+            f"background: {theme.PANEL_BACKGROUND}; color: {theme.TEXT_MUTED}; "
+            f"border: 1px solid {theme.CARD_BORDER}; border-radius: 7px;"
+        )
+        image_caption = QLabel("Add an image after your next hosted session")
+        image_caption.setObjectName("SecondaryText")
+        if session_image is not None:
+            pixmap = QPixmap(str(session_image.image_path))
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    image_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = max(0, (scaled.width() - image_label.width()) // 2)
+                y = max(0, (scaled.height() - image_label.height()) // 2)
+                image_label.setPixmap(
+                    scaled.copy(x, y, image_label.width(), image_label.height())
+                )
+                timestamp = datetime.fromisoformat(session_image.captured_at_utc)
+                image_caption.setText(
+                    "Pictured session  ·  "
+                    + timestamp.astimezone().strftime("%b %d, %Y")
+                )
+
+        image_column = QVBoxLayout()
+        image_column.setSpacing(theme.SPACING_SMALL)
+        image_column.addWidget(image_label)
+        image_column.addWidget(image_caption)
+
+        details = QVBoxLayout()
+        details.setSpacing(theme.SPACING_SMALL)
+        details.addLayout(title_row)
+        details.addWidget(game_label)
+        details.addSpacing(5)
+        details.addWidget(version_label)
+        details.addWidget(updated_by_label)
+        details.addWidget(self.journal_preview_label)
+        details.addStretch()
+        details.addWidget(self.lock_status_label)
+
+        body = QHBoxLayout()
+        body.setSpacing(theme.SPACING_LARGE)
+        body.addLayout(image_column)
+        body.addLayout(details, 1)
+
         layout = QVBoxLayout()
-        layout.addLayout(title_row)
-        layout.addWidget(game_label)
-        layout.addSpacing(8)
-        layout.addWidget(version_label)
-        layout.addWidget(updated_by_label)
-        layout.addWidget(self.journal_preview_label)
-        layout.addWidget(self.lock_status_label)
+        layout.addLayout(body)
         layout.addSpacing(12)
         layout.addLayout(button_row)
 

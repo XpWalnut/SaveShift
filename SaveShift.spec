@@ -29,6 +29,7 @@ a = Analysis(
             'assets/steam',
         ),
         ('assets/ui/SaveShift-Wordmark.png', 'assets/ui'),
+        ('assets/ui/SaveShift-RefinedLogo.png', 'assets/ui'),
         (
             'app/resources/cloudflare/index.js',
             'app/resources/cloudflare',

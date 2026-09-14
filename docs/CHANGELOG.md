@@ -62,9 +62,15 @@ All notable changes to Save Shift are documented here. The project is currently 
   group.
 - New neon pixel-art branding assets for the Windows application icon and
   Steamworks banner artwork.
-- A responsive portal-art header with the pixel Save Shift wordmark, plus a
-  vaporwave interface palette, cyan and magenta controls, and retro monospace
-  typography throughout the desktop app.
+- A compact header derived from the refined Save Shift wordmark, plus a quieter
+  professional vaporwave palette, restrained purple and cyan accents, and
+  consistent line icons for games, groups, transfers, history, journals, and
+  sharing actions.
+- Optional game-window-only session captures during hosted play. After the
+  handoff is safely uploaded and its hosting presence is released, the host can
+  choose from up to four candidates, select another image, or keep no image;
+  selected images are resized, re-encoded without source metadata, and shown on
+  the local world card.
 - A newly named multi-resolution Windows icon wired directly into PyInstaller,
   the application window, installer, Start Menu shortcut, desktop shortcut,
   uninstaller, and `.sspkg` file association to avoid stale blank icons.
@@ -138,6 +144,9 @@ All notable changes to Save Shift are documented here. The project is currently 
   responsive hero that grows on wide displays without stretching its artwork.
 - Added a restrained vaporwave-orange accent to card outlines, section
   dividers, and scrollbars.
+- Reworked world cards around a session-image preview, clearer title and status
+  hierarchy, group badges, and one visually primary Host action while keeping
+  transfer, history, journal, share, and unshare actions outlined.
 
 - Hosting retains and renews its project lease until export or application exit.
 - Import and restore fail before touching save files when a remote lock cannot be verified.

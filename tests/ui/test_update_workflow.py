@@ -67,6 +67,20 @@ def test_settings_dialog_exposes_session_journal_prompt_preference(
     assert dialog.prompt_for_session_journal
 
 
+def test_settings_dialog_exposes_game_window_capture_preference(qtbot) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings(capture_session_images=False)
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.capture_session_images
+    assert "visible supported-game window" in dialog.session_image_checkbox.toolTip()
+
+    dialog.session_image_checkbox.setChecked(True)
+
+    assert dialog.capture_session_images
+
+
 def test_steam_settings_explain_that_updates_are_managed_by_steam(qtbot) -> None:
     dialog = SettingsDialog(
         settings=AppSettings(automatic_update_checks=True),

@@ -72,6 +72,10 @@ def test_branding_source_artwork_dimensions() -> None:
         2155,
         730,
     )
+    assert _png_dimensions(ROOT / "assets/ui/SaveShift-RefinedLogo.png") == (
+        1254,
+        1254,
+    )
     assert _png_color_type(ROOT / "assets/ui/SaveShift-Wordmark.png") == 6
 
 
@@ -117,4 +121,5 @@ def test_build_and_installer_use_vaporwave_icon_and_header_assets() -> None:
     assert "assets/icons/SaveShift-Vaporwave.ico" in spec
     assert "assets/steam/SaveShift-LibraryHero-3840x1240.png" in spec
     assert "assets/ui/SaveShift-Wordmark.png" in spec
+    assert "assets/ui/SaveShift-RefinedLogo.png" in spec
     assert "SaveShift-Vaporwave.ico" in installer

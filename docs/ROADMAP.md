@@ -33,6 +33,12 @@ Save Shift is currently stabilizing its alpha feature set. This roadmap describe
 
 ## Later possibilities
 
+- Replace the flat version-history list with a visual save-progression tree
+  that makes restores, forks, competing heads, and authoritative selections
+  understandable at a glance.
+- Add a signed, encrypted group-media companion format so a selected session
+  image can follow the world across computers without weakening immutable save
+  package verification.
 - Package signing and a signed Windows installer.
 - Retire Cloudflare provisioning after Steam-native groups preserve membership,
   package discovery, revocation, and fork recovery in multi-PC testing.

@@ -68,7 +68,10 @@ from app.services.installed_game_service import InstalledGameService
 from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
 from app.services.session_journal_service import SessionJournalService
+from app.services.game_window_capture import GameWindowCapture
+from app.services.session_image_service import SessionImageService
 from app.ui import styles, theme
+from app.ui.icons import apply_icon
 from app.ui.widgets.installed_game_card import InstalledGameCard
 from app.ui.widgets.project_card import ProjectCard
 from app.ui.widgets.brand_header import BrandHeader
@@ -76,6 +79,7 @@ from app.ui.dialogs.history_dialog import HistoryDialog
 from app.ui.dialogs.getting_started_dialog import GettingStartedDialog
 from app.ui.dialogs.journal_entry_dialog import JournalEntryDialog
 from app.ui.dialogs.session_journal_prompt import SessionJournalPrompt
+from app.ui.dialogs.session_image_dialog import SessionImageDialog
 from app.ui.dialogs.import_conflict_dialog import ImportConflictDialog
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.dialogs.shared_projects_dialog import SharedProjectsDialog
@@ -227,6 +231,11 @@ class MainWindow(QMainWindow):
         self._automatic_session_seen_running = False
         self._automatic_session_wait_ticks = 0
         self._automatic_handoff_in_progress = False
+        self.session_image_service = SessionImageService()
+        self.session_image_service.clear_stale_candidates()
+        self._session_capture_candidates: list[Path] = []
+        self._session_capture_elapsed_seconds = 0
+        self._session_capture_next_second = 30
         self.automatic_session_timer = QTimer(self)
         self.automatic_session_timer.setInterval(1_000)
         self.automatic_session_timer.timeout.connect(
@@ -265,9 +274,17 @@ class MainWindow(QMainWindow):
 
         self.subtitle = QLabel("Seamlessly hand off self-hosted co-op game worlds between friends.")
         self.subtitle.setStyleSheet(f"font-size: 14px; color: {theme.TEXT_SECONDARY};")
+        self.subtitle.setVisible(False)
 
         self.installed_game_heading = QLabel("Installed Games")
         self.project_heading = QLabel("Projects")
+        self.installed_game_heading.setObjectName("SectionHeading")
+        self.project_heading.setObjectName("PageHeading")
+        self.installed_game_heading.setStyleSheet(
+            f"color: {theme.TEXT_SECONDARY}; font-size: 11px; font-weight: 600; "
+            "letter-spacing: 3px; text-transform: uppercase;"
+        )
+        self.project_heading.setStyleSheet("font-size: 30px; font-weight: 500;")
 
         self.installed_game_scroll = QScrollArea()
         self.installed_game_scroll.setWidgetResizable(True)
@@ -360,6 +377,20 @@ class MainWindow(QMainWindow):
 
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self.show_settings)
+
+        for button, icon_name in (
+            (self.add_button, "add"),
+            (self.detect_games_button, "search"),
+            (self.remove_button, "unshare"),
+            (self.create_group_button, "group"),
+            (self.join_group_button, "group"),
+            (self.rename_group_button, "journal"),
+            (self.invite_friend_button, "invite"),
+            (self.shared_projects_button, "inbox"),
+            (self.how_it_works_button, "help"),
+            (self.settings_button, "settings"),
+        ):
+            apply_icon(button, icon_name)
 
 
         for button in (
@@ -690,6 +721,11 @@ class MainWindow(QMainWindow):
                 dialog,
                 "prompt_for_session_journal",
                 self.settings.prompt_for_session_journal,
+            ),
+            capture_session_images=getattr(
+                dialog,
+                "capture_session_images",
+                self.settings.capture_session_images,
             ),
             manual_transfer_controls=getattr(
                 dialog,
@@ -1838,14 +1874,14 @@ class MainWindow(QMainWindow):
         selected_game = self._get_selected_installed_game()
 
         if selected_game is None:
-            self.project_heading.setText("Projects")
+            self.project_heading.setText("Worlds")
             empty_label = QLabel("No installed games configured yet.")
             empty_label.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
             self.project_layout.addWidget(empty_label)
             self.project_layout.addStretch()
             return
 
-        self.project_heading.setText(f"Projects — {selected_game.display_name}")
+        self.project_heading.setText(f"Worlds\n{selected_game.display_name}")
 
         projects = ProjectService.get_projects_for_installed_game(selected_game.id)
 
@@ -2236,6 +2272,10 @@ class MainWindow(QMainWindow):
             return
 
         if automatic:
+            self.session_image_service.clear_candidates(project.uuid)
+            self._session_capture_candidates = []
+            self._session_capture_elapsed_seconds = 0
+            self._session_capture_next_second = 30
             self._automatic_session_project = project
             self._automatic_session_game = supported_game
             self._automatic_session_seen_running = was_already_running
@@ -2296,6 +2336,7 @@ class MainWindow(QMainWindow):
         if running:
             self._automatic_session_seen_running = True
             self._automatic_session_wait_ticks = 0
+            self._capture_automatic_session_image(project, supported_game)
             return
 
         if not self._automatic_session_seen_running:
@@ -2306,6 +2347,8 @@ class MainWindow(QMainWindow):
             self.automatic_session_timer.stop()
             self._automatic_session_project = None
             self._automatic_session_game = None
+            self.session_image_service.clear_candidates(project.uuid)
+            self._session_capture_candidates = []
             self._remove_steam_host_checkpoint(project.uuid)
             self._release_coordination_lease(
                 project.uuid,
@@ -3067,6 +3110,7 @@ class MainWindow(QMainWindow):
                 and group.is_administrator
                 else None
             ),
+            session_image=self.session_image_service.latest(project.uuid),
         )
         self._apply_project_lock_status(project.uuid, card)
 
@@ -3121,6 +3165,8 @@ class MainWindow(QMainWindow):
                 ),
             )
 
+        if automatic or self._session_capture_candidates:
+            self._choose_session_image(project, version)
         if automatic:
             _continue, journal_title, journal_body = (
                 self._request_session_journal_entry(project)
@@ -3873,6 +3919,66 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Recovery Failed", str(error))
             return
         self.handoff_project(project, automatic=True)
+
+    def _capture_automatic_session_image(self, project, supported_game) -> None:
+        if not self.settings.capture_session_images:
+            return
+        self._session_capture_elapsed_seconds += 1
+        if (
+            self._session_capture_elapsed_seconds < self._session_capture_next_second
+            or len(self._session_capture_candidates) >= 4
+        ):
+            return
+        index = len(self._session_capture_candidates) + 1
+        destination = self.session_image_service.candidate_path(
+            project.uuid,
+            index,
+        )
+        try:
+            captured = GameWindowCapture.capture(
+                supported_game.process_names,
+                destination,
+            )
+        except Exception as error:
+            logger.debug("Could not capture hosted game window: %s", error)
+            captured = None
+        if captured is not None:
+            self._session_capture_candidates.append(captured)
+        self._session_capture_next_second += 4 * 60
+
+    def _choose_session_image(
+        self,
+        project: Project,
+        version: ProjectVersion,
+    ) -> None:
+        if not self.settings.capture_session_images:
+            self.session_image_service.clear_candidates(project.uuid)
+            self._session_capture_candidates = []
+            return
+        dialog = SessionImageDialog(
+            project.name,
+            list(self._session_capture_candidates),
+            self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                if dialog.clear_requested:
+                    self.session_image_service.clear(project.uuid)
+                elif dialog.selected_path is not None:
+                    self.session_image_service.select(
+                        project_uuid=project.uuid,
+                        project_version=version.version_number,
+                        source_path=dialog.selected_path,
+                    )
+            except Exception as error:
+                QMessageBox.warning(
+                    self,
+                    "Session Image Not Saved",
+                    "The save was handed off, but the image could not be saved."
+                    f"\n\n{error}",
+                )
+        self.session_image_service.clear_candidates(project.uuid)
+        self._session_capture_candidates = []
 
     @contextmanager
     def _temporary_coordination_lease(

@@ -19,8 +19,10 @@ from app.database.models.project_version import ProjectVersion
 from app.packages.package_info import PackageInfo
 from app.package_transport.models import PackageArtifact
 from app.services.hosting_service import HostingService
+from app.services.game_window_capture import GameWindowCapture
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
+from app.services.session_image_service import SessionImageService
 from app.services.session_journal_service import SessionJournalService
 from app.steam.host_session_store import SteamHostSessionCheckpoint
 from app.ui.main_window import MainWindow
@@ -162,6 +164,7 @@ def _window(qtbot, monkeypatch, tmp_path: Path) -> tuple[MainWindow, FakeProvide
     window.settings = replace(
         window.settings,
         coordination_enabled=True,
+        capture_session_images=False,
         player_display_name="Bob",
         coordination_device_name="Bob-PC",
     )
@@ -510,6 +513,69 @@ def test_automatic_handoff_completes_without_success_dialog(
     assert messages == []
     assert journal_prompts == [project]
     assert "handed off as Version 8" in window.statusBar().currentMessage()
+
+
+def test_session_image_prompt_runs_only_after_handoff_releases_presence(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    version = _version(tmp_path / "hosted.sspkg")
+    lease = window.coordination_manager.acquire_hosting_lease(
+        project.uuid,
+        "Bob",
+    )
+    window.settings = replace(window.settings, capture_session_images=True)
+    window._pending_handoff_project = project
+    window._pending_handoff_version = version
+    window._automatic_handoff_in_progress = True
+    events: list[str] = []
+
+    def choose_image(_project, _version):
+        assert provider.released == [lease]
+        events.append("choose")
+
+    monkeypatch.setattr(window, "_choose_session_image", choose_image)
+    monkeypatch.setattr(
+        window,
+        "_request_session_journal_entry",
+        lambda _project: (True, None, None),
+    )
+
+    window._group_handoff_published(object())
+
+    assert events == ["choose"]
+
+
+def test_automatic_session_collects_bounded_game_window_candidates(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    window.settings = replace(window.settings, capture_session_images=True)
+    window.session_image_service = SessionImageService(tmp_path / "selected")
+    window._session_capture_elapsed_seconds = 29
+    captured: list[Path] = []
+
+    class FakeGame:
+        process_names = ["game.exe"]
+
+    def capture(_process_names, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"candidate")
+        captured.append(destination)
+        return destination
+
+    monkeypatch.setattr(GameWindowCapture, "capture", capture)
+
+    window._capture_automatic_session_image(project, FakeGame())
+
+    assert window._session_capture_candidates == captured
+    assert len(captured) == 1
 
 
 def test_automatic_handoff_records_journal_after_upload(

@@ -58,6 +58,19 @@ def test_session_journal_prompt_preference_is_saved_and_loaded(
     assert not loaded.prompt_for_session_journal
 
 
+def test_session_image_capture_preference_is_saved_and_loaded(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+
+    SettingsService.save(
+        AppSettings(capture_session_images=False),
+        settings_path,
+    )
+
+    assert not SettingsService.load(settings_path).capture_session_images
+
+
 def test_coordination_credential_is_protected_at_rest(
     tmp_path: Path,
     monkeypatch,

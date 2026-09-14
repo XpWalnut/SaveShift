@@ -109,6 +109,16 @@ class SettingsDialog(QDialog):
             settings.prompt_for_session_journal
         )
 
+        self.session_image_checkbox = QCheckBox(
+            "Capture a few game-window images during hosted sessions"
+        )
+        self.session_image_checkbox.setChecked(settings.capture_session_images)
+        self.session_image_checkbox.setToolTip(
+            "Only the visible supported-game window is captured. Save Shift "
+            "does not capture the desktop or other applications. You choose "
+            "whether to keep an image after the save is handed off."
+        )
+
         self.update_management_label = QLabel()
         self.update_management_label.setWordWrap(True)
         self.update_management_label.setStyleSheet(
@@ -363,6 +373,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(journal_heading)
         layout.addWidget(journal_description)
         layout.addWidget(self.session_journal_prompt_checkbox)
+        layout.addWidget(self.session_image_checkbox)
         layout.addSpacing(theme.SPACING)
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)
@@ -392,6 +403,10 @@ class SettingsDialog(QDialog):
     @property
     def prompt_for_session_journal(self) -> bool:
         return self.session_journal_prompt_checkbox.isChecked()
+
+    @property
+    def capture_session_images(self) -> bool:
+        return self.session_image_checkbox.isChecked()
 
     @property
     def manual_transfer_controls(self) -> bool:

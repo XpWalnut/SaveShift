@@ -6,7 +6,7 @@ def application_style() -> str:
     QWidget {{
         color: {theme.TEXT_PRIMARY};
         background-color: {theme.WINDOW_BACKGROUND};
-        font-family: "Consolas", "Segoe UI";
+        font-family: "Segoe UI Variable", "Segoe UI";
         font-size: 13px;
     }}
 
@@ -52,10 +52,7 @@ def application_style() -> str:
     }}
 
     QScrollBar::handle:vertical {{
-        background: qlineargradient(
-            x1: 0, y1: 0, x2: 0, y2: 1,
-            stop: 0 {theme.ORANGE}, stop: 1 {theme.ACCENT}
-        );
+        background: {theme.ACCENT};
         min-height: 28px;
         border-radius: 4px;
     }}
@@ -76,16 +73,13 @@ def application_style() -> str:
 def primary_button_style() -> str:
     return f"""
     QPushButton {{
-        background: qlineargradient(
-            x1: 0, y1: 0, x2: 1, y2: 0,
-            stop: 0 {theme.PURPLE}, stop: 1 {theme.ACCENT}
-        );
+        background: {theme.ACCENT};
         color: {theme.TEXT_PRIMARY};
         border: 1px solid {theme.ACCENT_HOVER};
         border-radius: {theme.BUTTON_RADIUS}px;
         min-height: 34px;
         padding: 4px 14px;
-        font-weight: bold;
+        font-weight: 600;
     }}
 
     QPushButton:hover {{
@@ -103,17 +97,17 @@ def secondary_button_style() -> str:
     QPushButton {{
         background-color: {theme.PANEL_BACKGROUND};
         color: {theme.TEXT_PRIMARY};
-        border: 1px solid {theme.CYAN};
+        border: 1px solid {theme.CARD_BORDER};
         border-radius: {theme.BUTTON_RADIUS}px;
         min-height: 34px;
         padding: 4px 14px;
-        font-weight: bold;
+        font-weight: 500;
     }}
 
     QPushButton:hover {{
         background-color: {theme.CARD_BACKGROUND};
-        border-color: {theme.CYAN_HOVER};
-        color: {theme.CYAN_HOVER};
+        border-color: {theme.ACCENT_HOVER};
+        color: {theme.TEXT_PRIMARY};
     }}
 
     QPushButton:pressed {{

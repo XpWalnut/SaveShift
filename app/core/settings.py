@@ -30,6 +30,7 @@ class AppSettings:
     automatic_update_checks: bool = True
     manual_transfer_controls: bool = False
     prompt_for_session_journal: bool = True
+    capture_session_images: bool = True
     player_display_name: str = ""
     coordination_enabled: bool = False
     coordination_server_url: str = ""
@@ -208,6 +209,12 @@ class SettingsService:
             data,
             "active_coordination_group_id",
         )
+        capture_session_images = SettingsService._boolean(
+            data,
+            "capture_session_images",
+            True,
+            path,
+        )
         migrated_legacy = False
         if "coordination_groups" not in data and coordination_enabled:
             legacy_url = SettingsService._string(data, "coordination_server_url")
@@ -256,6 +263,7 @@ class SettingsService:
             automatic_update_checks=automatic_update_checks,
             manual_transfer_controls=manual_transfer_controls,
             prompt_for_session_journal=prompt_for_session_journal,
+            capture_session_images=capture_session_images,
             player_display_name=SettingsService._string(
                 data,
                 "player_display_name",
@@ -319,6 +327,7 @@ class SettingsService:
             "automatic_update_checks": settings.automatic_update_checks,
             "manual_transfer_controls": settings.manual_transfer_controls,
             "prompt_for_session_journal": settings.prompt_for_session_journal,
+            "capture_session_images": settings.capture_session_images,
             "player_display_name": settings.player_display_name,
             "coordination_enabled": settings.coordination_enabled,
             "coordination_server_url": settings.coordination_server_url,
