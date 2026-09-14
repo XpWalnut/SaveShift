@@ -3,6 +3,7 @@ from pathlib import Path
 from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.ugc_client import SteamPublishedItem, SteamUgcVisibility
 from tests.steam.test_device_identity import MemoryProtector
 
@@ -52,10 +53,12 @@ def test_manifest_transport_publishes_then_downloads_signed_manifest(
 ) -> None:
     client = FakeUgcClient(tmp_path / "download")
     legal_urls: list[str] = []
+    cache = SteamGroupManifestCache(tmp_path / "cache")
     transport = SteamGroupManifestTransport(
         client,
         tmp_path / "temporary",
         legal_urls.append,
+        cache,
     )
     manifest = _manifest(tmp_path)
 
@@ -64,6 +67,7 @@ def test_manifest_transport_publishes_then_downloads_signed_manifest(
 
     assert item_id == "3797671909"
     assert restored == manifest
+    assert cache.load(manifest.group_id) is not None
     assert legal_urls == ["steam://url/CommunityFilePage/3797671909"]
     assert client.published[0][1]["visibility"] == SteamUgcVisibility.UNLISTED
     assert '"kind":"saveshift-group-manifest"' in str(

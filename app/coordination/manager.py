@@ -20,7 +20,29 @@ class CoordinationManager:
         project_uuid: str,
         owner_display_name: str,
     ) -> LockLease:
-        lease = self.provider.acquire_lock(project_uuid, owner_display_name)
+        acquire = getattr(self.provider, "acquire_hosting_lock", None)
+        lease = (
+            acquire(project_uuid, owner_display_name)
+            if callable(acquire)
+            else self.provider.acquire_lock(project_uuid, owner_display_name)
+        )
+        self.active_leases[project_uuid] = lease
+        return lease
+
+    def recover_hosting_lease(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+        parent_descriptor_hash: str,
+    ) -> LockLease:
+        acquire = getattr(self.provider, "acquire_recovery_lock", None)
+        if not callable(acquire):
+            raise RuntimeError("This coordination provider cannot recover a host session.")
+        lease = acquire(
+            project_uuid,
+            owner_display_name,
+            parent_descriptor_hash,
+        )
         self.active_leases[project_uuid] = lease
         return lease
 
@@ -60,6 +82,14 @@ class CoordinationManager:
 
         return failures
 
+    def close(self) -> list[tuple[LockLease, Exception]]:
+        """Release tracked leases and dispose provider-owned resources."""
+        failures = self.release_all()
+        close_provider = getattr(self.provider, "close", None)
+        if callable(close_provider):
+            close_provider()
+        return failures
+
     @contextmanager
     def temporary_lease(
         self,
@@ -71,7 +101,8 @@ class CoordinationManager:
                 "Stop hosting this project before modifying its local save."
             )
 
-        lease = self.acquire_hosting_lease(project_uuid, owner_display_name)
+        lease = self.provider.acquire_lock(project_uuid, owner_display_name)
+        self.active_leases[project_uuid] = lease
 
         try:
             yield lease

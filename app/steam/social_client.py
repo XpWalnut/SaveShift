@@ -52,6 +52,22 @@ class SteamSocialClient(Protocol):
     ) -> SteamLobby:
         ...
 
+    def create_searchable_lobby(
+        self,
+        *,
+        maximum_members: int = 16,
+        metadata: Mapping[str, str] | None = None,
+    ) -> SteamLobby:
+        ...
+
+    def find_lobbies(
+        self,
+        metadata: Mapping[str, str],
+        *,
+        maximum_results: int = 50,
+    ) -> list[SteamLobby]:
+        ...
+
     def join_lobby(self, lobby_id: str) -> SteamLobby:
         ...
 

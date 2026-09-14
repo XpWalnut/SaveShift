@@ -104,6 +104,29 @@ class SteamDeviceIdentityStore:
         self._save(identity)
         return identity
 
+    def restore(
+        self,
+        identity: SteamDeviceIdentity,
+        *,
+        overwrite: bool = False,
+    ) -> None:
+        self._steam_id(identity.steam_id)
+        uuid.UUID(identity.device_id)
+        if self.path.exists():
+            existing = self._load(identity.steam_id)
+            same_identity = (
+                existing.device_id == identity.device_id
+                and existing.signing_public_key == identity.signing_public_key
+                and existing.agreement_public_key == identity.agreement_public_key
+            )
+            if same_identity:
+                return
+            if not overwrite:
+                raise ValueError(
+                    "This computer already has a different Save Shift Steam identity."
+                )
+        self._save(identity)
+
     def _load(self, expected_steam_id: str) -> SteamDeviceIdentity:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))

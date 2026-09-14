@@ -32,6 +32,7 @@ _SUBMIT_ITEM_UPDATE_CALLBACK = 3404
 _DOWNLOAD_ITEM_CALLBACK = 3406
 _DELETE_ITEM_CALLBACK = 3417
 _LOBBY_ENTER_CALLBACK = 504
+_LOBBY_MATCH_LIST_CALLBACK = 510
 _LOBBY_CREATED_CALLBACK = 513
 _GAME_LOBBY_JOIN_REQUESTED_CALLBACK = 333
 _LOBBY_CHAT_MESSAGE_CALLBACK = 507
@@ -42,6 +43,9 @@ _ITEM_STATE_DOWNLOAD_PENDING = 32
 _TRANSIENT_DOWNLOAD_RESULTS = {2, 3, 16, 20, 50, 53}
 _FRIEND_FLAG_IMMEDIATE = 0x04
 _LOBBY_TYPE_PRIVATE = 0
+_LOBBY_TYPE_INVISIBLE = 3
+_LOBBY_COMPARISON_EQUAL = 0
+_LOBBY_DISTANCE_WORLDWIDE = 3
 _CHAT_ROOM_ENTER_SUCCESS = 1
 _CHAT_ENTRY_TYPE_MESSAGE = 1
 _MAX_LOBBY_MESSAGE_BYTES = 4000
@@ -124,6 +128,10 @@ class _LobbyEnterResult(ctypes.Structure):
         ("locked", ctypes.c_bool),
         ("chat_room_enter_response", ctypes.c_uint32),
     ]
+
+
+class _LobbyMatchListResult(ctypes.Structure):
+    _fields_ = [("lobbies_matching", ctypes.c_uint32)]
 
 
 class _GameLobbyJoinRequested(ctypes.Structure):
@@ -549,6 +557,31 @@ class SteamworksUgcClient:
         maximum_members: int = 16,
         metadata: Mapping[str, str] | None = None,
     ) -> SteamLobby:
+        return self._create_lobby(
+            _LOBBY_TYPE_PRIVATE,
+            maximum_members=maximum_members,
+            metadata=metadata,
+        )
+
+    def create_searchable_lobby(
+        self,
+        *,
+        maximum_members: int = 16,
+        metadata: Mapping[str, str] | None = None,
+    ) -> SteamLobby:
+        return self._create_lobby(
+            _LOBBY_TYPE_INVISIBLE,
+            maximum_members=maximum_members,
+            metadata=metadata,
+        )
+
+    def _create_lobby(
+        self,
+        lobby_type: int,
+        *,
+        maximum_members: int,
+        metadata: Mapping[str, str] | None,
+    ) -> SteamLobby:
         if not 2 <= maximum_members <= 250:
             raise ValueError("A Steam lobby must allow between 2 and 250 members.")
         with self._lock:
@@ -556,7 +589,7 @@ class SteamworksUgcClient:
             result = self._await_call(
                 self._api.SteamAPI_ISteamMatchmaking_CreateLobby(
                     self._matchmaking,
-                    _LOBBY_TYPE_PRIVATE,
+                    lobby_type,
                     maximum_members,
                 ),
                 _LobbyCreatedResult,
@@ -569,6 +602,54 @@ class SteamworksUgcClient:
             for key, value in (metadata or {}).items():
                 self.set_lobby_data(lobby.lobby_id, key, value)
             return lobby
+
+    def find_lobbies(
+        self,
+        metadata: Mapping[str, str],
+        *,
+        maximum_results: int = 50,
+    ) -> list[SteamLobby]:
+        if not metadata:
+            raise ValueError("A Steam lobby search requires metadata filters.")
+        if not 1 <= maximum_results <= 50:
+            raise ValueError("A Steam lobby search can return between 1 and 50 results.")
+        with self._lock:
+            self._ensure_open()
+            for key, value in metadata.items():
+                self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter(
+                    self._matchmaking,
+                    self._lobby_text(key, "Lobby metadata key"),
+                    self._lobby_text(value, "Lobby metadata value"),
+                    _LOBBY_COMPARISON_EQUAL,
+                )
+            self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter(
+                self._matchmaking,
+                _LOBBY_DISTANCE_WORLDWIDE,
+            )
+            self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListResultCountFilter(
+                self._matchmaking,
+                maximum_results,
+            )
+            result = self._await_call(
+                self._api.SteamAPI_ISteamMatchmaking_RequestLobbyList(
+                    self._matchmaking
+                ),
+                _LobbyMatchListResult,
+                _LOBBY_MATCH_LIST_CALLBACK,
+            )
+            return [
+                SteamLobby(
+                    lobby_id=str(
+                        int(
+                            self._api.SteamAPI_ISteamMatchmaking_GetLobbyByIndex(
+                                self._matchmaking,
+                                index,
+                            )
+                        )
+                    )
+                )
+                for index in range(int(result.lobbies_matching))
+            ]
 
     def join_lobby(self, lobby_id: str) -> SteamLobby:
         numeric_id = self._parse_steam_id(lobby_id, "lobby")
@@ -1014,6 +1095,26 @@ class SteamworksUgcClient:
             ),
             "SteamAPI_ISteamMatchmaking_CreateLobby": (
                 [ctypes.c_void_p, ctypes.c_int, ctypes.c_int],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter": (
+                [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter": (
+                [ctypes.c_void_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListResultCountFilter": (
+                [ctypes.c_void_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_RequestLobbyList": (
+                [ctypes.c_void_p],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyByIndex": (
+                [ctypes.c_void_p, ctypes.c_int],
                 ctypes.c_uint64,
             ),
             "SteamAPI_ISteamMatchmaking_JoinLobby": (

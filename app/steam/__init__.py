@@ -12,6 +12,22 @@ from app.steam.group_manifest import (
     SteamMemberPackageIndexReference,
 )
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.manifest_cache import (
+    CachedSteamGroupManifest,
+    SteamGroupManifestCache,
+)
+from app.steam.hosting_presence import (
+    SteamHostPresence,
+    SteamHostingPresenceService,
+)
+from app.steam.host_session_store import (
+    SteamHostSessionCheckpoint,
+    SteamHostSessionStore,
+)
+from app.steam.administrator_recovery import (
+    RecoveredSteamAdministrator,
+    SteamAdministratorRecoveryService,
+)
 from app.steam.group_security import (
     SteamGroupKeyEnvelope,
     SteamMembershipCertificate,
@@ -50,6 +66,14 @@ __all__ = [
     "SteamGroupManifest",
     "SteamMemberPackageIndexReference",
     "SteamGroupManifestTransport",
+    "CachedSteamGroupManifest",
+    "SteamGroupManifestCache",
+    "SteamHostPresence",
+    "SteamHostingPresenceService",
+    "SteamHostSessionCheckpoint",
+    "SteamHostSessionStore",
+    "RecoveredSteamAdministrator",
+    "SteamAdministratorRecoveryService",
     "SteamMembershipCertificate",
     "SteamPackageDescriptor",
     "SteamPackageDescriptorTransport",

@@ -12,6 +12,7 @@ from app.coordination.models import (
     LockLease,
     PackageCatalogMetadata,
 )
+from app.core.settings import AppSettings, CoordinationGroupSettings
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
@@ -21,6 +22,7 @@ from app.services.hosting_service import HostingService
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
 from app.services.session_journal_service import SessionJournalService
+from app.steam.host_session_store import SteamHostSessionCheckpoint
 from app.ui.main_window import MainWindow
 
 
@@ -341,6 +343,74 @@ def test_host_download_failure_releases_preflight_lease(
     assert provider.released == [lease]
     assert not window.coordination_manager.active_leases
     assert messages[0][0] == "Host Failed"
+
+
+def test_interrupted_steam_host_reacquires_original_parent_then_hands_off(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    group_id = "87654321-4321-4678-9234-567812345678"
+    project = _project(tmp_path)
+    project.coordination_group_id = group_id
+    checkpoint = SteamHostSessionCheckpoint.create(
+        group_id=group_id,
+        project_uuid=project.uuid,
+        parent_descriptor_hash="a" * 64,
+        host_display_name="Bob",
+    )
+    recovery_calls: list[tuple[str, str, str]] = []
+    handoffs: list[tuple[Project, bool]] = []
+
+    class RecoveryProvider(FakeProvider):
+        def acquire_recovery_lock(
+            self,
+            project_uuid: str,
+            owner: str,
+            parent_hash: str,
+        ) -> LockLease:
+            recovery_calls.append((project_uuid, owner, parent_hash))
+            return self.acquire_lock(project_uuid, owner)
+
+    class StoppedGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+    window.settings = AppSettings(player_display_name="Bob").upsert_group(
+        CoordinationGroupSettings(
+            group_id=group_id,
+            name="Family Worlds",
+            device_id="12345678-1234-4678-9234-567812345678",
+            provider_kind="steam",
+            steam_manifest_item_id="3797671909",
+            steam_package_index_item_id="3797671910",
+        )
+    )
+    provider = RecoveryProvider()
+    window.coordination_manager = CoordinationManager(provider)
+    window.interrupted_host_sessions = {project.uuid: checkpoint}
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: StoppedGame(),
+    )
+    monkeypatch.setattr(
+        window,
+        "handoff_project",
+        lambda selected, *, automatic=False: handoffs.append(
+            (selected, automatic)
+        ),
+    )
+
+    window.host_project(project)
+
+    assert recovery_calls == [(project.uuid, "Bob", "a" * 64)]
+    assert handoffs == [(project, True)]
+    assert window.coordination_manager.has_active_lease(project.uuid)
+    window._release_coordination_lease(project.uuid, report_error=False)
 
 
 def test_window_stays_open_during_automatic_host_session(

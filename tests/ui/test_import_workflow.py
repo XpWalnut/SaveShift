@@ -175,7 +175,7 @@ def test_project_card_displays_lock_owner_and_expiration(
 
     card.show_lock(lease, local_device_id="local-device")
 
-    assert "Locked by Alice" in card.lock_status_label.text()
+    assert "Hosted by Alice" in card.lock_status_label.text()
     assert "Expires" in card.lock_status_label.text()
     assert "unless renewed" in card.lock_status_label.text()
 
@@ -207,7 +207,7 @@ def test_project_card_identifies_lock_owned_by_this_computer(
 
     card.show_lock(lease, local_device_id="local-device")
 
-    assert "Locked by Bob (this computer)" in card.lock_status_label.text()
+    assert "Hosted by Bob (this computer)" in card.lock_status_label.text()
 
 
 def test_main_window_import_validates_then_imports_and_refreshes(

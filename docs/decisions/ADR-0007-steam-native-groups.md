@@ -106,6 +106,15 @@ migration.
   pending branch, and reconciles it against the refreshed group head after
   connectivity returns.
 
+The online portion is implemented with a signed, invisible, searchable lobby
+per actively hosted world. Lobby metadata is scoped by group ID, and the
+embedded presence must verify against an active membership certificate and the
+lobby owner's Steam ID. Save Shift keeps the lobby client alive for the hosted
+session and explicitly leaves it after publication or shutdown. A local
+checkpoint persists the original descriptor parent before game launch. Recovery
+may reacquire presence and publish only if that parent is still the current
+group head; it never silently rebases interrupted local work.
+
 ## Migration
 
 1. Add Steam identity, friends, matchmaking, lobby-callback, and UGC-query

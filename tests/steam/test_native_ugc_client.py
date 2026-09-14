@@ -11,6 +11,7 @@ from app.steam.native_ugc_client import (
     _DOWNLOAD_ITEM_CALLBACK,
     _LOBBY_CREATED_CALLBACK,
     _LOBBY_ENTER_CALLBACK,
+    _LOBBY_MATCH_LIST_CALLBACK,
     _GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
     _LOBBY_CHAT_MESSAGE_CALLBACK,
     _CallbackMessage,
@@ -66,6 +67,13 @@ class FakeSteamApi:
         )
         self.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog = FakeFunction()
         self.SteamAPI_ISteamMatchmaking_CreateLobby = FakeFunction(500)
+        self.SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter = FakeFunction()
+        self.SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter = FakeFunction()
+        self.SteamAPI_ISteamMatchmaking_AddRequestLobbyListResultCountFilter = FakeFunction()
+        self.SteamAPI_ISteamMatchmaking_RequestLobbyList = FakeFunction(550)
+        self.SteamAPI_ISteamMatchmaking_GetLobbyByIndex = FakeFunction(
+            lambda _matchmaking, index: 109775240917155001 + index
+        )
         self.SteamAPI_ISteamMatchmaking_JoinLobby = FakeFunction(600)
         self.SteamAPI_ISteamMatchmaking_LeaveLobby = FakeFunction()
         self.SteamAPI_ISteamMatchmaking_InviteUserToLobby = FakeFunction(True)
@@ -140,6 +148,8 @@ class StubbedResultClient(SteamworksUgcClient):
         elif expected_callback == _LOBBY_ENTER_CALLBACK:
             result.lobby_id = 109775240917155001
             result.chat_room_enter_response = 1
+        elif expected_callback == _LOBBY_MATCH_LIST_CALLBACK:
+            result.lobbies_matching = 2
         else:
             raise AssertionError(f"Unexpected callback: {expected_callback}")
 
@@ -382,6 +392,32 @@ def test_private_lobby_supports_metadata_invites_and_members(tmp_path: Path) -> 
     ]
     assert api.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog.calls == [
         (3234, 109775240917155001)
+    ]
+
+
+def test_searchable_lobby_uses_invisible_type_and_exact_world_filters(
+    tmp_path: Path,
+) -> None:
+    api = FakeSteamApi(tmp_path)
+    client = StubbedResultClient(library=api)
+
+    lobby = client.create_searchable_lobby(metadata={"ss_group": "group-123"})
+    found = client.find_lobbies(
+        {"ss_protocol": "saveshift-host-v1", "ss_group": "group-123"}
+    )
+
+    assert lobby.lobby_id == "109775240917155001"
+    assert api.SteamAPI_ISteamMatchmaking_CreateLobby.calls[0] == (4234, 3, 16)
+    assert [item.lobby_id for item in found] == [
+        "109775240917155001",
+        "109775240917155002",
+    ]
+    assert api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter.calls == [
+        (4234, b"ss_protocol", b"saveshift-host-v1", 0),
+        (4234, b"ss_group", b"group-123", 0),
+    ]
+    assert api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter.calls == [
+        (4234, 3)
     ]
 
 

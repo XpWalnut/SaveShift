@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,9 +32,10 @@ class GroupHandoffService:
                 f"The package to hand off does not exist: {package_path}"
             )
 
-        client = client_factory()
-
-        try:
+        with GroupHandoffService._operation_client(
+            provider,
+            client_factory,
+        ) as client:
             with GroupHandoffService._provider_client_scope(provider, client):
                 transport = GroupHandoffService._transport(
                     client,
@@ -47,8 +48,6 @@ class GroupHandoffService:
                     transport,
                     provider,
                 )
-        finally:
-            GroupHandoffService._close_client(client)
 
     @staticmethod
     @diagnostic_operation("package.receive")
@@ -66,21 +65,23 @@ class GroupHandoffService:
         destination_path = (
             destination_root / f"received-{uuid4().hex}.sspkg"
         )
-        client = client_factory()
-
         try:
-            with GroupHandoffService._provider_client_scope(provider, client):
-                transport = GroupHandoffService._transport(
-                    client,
-                    provider,
-                    None,
-                )
-                result = PackageHandoffService.download_latest(
-                    project_uuid,
-                    destination_path,
-                    transport,
-                    provider,
-                )
+            with GroupHandoffService._operation_client(
+                provider,
+                client_factory,
+            ) as client:
+                with GroupHandoffService._provider_client_scope(provider, client):
+                    transport = GroupHandoffService._transport(
+                        client,
+                        provider,
+                        None,
+                    )
+                    result = PackageHandoffService.download_latest(
+                        project_uuid,
+                        destination_path,
+                        transport,
+                        provider,
+                    )
 
             if result is None:
                 destination_path.unlink(missing_ok=True)
@@ -89,8 +90,6 @@ class GroupHandoffService:
         except Exception:
             destination_path.unlink(missing_ok=True)
             raise
-        finally:
-            GroupHandoffService._close_client(client)
 
     @staticmethod
     @diagnostic_operation("catalog.list")
@@ -119,6 +118,20 @@ class GroupHandoffService:
 
         if callable(close):
             close()
+
+    @staticmethod
+    @contextmanager
+    def _operation_client(provider, client_factory):
+        provider_scope = getattr(provider, "ugc_client_scope", None)
+        if callable(provider_scope):
+            with provider_scope() as client:
+                yield client
+            return
+        client = client_factory()
+        try:
+            yield client
+        finally:
+            GroupHandoffService._close_client(client)
 
     @staticmethod
     def _provider_client_scope(provider, client: SteamUgcClient):

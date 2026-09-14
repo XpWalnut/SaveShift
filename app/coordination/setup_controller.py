@@ -24,6 +24,7 @@ from app.steam.group_invitation import (
     SteamGroupInvitationService,
 )
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
 from app.steam.social_client import SteamLobbyJoinRequest, SteamLobbyMessage
@@ -98,6 +99,7 @@ class InviteSteamMemberTask(QRunnable):
         signals: GroupSetupSignals,
         client_factory: Callable[[], SteamworksUgcClient],
         identity_store_factory: Callable[[], SteamDeviceIdentityStore],
+        manifest_cache_factory: Callable[[], SteamGroupManifestCache],
         timeout_seconds: float,
     ) -> None:
         super().__init__()
@@ -106,6 +108,7 @@ class InviteSteamMemberTask(QRunnable):
         self.signals = signals
         self.client_factory = client_factory
         self.identity_store_factory = identity_store_factory
+        self.manifest_cache_factory = manifest_cache_factory
         self.timeout_seconds = timeout_seconds
 
     def run(self) -> None:
@@ -117,7 +120,10 @@ class InviteSteamMemberTask(QRunnable):
             identity = self.identity_store_factory().load_or_create(
                 steam_identity.steam_id
             )
-            transport = SteamGroupManifestTransport(client)
+            transport = SteamGroupManifestTransport(
+                client,
+                cache=self.manifest_cache_factory(),
+            )
             manifest = transport.download(self.manifest_item_id)
             if manifest.group_id != self.group_id:
                 raise ValueError("The saved Steam group manifest does not match.")
@@ -163,12 +169,14 @@ class JoinSteamGroupTask(QRunnable):
         signals: GroupSetupSignals,
         client_factory: Callable[[], SteamworksUgcClient],
         identity_store_factory: Callable[[], SteamDeviceIdentityStore],
+        manifest_cache_factory: Callable[[], SteamGroupManifestCache],
         timeout_seconds: float,
     ) -> None:
         super().__init__()
         self.signals = signals
         self.client_factory = client_factory
         self.identity_store_factory = identity_store_factory
+        self.manifest_cache_factory = manifest_cache_factory
         self.timeout_seconds = timeout_seconds
 
     def run(self) -> None:
@@ -180,7 +188,10 @@ class JoinSteamGroupTask(QRunnable):
             identity = self.identity_store_factory().load_or_create(
                 steam_identity.steam_id
             )
-            transport = SteamGroupManifestTransport(client)
+            transport = SteamGroupManifestTransport(
+                client,
+                cache=self.manifest_cache_factory(),
+            )
             invitation = SteamGroupInvitationService(client, transport)
             self.signals.steam_join_waiting.emit()
             deadline = time.monotonic() + self.timeout_seconds
@@ -326,6 +337,7 @@ class GroupSetupController(QObject):
         steam_service_factory: Callable[[], SteamNativeGroupService] | None = None,
         steam_client_factory: Callable[[], SteamworksUgcClient] | None = None,
         identity_store_factory: Callable[[], SteamDeviceIdentityStore] | None = None,
+        manifest_cache_factory: Callable[[], SteamGroupManifestCache] | None = None,
         steam_invitation_timeout_seconds: float = 120.0,
     ) -> None:
         super().__init__(parent)
@@ -340,6 +352,9 @@ class GroupSetupController(QObject):
         self._steam_client_factory = steam_client_factory or SteamworksUgcClient
         self._identity_store_factory = (
             identity_store_factory or SteamDeviceIdentityStore
+        )
+        self._manifest_cache_factory = (
+            manifest_cache_factory or SteamGroupManifestCache
         )
         self._steam_invitation_timeout_seconds = steam_invitation_timeout_seconds
 
@@ -391,6 +406,7 @@ class GroupSetupController(QObject):
             signals,
             self._steam_client_factory,
             self._identity_store_factory,
+            self._manifest_cache_factory,
             self._steam_invitation_timeout_seconds,
         )
         self._task = task
@@ -411,6 +427,7 @@ class GroupSetupController(QObject):
             signals,
             self._steam_client_factory,
             self._identity_store_factory,
+            self._manifest_cache_factory,
             self._steam_invitation_timeout_seconds,
         )
         self._task = task

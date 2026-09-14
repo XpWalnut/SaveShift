@@ -26,6 +26,8 @@ class SettingsDialog(QDialog):
     ACTION_CLAIM_ADMINISTRATOR = "claim_administrator"
     ACTION_LEAVE_GROUP = "leave_group"
     ACTION_SWITCH_GROUP = "switch_group"
+    ACTION_EXPORT_ADMIN_RECOVERY = "export_admin_recovery"
+    ACTION_IMPORT_ADMIN_RECOVERY = "import_admin_recovery"
 
     def __init__(
         self,
@@ -57,7 +59,7 @@ class SettingsDialog(QDialog):
 
         profile_description = QLabel(
             "This name is recorded in project history and shown to friends "
-            "when you hold a project lock."
+            "when you are the active host."
         )
         profile_description.setWordWrap(True)
         profile_description.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
@@ -140,7 +142,7 @@ class SettingsDialog(QDialog):
         )
 
         self.coordination_enabled_checkbox = QCheckBox(
-            "Enable coordinated project locking"
+            "Enable coordinated group hosting"
         )
         self.coordination_enabled_checkbox.setChecked(
             settings.coordination_enabled
@@ -249,6 +251,28 @@ class SettingsDialog(QDialog):
             lambda: self._request_coordination_action(self.ACTION_LEAVE_GROUP)
         )
 
+        self.export_recovery_button = QPushButton("Back Up Group Access")
+        self.export_recovery_button.setStyleSheet(styles.secondary_button_style())
+        self.export_recovery_button.setToolTip(
+            "Create a password-encrypted recovery kit for this Steam group."
+        )
+        self.export_recovery_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_EXPORT_ADMIN_RECOVERY
+            )
+        )
+
+        self.import_recovery_button = QPushButton("Recover Group")
+        self.import_recovery_button.setStyleSheet(styles.secondary_button_style())
+        self.import_recovery_button.setToolTip(
+            "Restore administrator access from an encrypted recovery kit."
+        )
+        self.import_recovery_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_IMPORT_ADMIN_RECOVERY
+            )
+        )
+
         coordination_setup_row = QHBoxLayout()
         coordination_setup_row.addWidget(self.create_group_button)
         coordination_setup_row.addWidget(self.join_group_button)
@@ -260,6 +284,11 @@ class SettingsDialog(QDialog):
         coordination_management_row.addWidget(self.claim_administrator_button)
         coordination_management_row.addWidget(self.leave_group_button)
         coordination_management_row.addStretch()
+
+        coordination_recovery_row = QHBoxLayout()
+        coordination_recovery_row.addWidget(self.import_recovery_button)
+        coordination_recovery_row.addWidget(self.export_recovery_button)
+        coordination_recovery_row.addStretch()
 
         self.coordination_setup_note = QLabel()
         self.coordination_setup_note.setWordWrap(True)
@@ -285,6 +314,9 @@ class SettingsDialog(QDialog):
         )
         self.claim_administrator_button.setVisible(False)
         self.leave_group_button.setVisible(paired)
+        self.export_recovery_button.setVisible(
+            paired and self._is_administrator and self._provider_kind == "steam"
+        )
 
         self.advanced_coordination_checkbox = QCheckBox(
             "Advanced custom provider setup"
@@ -340,6 +372,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.coordination_enabled_checkbox)
         layout.addLayout(coordination_setup_row)
         layout.addLayout(coordination_management_row)
+        layout.addLayout(coordination_recovery_row)
         layout.addWidget(self.coordination_setup_note)
         layout.addWidget(self.advanced_coordination_checkbox)
         layout.addLayout(coordination_form)

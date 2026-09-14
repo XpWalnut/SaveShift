@@ -6,6 +6,19 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Signed, per-world Steam hosting presence using short-lived invisible lobbies.
+  Host checks now distinguish Available, Hosted by another member, and an
+  unavailable offline status without presenting Steam as a durable lock.
+- Crash-safe Steam host-session checkpoints. If Save Shift or Windows exits
+  before handoff, the world card offers recovery and will publish only when the
+  group head still matches the exact package the interrupted session began
+  from; otherwise the local work is retained as a fork.
+- Batched Steam hosting-status discovery and explicit lobby cleanup on handoff,
+  provider shutdown, and application exit.
+- A last-known verified cache for each signed Steam group manifest and a
+  password-encrypted administrator recovery kit. Administrators can restore
+  the group identity, encryption access, and pinned Workshop coordinates on a
+  replacement computer while live Steam state remains the source of truth.
 - Hardened package imports against malicious archives from an authorized group
   member: imports now reject path traversal and Windows device/alternate-stream
   paths, undeclared payloads, duplicate and case-colliding entries, links and

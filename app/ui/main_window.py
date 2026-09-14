@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QLineEdit,
     QPushButton,
     QProgressDialog,
     QScrollArea,
@@ -43,6 +44,7 @@ from app.coordination.errors import (
     CoordinationUnavailableError,
     LockConflictError,
     LockOwnershipError,
+    PackageCatalogConflictError,
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.manager import CoordinationManager
@@ -85,6 +87,15 @@ from app.steam.group_invitation import JoinedSteamGroup
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.native_group_service import CreatedSteamGroup
 from app.steam.native_provider import SteamNativeCoordinationProvider
+from app.steam.administrator_recovery import SteamAdministratorRecoveryService
+from app.steam.device_identity import SteamDeviceIdentityStore
+from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.manifest_cache import SteamGroupManifestCache
+from app.steam.native_ugc_client import SteamworksUgcClient
+from app.steam.host_session_store import (
+    SteamHostSessionCheckpoint,
+    SteamHostSessionStore,
+)
 
 
 def discover_all_projects() -> None:
@@ -109,6 +120,16 @@ class MainWindow(QMainWindow):
         self.startup_package_path = startup_package_path
         self.distribution_channel = detect_distribution_channel()
         self.settings = SettingsService.load()
+        self.steam_host_session_store = SteamHostSessionStore()
+        try:
+            self.interrupted_host_sessions = (
+                self.steam_host_session_store.load_all()
+            )
+        except ValueError as error:
+            logger.warning("Could not load Steam host checkpoints: %s", error)
+            self.interrupted_host_sessions: dict[
+                str, SteamHostSessionCheckpoint
+            ] = {}
         if (
             self.settings.legacy_group_migration_pending
             and self.settings.active_coordination_group is not None
@@ -633,6 +654,14 @@ class MainWindow(QMainWindow):
 
         if coordination_action == "switch_group":
             self._switch_active_group(dialog.selected_group_id)
+            return
+
+        if coordination_action == "export_admin_recovery":
+            self._export_steam_administrator_recovery()
+            return
+
+        if coordination_action == "import_admin_recovery":
+            self._import_steam_administrator_recovery()
             return
 
         if (
@@ -1327,6 +1356,174 @@ class MainWindow(QMainWindow):
             "clipboard. Send it to one friend through a trusted channel.",
         )
 
+    def _export_steam_administrator_recovery(self) -> None:
+        group = self.settings.active_coordination_group
+        if (
+            group is None
+            or group.provider_kind != "steam"
+            or not group.is_administrator
+        ):
+            QMessageBox.warning(
+                self,
+                "Administrator Required",
+                "Select a Steam group administered by this computer first.",
+            )
+            return
+        password, accepted = QInputDialog.getText(
+            self,
+            "Protect Recovery Kit",
+            "Choose a password with at least 12 characters:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted:
+            return
+        confirmation, accepted = QInputDialog.getText(
+            self,
+            "Confirm Recovery Password",
+            "Enter the same password again:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted:
+            return
+        if password != confirmation:
+            QMessageBox.warning(
+                self,
+                "Passwords Do Not Match",
+                "Try the recovery export again.",
+            )
+            return
+        default_name = f"SaveShift-{group.name}-administrator.ssrecovery"
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Administrator Recovery Kit",
+            str(Path.home() / default_name),
+            "Save Shift Recovery Kits (*.ssrecovery)",
+        )
+        if not destination:
+            return
+        path = Path(destination)
+        if path.suffix.casefold() != ".ssrecovery":
+            path = path.with_suffix(".ssrecovery")
+        try:
+            cache = SteamGroupManifestCache()
+            cached = cache.load(
+                group.group_id,
+                expected_manifest_item_id=group.steam_manifest_item_id,
+            )
+            if cached is None:
+                client = SteamworksUgcClient()
+                try:
+                    manifest = SteamGroupManifestTransport(
+                        client,
+                        cache=cache,
+                    ).download(
+                        group.steam_manifest_item_id
+                    )
+                finally:
+                    client.close()
+            else:
+                manifest = cached.manifest
+            identity = SteamDeviceIdentityStore().load_or_create(
+                manifest.administrator_steam_id
+            )
+            SteamAdministratorRecoveryService.export(
+                path,
+                password=password,
+                identity=identity,
+                manifest=manifest,
+                manifest_item_id=group.steam_manifest_item_id,
+                package_index_item_id=group.steam_package_index_item_id,
+            )
+        except Exception as error:
+            path.unlink(missing_ok=True)
+            QMessageBox.warning(self, "Recovery Backup Failed", str(error))
+            return
+        QMessageBox.information(
+            self,
+            "Recovery Kit Saved",
+            "Store this file and its password separately. Anyone with both can "
+            "administer the group and decrypt its saves.",
+        )
+
+    def _import_steam_administrator_recovery(self) -> None:
+        source, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Open Administrator Recovery Kit",
+            str(Path.home()),
+            "Save Shift Recovery Kits (*.ssrecovery)",
+        )
+        if not source:
+            return
+        password, accepted = QInputDialog.getText(
+            self,
+            "Unlock Recovery Kit",
+            "Enter the recovery password:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted:
+            return
+        client: SteamworksUgcClient | None = None
+        try:
+            client = SteamworksUgcClient()
+            steam_identity = client.current_identity()
+            recovered = SteamAdministratorRecoveryService.import_kit(
+                Path(source),
+                password=password,
+                signed_in_steam_id=steam_identity.steam_id,
+            )
+            identity_store = SteamDeviceIdentityStore()
+            try:
+                identity_store.restore(recovered.identity)
+            except ValueError as error:
+                if "different Save Shift Steam identity" not in str(error):
+                    raise
+                answer = QMessageBox.question(
+                    self,
+                    "Replace Steam Device Identity?",
+                    "This computer already has a different Save Shift Steam "
+                    "identity. Replacing it restores this group, but other "
+                    "Steam groups created or joined with the current identity "
+                    "may stop working on this computer.\n\nContinue?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+                identity_store.restore(recovered.identity, overwrite=True)
+            SteamGroupManifestCache().save(
+                recovered.manifest_item_id,
+                recovered.manifest,
+            )
+            group = CoordinationGroupSettings(
+                group_id=recovered.manifest.group_id,
+                name=recovered.group_name,
+                device_id=recovered.identity.device_id,
+                device_name=platform.node() or "Recovered Windows PC",
+                is_administrator=True,
+                provider_kind="steam",
+                steam_manifest_item_id=recovered.manifest_item_id,
+                steam_package_index_item_id=recovered.package_index_item_id,
+                steam_administrator_steam_id=recovered.identity.steam_id,
+            )
+            if not self._apply_coordination_settings(
+                self.settings.upsert_group(group)
+            ):
+                return
+        except Exception as error:
+            QMessageBox.warning(self, "Group Recovery Failed", str(error))
+            return
+        finally:
+            if client is not None:
+                client.close()
+        QMessageBox.information(
+            self,
+            "Group Access Recovered",
+            "Administrator access and the last verified group manifest were "
+            "restored. Save Shift will verify the live Steam manifest before "
+            "the next synchronized operation.",
+        )
+
     def _manage_group_devices(self) -> None:
         if not self.settings.coordination_is_administrator:
             QMessageBox.warning(
@@ -1851,6 +2048,10 @@ class MainWindow(QMainWindow):
         if not self._activate_project_group(project):
             return
         coordinated = self._project_is_coordinated(project)
+        checkpoint = self.interrupted_host_sessions.get(project.uuid)
+        if coordinated and checkpoint is not None:
+            self._recover_interrupted_host_session(project, checkpoint)
+            return
         if (
             self._automatic_session_project is not None
             and self._automatic_session_project.uuid != project.uuid
@@ -1989,12 +2190,32 @@ class MainWindow(QMainWindow):
             )
             return
 
+        checkpoint_saved = self._save_steam_host_checkpoint(project.uuid)
+        if (
+            self.settings.coordination_provider_kind == "steam"
+            and self._project_is_coordinated(project)
+            and not checkpoint_saved
+        ):
+            self._release_coordination_lease(
+                project.uuid,
+                report_error=False,
+            )
+            QMessageBox.warning(
+                self,
+                "Host Safety Check Failed",
+                "Save Shift could not preserve the session ancestry needed "
+                "for crash recovery, so the game was not launched.",
+            )
+            return
+
         try:
             was_already_running = supported_game.is_running()
 
             if not was_already_running:
                 supported_game.launch()
         except Exception as error:
+            if checkpoint_saved:
+                self._remove_steam_host_checkpoint(project.uuid)
             self._release_coordination_lease(
                 project.uuid,
                 report_error=False,
@@ -2085,6 +2306,7 @@ class MainWindow(QMainWindow):
             self.automatic_session_timer.stop()
             self._automatic_session_project = None
             self._automatic_session_game = None
+            self._remove_steam_host_checkpoint(project.uuid)
             self._release_coordination_lease(
                 project.uuid,
                 report_error=False,
@@ -2872,6 +3094,7 @@ class MainWindow(QMainWindow):
         if project is None or version is None:
             return
 
+        self._remove_steam_host_checkpoint(project.uuid)
         release_error = self._release_coordination_lease(
             project.uuid,
             report_error=False,
@@ -3362,7 +3585,9 @@ class MainWindow(QMainWindow):
 
         if self.coordination_manager is None:
             for project_uuid in active_project_uuids:
-                self.project_cards[project_uuid].show_lock_unavailable()
+                self.project_cards[project_uuid].show_lock_unavailable(
+                    steam=self.settings.coordination_provider_kind == "steam"
+                )
             return
 
         for project_uuid in active_project_uuids:
@@ -3406,7 +3631,9 @@ class MainWindow(QMainWindow):
             ):
                 self._apply_project_lock_status(project_uuid, card)
             else:
-                card.show_lock_unavailable()
+                card.show_lock_unavailable(
+                    steam=self.settings.coordination_provider_kind == "steam"
+                )
 
     def _apply_project_lock_status(
         self,
@@ -3428,10 +3655,17 @@ class MainWindow(QMainWindow):
             return
 
         if self.coordination_manager is None:
-            card.show_lock_unavailable()
+            card.show_lock_unavailable(
+                steam=self.settings.coordination_provider_kind == "steam"
+            )
             return
 
         lease = self.coordination_manager.active_leases.get(project_uuid)
+
+        checkpoint = self.interrupted_host_sessions.get(project_uuid)
+        if lease is None and checkpoint is not None:
+            card.show_interrupted_host_session()
+            return
 
         if lease is None and project_uuid in self.project_lock_statuses:
             lease = self.project_lock_statuses[project_uuid]
@@ -3440,6 +3674,7 @@ class MainWindow(QMainWindow):
             card.show_lock(
                 lease,
                 local_device_id=self.settings.coordination_device_id,
+                steam=self.settings.coordination_provider_kind == "steam",
             )
         elif project_uuid in self.project_lock_statuses:
             card.show_lock_available()
@@ -3545,6 +3780,99 @@ class MainWindow(QMainWindow):
             owner_display_name,
         )
         self._set_project_lock_status(lease)
+
+    def _save_steam_host_checkpoint(self, project_uuid: str) -> bool:
+        if self.settings.coordination_provider_kind != "steam":
+            return True
+        manager = self.coordination_manager
+        if manager is None:
+            return False
+        lease = manager.active_leases.get(project_uuid)
+        checkpoint_factory = getattr(
+            manager.provider,
+            "host_session_checkpoint",
+            None,
+        )
+        if lease is None or not callable(checkpoint_factory):
+            return False
+        try:
+            checkpoint = checkpoint_factory(lease)
+            self.steam_host_session_store.save(checkpoint)
+        except Exception as error:
+            logger.error(
+                "Could not save Steam host checkpoint for %s: %s",
+                project_uuid,
+                error,
+            )
+            return False
+        self.interrupted_host_sessions[project_uuid] = checkpoint
+        return True
+
+    def _remove_steam_host_checkpoint(self, project_uuid: str) -> None:
+        try:
+            self.steam_host_session_store.remove(project_uuid)
+        except OSError as error:
+            logger.warning(
+                "Could not remove Steam host checkpoint for %s: %s",
+                project_uuid,
+                error,
+            )
+            return
+        self.interrupted_host_sessions.pop(project_uuid, None)
+
+    def _recover_interrupted_host_session(
+        self,
+        project: Project,
+        checkpoint: SteamHostSessionCheckpoint,
+    ) -> None:
+        if (
+            checkpoint.group_id != project.coordination_group_id
+            or self.settings.coordination_provider_kind != "steam"
+        ):
+            QMessageBox.warning(
+                self,
+                "Recovery Group Mismatch",
+                "The interrupted session belongs to a different Steam group. "
+                "Its local files were left unchanged.",
+            )
+            return
+        installed_game = self._get_installed_game_for_project(project)
+        supported_game = GameRegistry.get_by_game_id(installed_game.game_id)
+        if supported_game is not None:
+            try:
+                if supported_game.is_running():
+                    QMessageBox.information(
+                        self,
+                        "Game Still Running",
+                        "Close the game before recovering and handing off this "
+                        "interrupted session.",
+                    )
+                    return
+            except Exception as error:
+                QMessageBox.warning(
+                    self,
+                    "Game Status Unavailable",
+                    f"Save Shift could not safely check the game process.\n\n{error}",
+                )
+                return
+        player_name = self._get_player_display_name()
+        if player_name is None:
+            return
+        try:
+            manager = self._require_coordination_manager()
+            lease = manager.recover_hosting_lease(
+                project.uuid,
+                player_name,
+                checkpoint.parent_descriptor_hash,
+            )
+            self._set_project_lock_status(lease)
+        except CoordinationError as error:
+            self._show_coordination_error(error)
+            return
+        except Exception as error:
+            QMessageBox.warning(self, "Recovery Failed", str(error))
+            return
+        self.handoff_project(project, automatic=True)
 
     @contextmanager
     def _temporary_coordination_lease(
@@ -3668,19 +3996,33 @@ class MainWindow(QMainWindow):
         self._refresh_project_lock_statuses()
 
     def _show_coordination_error(self, error: CoordinationError) -> None:
+        if isinstance(error, PackageCatalogConflictError):
+            QMessageBox.warning(
+                self,
+                "Fork Needs Attention",
+                f"{error}\n\nNo local save files were overwritten or uploaded.",
+            )
+            return
         if isinstance(error, LockConflictError):
             details = "Another computer currently owns this project lock."
 
             if error.lock is not None:
                 self._set_project_lock_status(error.lock)
-                expires_at = error.lock.expires_at_utc.strftime(
-                    "%Y-%m-%d %H:%M UTC"
-                )
-                details = (
-                    f"{error.lock.owner_display_name} currently owns this "
-                    "project lock.\n\n"
-                    f"The lock expires at {expires_at} unless it is renewed."
-                )
+                if self.settings.coordination_provider_kind == "steam":
+                    details = (
+                        f"Steam reports {error.lock.owner_display_name} is "
+                        "currently hosting this world. The presence clears "
+                        "when their Save Shift session exits or disconnects."
+                    )
+                else:
+                    expires_at = error.lock.expires_at_utc.strftime(
+                        "%Y-%m-%d %H:%M UTC"
+                    )
+                    details = (
+                        f"{error.lock.owner_display_name} currently owns this "
+                        "project lock.\n\n"
+                        f"The lock expires at {expires_at} unless it is renewed."
+                    )
 
             QMessageBox.warning(self, "Project In Use", details)
             return
@@ -3741,13 +4083,16 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-            failures = manager.release_all()
+            failures = manager.close()
 
             if failures:
                 logger.warning(
                     "Could not release %s coordination lease(s) on exit.",
                     len(failures),
                 )
+
+        elif manager is not None:
+            manager.close()
 
         self.coordination_renewal_timer.stop()
         self.lock_status_timer.stop()

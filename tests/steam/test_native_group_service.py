@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.native_group_service import SteamNativeGroupService
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.social_client import SteamIdentity
 from app.steam.ugc_client import SteamPublishedItem
 from tests.steam.test_device_identity import MemoryProtector
@@ -50,6 +51,7 @@ def test_create_group_binds_manifest_to_signed_in_steam_account(
             tmp_path / "identity.json", protector=MemoryProtector()
         ),
         temporary_directory=tmp_path / "manifest-upload",
+        manifest_cache=SteamGroupManifestCache(tmp_path / "manifest-cache"),
     )
 
     created = service.create_group("Family Worlds")

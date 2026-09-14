@@ -8,6 +8,8 @@ import uuid
 
 from app.coordination.errors import (
     CoordinationConfigurationError,
+    CoordinationUnavailableError,
+    LockConflictError,
     LockOwnershipError,
     PackageCatalogConflictError,
     PackageKeyRotatedError,
@@ -23,6 +25,12 @@ from app.package_transport.models import PackageArtifact
 from app.steam.device_identity import SteamDeviceIdentity, SteamDeviceIdentityStore
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.hosting_presence import (
+    SteamHostPresence,
+    SteamHostingPresenceService,
+)
+from app.steam.host_session_store import SteamHostSessionCheckpoint
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.native_ugc_client import SteamworksUgcClient
 from app.steam.package_descriptor import SteamPackageDescriptor
 from app.steam.package_descriptor_transport import SteamPackageDescriptorTransport
@@ -42,6 +50,8 @@ _KEY_PREFIX = "steam-group"
 class _LeaseState:
     lease: LockLease
     parent_descriptor_hash: str
+    presence: SteamHostPresence | None = None
+    client: SteamUgcClient | None = None
 
 
 class SteamNativeCoordinationProvider:
@@ -57,6 +67,7 @@ class SteamNativeCoordinationProvider:
         client_factory: Callable[[], SteamUgcClient] = SteamworksUgcClient,
         identity_store: SteamDeviceIdentityStore | None = None,
         lease_seconds: int = 900,
+        manifest_cache: SteamGroupManifestCache | None = None,
     ) -> None:
         self.group_id = str(uuid.UUID(group_id))
         self.manifest_item_id = self._item_id(manifest_item_id, "manifest")
@@ -68,6 +79,7 @@ class SteamNativeCoordinationProvider:
         self.client_factory = client_factory
         self.identity_store = identity_store or SteamDeviceIdentityStore()
         self.lease_seconds = max(60, int(lease_seconds))
+        self.manifest_cache = manifest_cache or SteamGroupManifestCache()
         self._leases: dict[str, _LeaseState] = {}
         self._lease_guard = threading.RLock()
         self._publication_guard = threading.RLock()
@@ -117,9 +129,145 @@ class SteamNativeCoordinationProvider:
             self._leases[project_id] = _LeaseState(lease, parent_hash)
         return lease
 
+    def acquire_hosting_lock(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+    ) -> LockLease:
+        """Acquire an ancestry guard plus an advisory searchable Steam lobby."""
+        return self._acquire_hosting_lock(
+            project_uuid,
+            owner_display_name,
+            expected_parent_hash=None,
+        )
+
+    def acquire_recovery_lock(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+        parent_descriptor_hash: str,
+    ) -> LockLease:
+        """Reacquire presence without rebasing interrupted local work."""
+        return self._acquire_hosting_lock(
+            project_uuid,
+            owner_display_name,
+            expected_parent_hash=parent_descriptor_hash.strip().lower(),
+        )
+
+    def _acquire_hosting_lock(
+        self,
+        project_uuid: str,
+        owner_display_name: str,
+        *,
+        expected_parent_hash: str | None,
+    ) -> LockLease:
+        project_id = str(uuid.UUID(project_uuid))
+        owner = owner_display_name.strip()
+        if not owner:
+            raise CoordinationConfigurationError("A host display name is required.")
+        with self._lease_guard:
+            existing_local = self._leases.get(project_id)
+            if existing_local is not None and not existing_local.lease.expired:
+                raise LockOwnershipError("This computer is already hosting the world.")
+
+        client = self.client_factory()
+        try:
+            manifest, identity = self._context(client)
+            service = SteamHostingPresenceService(client)
+            existing = service.find(manifest, project_uuids=[project_id]).get(
+                project_id
+            )
+            if existing is not None:
+                raise LockConflictError(
+                    f"{existing.host_display_name} is already hosting this world.",
+                    existing.to_lease(),
+                )
+            parent_hash = self._single_head_hash(client, manifest, project_id)
+            if (
+                expected_parent_hash is not None
+                and parent_hash != expected_parent_hash
+            ):
+                raise PackageCatalogConflictError(
+                    "The group save advanced while this computer's hosted "
+                    "session was interrupted. The local save was kept as a "
+                    "fork and was not uploaded."
+                )
+            _lobby, presence = service.create(
+                manifest=manifest,
+                identity=identity,
+                project_uuid=project_id,
+                host_display_name=owner,
+            )
+
+            # This reduces the ordinary simultaneous-click race. Steam lobbies
+            # remain advisory; the package ancestry check is the final guard.
+            visible = service.find(manifest, project_uuids=[project_id]).get(
+                project_id
+            )
+            if visible is not None and visible.lease_id != presence.lease_id:
+                service.release(presence)
+                raise LockConflictError(
+                    f"{visible.host_display_name} acquired the Steam hosting "
+                    "presence first.",
+                    visible.to_lease(),
+                )
+
+            lease = presence.to_lease(visible_seconds=self.lease_seconds)
+            with self._lease_guard:
+                self._leases[project_id] = _LeaseState(
+                    lease,
+                    parent_hash,
+                    presence,
+                    client,
+                )
+            return lease
+        except (
+            LockConflictError,
+            LockOwnershipError,
+            PackageCatalogConflictError,
+        ):
+            self._close_client(client)
+            raise
+        except Exception as error:
+            self._close_client(client)
+            raise CoordinationUnavailableError(
+                f"Steam could not establish the hosting presence: {error}"
+            ) from error
+
+    def host_session_checkpoint(
+        self,
+        lease: LockLease,
+    ) -> SteamHostSessionCheckpoint:
+        with self._lease_guard:
+            state = self._owned_state(lease)
+        if state.presence is None:
+            raise LockOwnershipError("This lease is not a Steam hosting session.")
+        return SteamHostSessionCheckpoint.create(
+            group_id=self.group_id,
+            project_uuid=lease.project_uuid,
+            parent_descriptor_hash=state.parent_descriptor_hash,
+            host_display_name=lease.owner_display_name,
+        )
+
     def renew_lock(self, lease: LockLease) -> LockLease:
         with self._lease_guard:
             state = self._owned_state(lease)
+            if state.presence is not None and state.client is not None:
+                try:
+                    poll = getattr(state.client, "poll_social_events", None)
+                    if callable(poll):
+                        poll()
+                    SteamHostingPresenceService(state.client).verify_owned(
+                        state.presence
+                    )
+                except ValueError as error:
+                    self._leases.pop(lease.project_uuid, None)
+                    self._close_client(state.client)
+                    raise LockOwnershipError(str(error)) from error
+                except Exception as error:
+                    raise CoordinationUnavailableError(
+                        f"Steam could not refresh the hosting presence: {error}"
+                    ) from error
             renewed = LockLease(
                 project_uuid=lease.project_uuid,
                 lease_id=lease.lease_id,
@@ -133,23 +281,80 @@ class SteamNativeCoordinationProvider:
             self._leases[lease.project_uuid] = _LeaseState(
                 renewed,
                 state.parent_descriptor_hash,
+                state.presence,
+                state.client,
             )
             return renewed
 
     def release_lock(self, lease: LockLease) -> None:
         with self._lease_guard:
-            self._owned_state(lease)
+            state = self._owned_state(lease)
             self._leases.pop(lease.project_uuid, None)
+        if state.presence is not None and state.client is not None:
+            try:
+                SteamHostingPresenceService(state.client).release(state.presence)
+            except Exception as error:
+                logger.warning(
+                    "Could not explicitly leave Steam hosting lobby %s: %s",
+                    state.presence.lobby_id,
+                    error,
+                )
+            finally:
+                self._close_client(state.client)
 
     def get_lock(self, project_uuid: str) -> LockLease | None:
+        project_id = str(uuid.UUID(project_uuid))
+        return self.get_locks([project_id])[project_id]
+
+    def get_locks(
+        self,
+        project_uuids: Iterable[str],
+    ) -> dict[str, LockLease | None]:
+        project_ids = [str(uuid.UUID(item)) for item in project_uuids]
+        statuses: dict[str, LockLease | None] = {}
+        expired_states: list[_LeaseState] = []
         with self._lease_guard:
-            state = self._leases.get(project_uuid)
-            if state is None:
-                return None
-            if state.lease.expired:
-                self._leases.pop(project_uuid, None)
-                return None
-            return state.lease
+            for project_id in project_ids:
+                state = self._leases.get(project_id)
+                if state is not None and not state.lease.expired:
+                    statuses[project_id] = state.lease
+                else:
+                    if state is not None:
+                        self._leases.pop(project_id, None)
+                        expired_states.append(state)
+                    statuses[project_id] = None
+        for state in expired_states:
+            self._dispose_state(state)
+        missing = [item for item, value in statuses.items() if value is None]
+        if not missing:
+            return statuses
+        try:
+            with self._client() as client:
+                manifest, _identity = self._context(client)
+                found = SteamHostingPresenceService(client).find(
+                    manifest,
+                    project_uuids=missing,
+                )
+        except Exception as error:
+            raise CoordinationUnavailableError(
+                f"Steam could not check current hosting status: {error}"
+            ) from error
+        for project_id, presence in found.items():
+            statuses[project_id] = presence.to_lease()
+        return statuses
+
+    def close(self) -> None:
+        """Best-effort cleanup for all provider-owned Steam lobby clients."""
+        with self._lease_guard:
+            states = list(self._leases.values())
+            self._leases.clear()
+        for state in states:
+            self._dispose_state(state)
+
+    @contextmanager
+    def ugc_client_scope(self) -> Generator[SteamUgcClient, None, None]:
+        with self._client() as client:
+            yield client
 
     def get_package_encryption_key(
         self,
@@ -275,6 +480,18 @@ class SteamNativeCoordinationProvider:
         if bound is not None:
             yield bound
             return
+        with self._lease_guard:
+            hosting_client = next(
+                (
+                    state.client
+                    for state in self._leases.values()
+                    if state.client is not None
+                ),
+                None,
+            )
+        if hosting_client is not None:
+            yield hosting_client
+            return
         client = self.client_factory()
         try:
             yield client
@@ -282,6 +499,28 @@ class SteamNativeCoordinationProvider:
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    @staticmethod
+    def _close_client(client: SteamUgcClient) -> None:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    @classmethod
+    def _dispose_state(cls, state: _LeaseState) -> None:
+        if state.client is None:
+            return
+        try:
+            if state.presence is not None:
+                SteamHostingPresenceService(state.client).release(state.presence)
+        except Exception as error:
+            logger.warning(
+                "Could not dispose Steam hosting lobby %s: %s",
+                state.presence.lobby_id if state.presence is not None else "unknown",
+                error,
+            )
+        finally:
+            cls._close_client(state.client)
 
     def _context(
         self,
@@ -293,7 +532,10 @@ class SteamNativeCoordinationProvider:
             raise CoordinationConfigurationError(
                 "The saved Steam group belongs to a different device identity."
             )
-        manifest = SteamGroupManifestTransport(client).download(
+        manifest = SteamGroupManifestTransport(
+            client,
+            cache=self.manifest_cache,
+        ).download(
             self.manifest_item_id
         )
         if manifest.group_id != self.group_id:

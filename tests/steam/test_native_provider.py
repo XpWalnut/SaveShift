@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.coordination.errors import PackageCatalogConflictError
+from app.coordination.errors import LockConflictError, PackageCatalogConflictError
 from app.coordination.models import PackageCatalogMetadata
 from app.package_transport.models import PackageArtifact
 from app.steam.constants import STEAM_UGC_PAYLOAD_NAME
@@ -11,8 +11,10 @@ from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
 from app.steam.native_provider import SteamNativeCoordinationProvider
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.social_client import SteamIdentity
+from app.steam.social_client import SteamLobby
 from app.steam.ugc_client import SteamPublishedItem
 from tests.steam.test_device_identity import MemoryProtector
 
@@ -22,6 +24,8 @@ class MemoryUgcClient:
         self.root = root
         self.root.mkdir()
         self.next_item_id = 3797671909
+        self.next_lobby_id = 109775240917155001
+        self.lobbies: dict[str, dict[str, object]] = {}
 
     def current_identity(self) -> SteamIdentity:
         return SteamIdentity("76561198000000001", "Jake")
@@ -52,6 +56,45 @@ class MemoryUgcClient:
 
     def delete_item(self, published_file_id: str) -> None:
         shutil.rmtree(self.root / published_file_id, ignore_errors=True)
+
+    def create_searchable_lobby(
+        self,
+        *,
+        maximum_members: int = 16,
+        metadata=None,
+    ) -> SteamLobby:
+        lobby = SteamLobby(str(self.next_lobby_id))
+        self.next_lobby_id += 1
+        self.lobbies[lobby.lobby_id] = {
+            "owner": self.current_identity().steam_id,
+            "metadata": dict(metadata or {}),
+        }
+        return lobby
+
+    def find_lobbies(self, metadata, *, maximum_results: int = 50):
+        return [
+            SteamLobby(lobby_id)
+            for lobby_id, value in self.lobbies.items()
+            if all(
+                value["metadata"].get(key) == expected
+                for key, expected in metadata.items()
+            )
+        ][:maximum_results]
+
+    def set_lobby_data(self, lobby_id: str, key: str, value: str) -> None:
+        self.lobbies[lobby_id]["metadata"][key] = value
+
+    def lobby_data(self, lobby_id: str, key: str) -> str:
+        return str(self.lobbies[lobby_id]["metadata"].get(key, ""))
+
+    def lobby_owner(self, lobby_id: str) -> str:
+        return str(self.lobbies[lobby_id]["owner"])
+
+    def leave_lobby(self, lobby_id: str) -> None:
+        self.lobbies.pop(lobby_id, None)
+
+    def poll_social_events(self) -> list[object]:
+        return []
 
     def close(self) -> None:
         pass
@@ -87,6 +130,7 @@ def _provider_setup(tmp_path: Path):
             device_id=identity.device_id,
             client_factory=lambda: client,
             identity_store=identity_store,
+            manifest_cache=SteamGroupManifestCache(tmp_path / "manifest-cache"),
         )
 
     return client, manifest, group_key, create_provider
@@ -138,6 +182,57 @@ def test_native_provider_registers_and_discovers_ancestry_head(
     assert provider.get_package_encryption_key().key_material == group_key
     provider.release_lock(lease)
     assert provider.get_lock(project_uuid) is None
+
+
+def test_native_hosting_lock_uses_signed_ephemeral_lobby_and_blocks_peer(
+    tmp_path: Path,
+) -> None:
+    client, _manifest, _group_key, create_provider = _provider_setup(tmp_path)
+    first = create_provider()
+    second = create_provider()
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+
+    lease = first.acquire_hosting_lock(project_uuid, "Jake")
+
+    assert len(client.lobbies) == 1
+    checkpoint = first.host_session_checkpoint(lease)
+    assert checkpoint.project_uuid == project_uuid
+    assert checkpoint.parent_descriptor_hash == ""
+    assert second.get_lock(project_uuid).owner_display_name == "Jake"
+    with pytest.raises(LockConflictError, match="already hosting"):
+        second.acquire_hosting_lock(project_uuid, "Hunter")
+
+    first.release_lock(lease)
+
+    assert client.lobbies == {}
+    assert second.get_lock(project_uuid) is None
+
+
+def test_native_provider_close_removes_owned_hosting_presence(
+    tmp_path: Path,
+) -> None:
+    client, _manifest, _group_key, create_provider = _provider_setup(tmp_path)
+    provider = create_provider()
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+
+    provider.acquire_hosting_lock(project_uuid, "Jake")
+    provider.close()
+
+    assert client.lobbies == {}
+    assert provider.get_lock(project_uuid) is None
+
+
+def test_interrupted_host_recovery_refuses_to_rebase_local_work(
+    tmp_path: Path,
+) -> None:
+    client, _manifest, _group_key, create_provider = _provider_setup(tmp_path)
+    provider = create_provider()
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+
+    with pytest.raises(PackageCatalogConflictError, match="advanced"):
+        provider.acquire_recovery_lock(project_uuid, "Jake", "a" * 64)
+
+    assert client.lobbies == {}
 
 
 def test_native_provider_rejects_publish_when_starting_head_advanced(

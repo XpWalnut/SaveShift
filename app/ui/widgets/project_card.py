@@ -237,15 +237,15 @@ class ProjectCard(QFrame):
         self.host_button.setProperty("saveshift_action", "host")
         self.host_button.setText("Hosting")
         self.host_button.setToolTip(
-            "This computer currently owns the group lock. Exit the game and "
-            "choose Hand Off when you are finished."
+            "This computer is the active host. Exit the game and Save Shift "
+            "will upload the save and release the world."
         )
         self.host_button.setEnabled(False)
 
     def show_coordination_disabled(self) -> None:
         self.show_host_action()
         self.lock_status_label.setText(
-            "Project lock: Local protection only — coordination disabled"
+            "Hosting status: Local protection only — coordination disabled"
         )
         self.lock_status_label.setStyleSheet("")
 
@@ -265,17 +265,34 @@ class ProjectCard(QFrame):
 
     def show_lock_checking(self) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Checking…")
+        self.lock_status_label.setText("Hosting status: Checking…")
         self.lock_status_label.setStyleSheet("")
 
     def show_lock_available(self) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Available")
+        self.lock_status_label.setText("Hosting status: Available")
         self.lock_status_label.setStyleSheet(f"color: {theme.SUCCESS};")
 
-    def show_lock_unavailable(self) -> None:
+    def show_lock_unavailable(self, *, steam: bool = False) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Status unavailable")
+        self.lock_status_label.setText(
+            "Hosting status: Offline status unknown"
+            if steam
+            else "Hosting status: Status unavailable"
+        )
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
+
+    def show_interrupted_host_session(self) -> None:
+        self.host_button.setProperty("saveshift_action", "host")
+        self.host_button.setText("Recover Handoff")
+        self.host_button.setToolTip(
+            "Save Shift closed before this hosted session was handed off. "
+            "Verify Steam ancestry and upload the preserved local save."
+        )
+        self.host_button.setEnabled(True)
+        self.lock_status_label.setText(
+            "Hosting status: Fork needs attention · interrupted local session"
+        )
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
 
     def show_lock(
@@ -283,6 +300,7 @@ class ProjectCard(QFrame):
         lease: LockLease,
         *,
         local_device_id: str,
+        steam: bool = False,
     ) -> None:
         owner_suffix = (
             " (this computer)"
@@ -293,8 +311,13 @@ class ProjectCard(QFrame):
             "%b %d, %Y at %I:%M:%S %p %Z"
         )
         self.lock_status_label.setText(
-            f"Project lock: Locked by {lease.owner_display_name}"
-            f"{owner_suffix} · Expires {expires_at} unless renewed"
+            f"Hosting status: Hosted by {lease.owner_display_name}"
+            f"{owner_suffix}"
+            + (
+                " · Active Steam presence"
+                if steam
+                else f" · Expires {expires_at} unless renewed"
+            )
         )
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
         if lease.owner_device_id == local_device_id:

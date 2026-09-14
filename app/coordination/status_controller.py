@@ -23,10 +23,14 @@ class LockStatusTask(QRunnable):
 
     def run(self) -> None:
         try:
-            statuses: dict[str, LockLease | None] = {
-                project_uuid: self.provider.get_lock(project_uuid)
-                for project_uuid in self.project_uuids
-            }
+            get_locks = getattr(self.provider, "get_locks", None)
+            if callable(get_locks):
+                statuses = get_locks(self.project_uuids)
+            else:
+                statuses: dict[str, LockLease | None] = {
+                    project_uuid: self.provider.get_lock(project_uuid)
+                    for project_uuid in self.project_uuids
+                }
         except Exception as error:
             self.signals.failed.emit(str(error))
             return

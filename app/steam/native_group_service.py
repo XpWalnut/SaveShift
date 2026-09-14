@@ -8,6 +8,7 @@ from app.steam.device_identity import (
 )
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.native_ugc_client import SteamworksUgcClient
 from app.steam.ugc_client import SteamUgcClient
@@ -31,11 +32,13 @@ class SteamNativeGroupService:
         identity_store: SteamDeviceIdentityStore | None = None,
         temporary_directory: Path | None = None,
         legal_agreement_handler: Callable[[str], None] | None = None,
+        manifest_cache: SteamGroupManifestCache | None = None,
     ) -> None:
         self.client_factory = client_factory
         self.identity_store = identity_store or SteamDeviceIdentityStore()
         self.temporary_directory = temporary_directory
         self.legal_agreement_handler = legal_agreement_handler
+        self.manifest_cache = manifest_cache or SteamGroupManifestCache()
 
     def create_group(self, name: str) -> CreatedSteamGroup:
         client = self.client_factory()
@@ -59,6 +62,7 @@ class SteamNativeGroupService:
                 client,
                 self.temporary_directory,
                 self.legal_agreement_handler,
+                self.manifest_cache,
             )
             manifest_item_id = transport.publish(manifest)
             return CreatedSteamGroup(

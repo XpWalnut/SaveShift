@@ -38,7 +38,22 @@ The update service reads GitHub Releases, compares semantic versions, selects th
 
 ### Coordination (`app/coordination`)
 
-The desktop coordinates project leases through a provider-neutral protocol and a versioned HTTPS adapter. Hosting retains and renews a lease until export or application exit. Import and restore use temporary leases. Project lock status is read in a background worker and refreshed on project cards without blocking the Qt UI. Every local destructive workflow also takes an operating-system file lock so concurrent Save Shift processes cannot mutate the same project simultaneously.
+The desktop coordinates hosting through a provider-neutral protocol. New Steam
+groups use signed, invisible per-world lobbies as online advisory presence;
+legacy groups retain the versioned HTTPS lease adapter. Import and restore use
+short-lived ancestry guards rather than advertising a host. Status is read in a
+background worker and refreshed on project cards without blocking the Qt UI.
+Every local destructive workflow also takes an operating-system file lock so
+concurrent Save Shift processes cannot mutate the same project simultaneously.
+
+Steam presence is accepted only when its signature, group, active membership,
+and lobby-owner Steam ID agree. Before launching, the Steam provider records the
+current package descriptor head. Before publishing, it requires that exact head
+to remain current. A local host-session checkpoint preserves that parent across
+an application or machine interruption, allowing a safe retry without silently
+rebasing local work. The lobby remains advisory because Steam does not provide
+a durable group-scoped compare-and-swap lock; package ancestry is the final
+publication guard.
 
 The first server implementation is isolated under `coordination/cloudflare/` and uses a Worker with one SQLite-backed Durable Object per group. Provisioning assigns a cryptographically random immutable group identity and uses it as the Durable Object name. Consequently, each group's devices, locks, encryption keys, and package catalog occupy separate storage even if an earlier group's Worker cleanup is delayed or fails. No Cloudflare dependency enters the Python application or PyInstaller build. The portable wire contract is defined in `coordination/openapi.yaml`; a future provider can implement it without changing desktop workflows.
 
@@ -78,8 +93,10 @@ rotation is rejected by the catalog and retried once with the current key.
 The first blob implementation uses unlisted Steam UGC under Save Shift AppID
 5096900. `SteamUgcBlobTransport` owns the UGC folder layout and safe metadata,
 while `SteamworksUgcClient` is a thin `ctypes` binding over the official flat API
-and manual callback dispatcher. Steam holds only encrypted bytes and never
-decides group membership or project lease ownership. The release build obtains
+and manual callback dispatcher. Steam holds encrypted package bytes plus signed
+group and package-index metadata. Signed membership manifests decide which
+Steam identities may publish or advertise a host; package ancestry prevents a
+stale publication from replacing the current head. The release build obtains
 the redistributable `steam_api64.dll` from a local Steamworks SDK rather than
 committing the proprietary SDK to the repository. Manual export and import
 remain available as an offline fallback.

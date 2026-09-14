@@ -34,12 +34,15 @@ class GettingStartedDialog(QDialog):
             "After the world is on this computer, Host receives the active "
             "group's latest version automatically before launching the game.<br><br>"
             "<b>4. Host when it is your turn</b><br>"
-            "Host reserves the world, receives the latest version, and launches "
-            "the game. "
+            "Host checks that the world is available, receives the latest "
+            "version, advertises you as the active host through Steam, and "
+            "launches the game. "
             "Other members can join your game, but should not host their own copy.<br><br>"
             "<b>5. Exit the game when finished</b><br>"
             "Keep Save Shift open. When the game closes, Save Shift uploads the "
             "new version and releases the world for the next host automatically. "
+            "If Save Shift or Windows closes first, Recover Handoff safely "
+            "checks the original group version before uploading. "
             "Manual Receive and Hand Off controls can be enabled in Settings."
         )
         steps.setWordWrap(True)

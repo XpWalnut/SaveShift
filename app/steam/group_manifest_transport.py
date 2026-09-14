@@ -5,8 +5,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.core.config import AppConfig
+from app.core.logging import logger
 from app.steam.constants import SAVESHIFT_STEAM_APP_ID
 from app.steam.group_manifest import SteamGroupManifest
+from app.steam.manifest_cache import SteamGroupManifestCache
 from app.steam.ugc_client import SteamUgcClient, SteamUgcVisibility
 
 
@@ -20,10 +22,12 @@ class SteamGroupManifestTransport:
         client: SteamUgcClient,
         temporary_directory: Path | None = None,
         on_legal_agreement_required: Callable[[str], None] | None = None,
+        cache: SteamGroupManifestCache | None = None,
     ) -> None:
         self.client = client
         self.temporary_directory = temporary_directory
         self.on_legal_agreement_required = on_legal_agreement_required
+        self.cache = cache
 
     def publish(self, manifest: SteamGroupManifest) -> str:
         content = self._content_directory(manifest)
@@ -39,7 +43,9 @@ class SteamGroupManifestTransport:
                 result.published_file_id,
                 result.user_needs_legal_agreement,
             )
-            return self._item_id(result.published_file_id)
+            item_id = self._item_id(result.published_file_id)
+            self._cache(item_id, manifest)
+            return item_id
         finally:
             shutil.rmtree(content, ignore_errors=True)
 
@@ -61,6 +67,7 @@ class SteamGroupManifestTransport:
                 item_id,
                 result.user_needs_legal_agreement,
             )
+            self._cache(item_id, manifest)
         finally:
             shutil.rmtree(content, ignore_errors=True)
 
@@ -69,7 +76,17 @@ class SteamGroupManifestTransport:
         path = content / self.FILE_NAME
         if not path.is_file():
             raise ValueError("The Steam item does not contain a group manifest.")
-        return SteamGroupManifest.from_json(path.read_text(encoding="utf-8"))
+        manifest = SteamGroupManifest.from_json(path.read_text(encoding="utf-8"))
+        self._cache(self._item_id(manifest_item_id), manifest)
+        return manifest
+
+    def _cache(self, item_id: str, manifest: SteamGroupManifest) -> None:
+        if self.cache is None:
+            return
+        try:
+            self.cache.save(item_id, manifest)
+        except OSError as error:
+            logger.warning("Could not cache Steam group manifest %s: %s", item_id, error)
 
     def _content_directory(self, manifest: SteamGroupManifest) -> Path:
         root = self.temporary_directory or (
