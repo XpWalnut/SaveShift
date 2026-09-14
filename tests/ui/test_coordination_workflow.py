@@ -9,7 +9,7 @@ from app.coordination.errors import LockConflictError, LockOwnershipError
 from app.coordination.manager import CoordinationManager
 from app.coordination.models import LockLease, PairedDevice
 from app.coordination.cloudflare_provisioning import CreatedGroup
-from app.coordination.setup_controller import GroupLeaveOutcome
+from app.coordination.setup_controller import GroupLeaveOutcome, SteamGroupMemberChoice
 from app.core.settings import (
     AppSettings,
     CoordinationGroupSettings,
@@ -369,6 +369,83 @@ def test_loaded_steam_friend_is_invited_directly(
         ("3797671909", "steam-group", "76561198000000002")
     ]
     assert progress == ["Sending a Steam invitation to Hunter…"]
+
+
+def test_steam_group_manage_computers_loads_manifest_members(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    group = CoordinationGroupSettings(
+        group_id="steam-group",
+        name="Friends",
+        device_id="device-123",
+        is_administrator=True,
+        provider_kind="steam",
+        steam_manifest_item_id="3797671909",
+    )
+    window.settings = AppSettings().upsert_group(group)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(window, "_show_group_setup_progress", lambda _text: None)
+    monkeypatch.setattr(
+        window.group_setup_controller,
+        "load_steam_group_members",
+        lambda item_id, group_id: calls.append((item_id, group_id)) or True,
+    )
+
+    window._manage_group_devices()
+
+    assert calls == [("3797671909", "steam-group")]
+
+
+def test_selected_steam_group_member_is_revoked(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window = _window(qtbot, monkeypatch)
+    group = CoordinationGroupSettings(
+        group_id="steam-group",
+        name="Friends",
+        device_id="device-123",
+        is_administrator=True,
+        provider_kind="steam",
+        steam_manifest_item_id="3797671909",
+    )
+    window.settings = AppSettings().upsert_group(group)
+    member = SteamGroupMemberChoice(
+        steam_id="76561198000000002",
+        device_id="12345678-1234-4678-9234-567812345678",
+        persona_name="Hunter",
+    )
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(window, "_close_group_setup_progress", lambda: None)
+    monkeypatch.setattr(window, "_show_group_setup_progress", lambda _text: None)
+    monkeypatch.setattr(
+        "app.ui.main_window.QInputDialog.getItem",
+        lambda _parent, _title, _prompt, labels, *_args: (labels[0], True),
+    )
+    monkeypatch.setattr(
+        "app.ui.main_window.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        window.group_setup_controller,
+        "revoke_steam_member",
+        lambda item_id, group_id, device_id: calls.append(
+            (item_id, group_id, device_id)
+        )
+        or True,
+    )
+
+    window._steam_group_members_loaded([member])
+
+    assert calls == [
+        (
+            "3797671909",
+            "steam-group",
+            "12345678-1234-4678-9234-567812345678",
+        )
+    ]
 
 
 def test_joined_steam_group_is_persisted_for_the_enrolled_device(

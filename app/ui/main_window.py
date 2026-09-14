@@ -55,7 +55,11 @@ from app.coordination.models import (
     PairedDevice,
 )
 from app.coordination.cloudflare_provisioning import CreatedGroup
-from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
+from app.coordination.setup_controller import (
+    GroupLeaveOutcome,
+    GroupSetupController,
+    SteamGroupMemberChoice,
+)
 from app.coordination.status_controller import LockStatusController
 from app.package_transport.controller import PackageHandoffController
 from app.games.registry import GameRegistry
@@ -179,6 +183,12 @@ class MainWindow(QMainWindow):
         )
         self.group_setup_controller.steam_friends_loaded.connect(
             self._steam_friends_loaded
+        )
+        self.group_setup_controller.steam_members_loaded.connect(
+            self._steam_group_members_loaded
+        )
+        self.group_setup_controller.steam_member_revoked.connect(
+            self._steam_group_member_revoked
         )
         self.group_setup_controller.steam_invitation_ready.connect(
             self._steam_invitation_ready
@@ -1621,6 +1631,23 @@ class MainWindow(QMainWindow):
             )
             return
 
+        active_group = self.settings.active_coordination_group
+        if active_group is not None and active_group.provider_kind == "steam":
+            if not active_group.steam_manifest_item_id:
+                QMessageBox.warning(
+                    self,
+                    "Member List Failed",
+                    "This Steam group has no saved manifest item.",
+                )
+                return
+            self._show_group_setup_progress("Loading Steam group members…")
+            if not self.group_setup_controller.load_steam_group_members(
+                active_group.steam_manifest_item_id,
+                active_group.group_id,
+            ):
+                self._close_group_setup_progress()
+            return
+
         provider = HttpCoordinationProvider(
             self.settings.coordination_server_url,
             device_token=self.settings.coordination_device_token,
@@ -1683,6 +1710,83 @@ class MainWindow(QMainWindow):
             self,
             "Computer Revoked",
             f"{target.device_name} can no longer use this group.",
+        )
+
+    def _steam_group_members_loaded(
+        self,
+        members: list[SteamGroupMemberChoice],
+    ) -> None:
+        self._close_group_setup_progress()
+        if not members:
+            QMessageBox.information(
+                self,
+                "Group Members",
+                "There are no other active members to remove.",
+            )
+            return
+
+        ordered = sorted(
+            members,
+            key=lambda member: (
+                (member.persona_name or member.steam_id).casefold(),
+                member.device_id,
+            ),
+        )
+        labels = [
+            (
+                f"{member.persona_name or 'Steam ' + member.steam_id}"
+                f" — device …{member.device_id[-8:]}"
+            )
+            for member in ordered
+        ]
+        selected_label, accepted = QInputDialog.getItem(
+            self,
+            "Manage Group Members",
+            "Choose a member device to remove:",
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        target = ordered[labels.index(selected_label)]
+        display_name = target.persona_name or f"Steam {target.steam_id}"
+        confirmed = QMessageBox.question(
+            self,
+            "Remove Group Member",
+            f"Remove {display_name} from this group? Their device will lose "
+            "access to future saves and the group encryption key will rotate.",
+        )
+        if confirmed != QMessageBox.StandardButton.Yes:
+            return
+
+        active_group = self.settings.active_coordination_group
+        if (
+            active_group is None
+            or active_group.provider_kind != "steam"
+            or not active_group.steam_manifest_item_id
+        ):
+            QMessageBox.warning(
+                self,
+                "Removal Failed",
+                "The active Steam group changed before the member was removed.",
+            )
+            return
+        self._show_group_setup_progress(f"Removing {display_name}…")
+        if not self.group_setup_controller.revoke_steam_member(
+            active_group.steam_manifest_item_id,
+            active_group.group_id,
+            target.device_id,
+        ):
+            self._close_group_setup_progress()
+
+    def _steam_group_member_revoked(self, manifest: SteamGroupManifest) -> None:
+        self._close_group_setup_progress()
+        QMessageBox.information(
+            self,
+            "Group Member Removed",
+            "The member was removed. The signed group manifest is now at "
+            f"revision {manifest.revision}, and the encryption key was rotated.",
         )
 
     def _claim_group_administrator(self, pairing_code: str) -> None:

@@ -320,7 +320,7 @@ class SettingsDialog(QDialog):
             paired and self._is_administrator
         )
         self.manage_devices_button.setVisible(
-            paired and self._is_administrator and self._provider_kind != "steam"
+            paired and self._is_administrator
         )
         self.claim_administrator_button.setVisible(False)
         self.leave_group_button.setVisible(paired)

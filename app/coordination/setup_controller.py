@@ -37,6 +37,8 @@ class GroupSetupSignals(QObject):
     failed = Signal(str)
     steam_create_completed = Signal(object)
     steam_friends_loaded = Signal(object)
+    steam_members_loaded = Signal(object)
+    steam_member_revoked = Signal(object)
     steam_invitation_ready = Signal(str)
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
@@ -48,6 +50,13 @@ class GroupLeaveOutcome:
     group_empty: bool
     cloudflare_worker_removed: bool = False
     cleanup_warning: str = ""
+
+
+@dataclass(frozen=True)
+class SteamGroupMemberChoice:
+    steam_id: str
+    device_id: str
+    persona_name: str
 
 
 class CreateGroupTask(QRunnable):
@@ -109,6 +118,118 @@ class LoadSteamFriendsTask(QRunnable):
             with diagnostic_operation("steam_group.list_friends"):
                 friends = client.list_friends()
             self.signals.steam_friends_loaded.emit(friends)
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+        finally:
+            if client is not None:
+                client.close()
+
+
+class LoadSteamGroupMembersTask(QRunnable):
+    def __init__(
+        self,
+        manifest_item_id: str,
+        group_id: str,
+        signals: GroupSetupSignals,
+        client_factory: Callable[[], SteamworksUgcClient],
+        identity_store_factory: Callable[[], SteamDeviceIdentityStore],
+        manifest_cache_factory: Callable[[], SteamGroupManifestCache],
+    ) -> None:
+        super().__init__()
+        self.manifest_item_id = manifest_item_id
+        self.group_id = group_id
+        self.signals = signals
+        self.client_factory = client_factory
+        self.identity_store_factory = identity_store_factory
+        self.manifest_cache_factory = manifest_cache_factory
+
+    def run(self) -> None:
+        client: SteamworksUgcClient | None = None
+        try:
+            client = self.client_factory()
+            steam_identity = client.current_identity()
+            identity = self.identity_store_factory().load_or_create(
+                steam_identity.steam_id
+            )
+            transport = SteamGroupManifestTransport(
+                client,
+                cache=self.manifest_cache_factory(),
+            )
+            with diagnostic_operation("steam_group.list_members"):
+                manifest = transport.download(self.manifest_item_id)
+                if manifest.group_id != self.group_id:
+                    raise ValueError(
+                        "The saved Steam group manifest does not match."
+                    )
+                if identity.device_id != manifest.administrator_device_id:
+                    raise ValueError(
+                        "Only the Steam group administrator can manage members."
+                    )
+                friend_names = {
+                    friend.steam_id: friend.persona_name
+                    for friend in client.list_friends()
+                }
+                members = [
+                    SteamGroupMemberChoice(
+                        steam_id=member.steam_id,
+                        device_id=member.device_id,
+                        persona_name=friend_names.get(member.steam_id, ""),
+                    )
+                    for member in manifest.active_members
+                    if member.device_id != manifest.administrator_device_id
+                ]
+            self.signals.steam_members_loaded.emit(members)
+        except Exception as error:
+            self.signals.failed.emit(str(error))
+        finally:
+            if client is not None:
+                client.close()
+
+
+class RevokeSteamMemberTask(QRunnable):
+    def __init__(
+        self,
+        manifest_item_id: str,
+        group_id: str,
+        device_id: str,
+        signals: GroupSetupSignals,
+        client_factory: Callable[[], SteamworksUgcClient],
+        identity_store_factory: Callable[[], SteamDeviceIdentityStore],
+        manifest_cache_factory: Callable[[], SteamGroupManifestCache],
+    ) -> None:
+        super().__init__()
+        self.manifest_item_id = manifest_item_id
+        self.group_id = group_id
+        self.device_id = device_id
+        self.signals = signals
+        self.client_factory = client_factory
+        self.identity_store_factory = identity_store_factory
+        self.manifest_cache_factory = manifest_cache_factory
+
+    def run(self) -> None:
+        client: SteamworksUgcClient | None = None
+        try:
+            client = self.client_factory()
+            steam_identity = client.current_identity()
+            identity = self.identity_store_factory().load_or_create(
+                steam_identity.steam_id
+            )
+            transport = SteamGroupManifestTransport(
+                client,
+                cache=self.manifest_cache_factory(),
+            )
+            with diagnostic_operation("steam_group.revoke_member"):
+                manifest = transport.download(self.manifest_item_id)
+                if manifest.group_id != self.group_id:
+                    raise ValueError(
+                        "The saved Steam group manifest does not match."
+                    )
+                updated, _replacement_key = manifest.revoke_member(
+                    self.device_id,
+                    identity,
+                )
+                transport.update(self.manifest_item_id, updated)
+            self.signals.steam_member_revoked.emit(updated)
         except Exception as error:
             self.signals.failed.emit(str(error))
         finally:
@@ -355,6 +476,8 @@ class GroupSetupController(QObject):
     failed = Signal(str)
     steam_create_completed = Signal(object)
     steam_friends_loaded = Signal(object)
+    steam_members_loaded = Signal(object)
+    steam_member_revoked = Signal(object)
     steam_invitation_ready = Signal(str)
     steam_member_admitted = Signal(object)
     steam_join_waiting = Signal()
@@ -468,6 +591,54 @@ class GroupSetupController(QObject):
         self._thread_pool.start(task)
         return True
 
+    def load_steam_group_members(
+        self,
+        manifest_item_id: str,
+        group_id: str,
+    ) -> bool:
+        if self._running:
+            return False
+        self._running = True
+        signals = GroupSetupSignals(self)
+        task = LoadSteamGroupMembersTask(
+            manifest_item_id,
+            group_id,
+            signals,
+            self._steam_client_factory,
+            self._identity_store_factory,
+            self._manifest_cache_factory,
+        )
+        self._task = task
+        signals.steam_members_loaded.connect(self._steam_members_finished)
+        signals.failed.connect(self._failed)
+        self._thread_pool.start(task)
+        return True
+
+    def revoke_steam_member(
+        self,
+        manifest_item_id: str,
+        group_id: str,
+        device_id: str,
+    ) -> bool:
+        if self._running:
+            return False
+        self._running = True
+        signals = GroupSetupSignals(self)
+        task = RevokeSteamMemberTask(
+            manifest_item_id,
+            group_id,
+            device_id,
+            signals,
+            self._steam_client_factory,
+            self._identity_store_factory,
+            self._manifest_cache_factory,
+        )
+        self._task = task
+        signals.steam_member_revoked.connect(self._steam_member_revoked_finished)
+        signals.failed.connect(self._failed)
+        self._thread_pool.start(task)
+        return True
+
     def join_steam_group(self) -> bool:
         if self._running:
             return False
@@ -542,6 +713,17 @@ class GroupSetupController(QObject):
     def _steam_friends_finished(self, friends: list[SteamFriend]) -> None:
         self._finish()
         self.steam_friends_loaded.emit(friends)
+
+    def _steam_members_finished(
+        self,
+        members: list[SteamGroupMemberChoice],
+    ) -> None:
+        self._finish()
+        self.steam_members_loaded.emit(members)
+
+    def _steam_member_revoked_finished(self, manifest: object) -> None:
+        self._finish()
+        self.steam_member_revoked.emit(manifest)
 
     def _steam_member_finished(self, manifest: object) -> None:
         self._finish()

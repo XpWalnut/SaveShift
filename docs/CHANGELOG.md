@@ -9,6 +9,9 @@ All notable changes to Save Shift are documented here. The project is currently 
 - In-app Steam friend selection for group invitations. Save Shift now sends
   the lobby invitation directly through Steam instead of depending on the
   Steam Overlay, which is unreliable for software-rendered desktop apps.
+- Steam group member management for administrators, including signed member
+  revocation, removal of the revoked member's package index, and automatic
+  encryption-key rotation for the remaining members.
 
 - Signed, per-world Steam hosting presence using short-lived invisible lobbies.
   Host checks now distinguish Available, Hosted by another member, and an

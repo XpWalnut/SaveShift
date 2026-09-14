@@ -185,6 +185,7 @@ def test_settings_dialog_offers_steam_administrator_recovery(qtbot) -> None:
 
     assert dialog.export_recovery_button.isVisible()
     assert dialog.import_recovery_button.isVisible()
+    assert dialog.manage_devices_button.isVisible()
 
     dialog.export_recovery_button.click()
 
