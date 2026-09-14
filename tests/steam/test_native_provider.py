@@ -184,6 +184,36 @@ def test_native_provider_registers_and_discovers_ancestry_head(
     assert provider.get_lock(project_uuid) is None
 
 
+def test_native_provider_propagates_encrypted_session_image(tmp_path: Path) -> None:
+    client, _manifest, _group_key, create_provider = _provider_setup(tmp_path)
+    provider = create_provider()
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+    lease = provider.acquire_lock(project_uuid, "Jake")
+    package = provider.register_package(
+        _artifact(tmp_path, client, provider, project_uuid, 1),
+        lease,
+        PackageCatalogMetadata("Mistwalkers", "valheim", "Jake"),
+    )
+    source = tmp_path / "session.jpg"
+    source.write_bytes(b"normalized jpeg payload")
+
+    reference = provider.publish_session_image(
+        package,
+        source,
+        "2026-09-14T12:00:00+00:00",
+    )
+    destination = tmp_path / "received.jpg"
+
+    assert provider.download_session_image(package, destination) == destination
+    assert destination.read_bytes() == source.read_bytes()
+    assert reference.package_item_id == package.artifact.remote_id
+    assert (client.root / reference.media_item_id).is_dir()
+
+    assert provider.clear_session_image(project_uuid)
+    assert not (client.root / reference.media_item_id).exists()
+    assert provider.download_session_image(package, destination) is None
+
+
 def test_native_hosting_lock_uses_signed_ephemeral_lobby_and_blocks_peer(
     tmp_path: Path,
 ) -> None:

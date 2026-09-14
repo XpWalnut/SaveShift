@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -8,6 +9,7 @@ from app.ui.main_window import MainWindow
 from app.core.logging import logger
 from app.core.resources import get_resource_path
 from app.ui import styles
+from app.steam.shortcut_icon import repair_steam_desktop_shortcut_icon
 
 def main() -> None:
     logger.info("Save Shift started")
@@ -23,6 +25,7 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setStyleSheet(styles.application_style())
+    repair_steam_desktop_shortcut_icon()
 
     icon = QIcon(
         str(get_resource_path("assets/icons/SaveShift-Vaporwave.ico"))

@@ -2,6 +2,7 @@ from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 import threading
 from typing import NoReturn
 import uuid
@@ -40,6 +41,8 @@ from app.steam.package_discovery import (
 )
 from app.steam.package_index_transport import SteamMemberPackageIndexTransport
 from app.steam.package_lineage import SteamPackageForkError
+from app.steam.session_media_transport import SteamSessionMediaTransport
+from app.steam.session_media import SteamSessionMediaReference
 from app.steam.ugc_client import SteamUgcClient
 
 
@@ -468,6 +471,157 @@ class SteamNativeCoordinationProvider:
                 key=lambda item: item.published_at_utc,
                 reverse=True,
             )
+
+    def publish_session_image(
+        self,
+        package: CatalogPackage,
+        image_path: Path,
+        captured_at_utc: str,
+    ) -> SteamSessionMediaReference:
+        """Publish encrypted media and atomically point this member's index at it."""
+        artifact = package.artifact
+        with self._publication_guard:
+            with self._client() as client:
+                manifest, identity = self._context(client)
+                if package.published_by_device_id != identity.device_id:
+                    raise CoordinationConfigurationError(
+                        "Only the save publisher can attach its session image."
+                    )
+                index_transport = SteamMemberPackageIndexTransport(client)
+                index = index_transport.download(self.package_index_item_id)
+                if not index.verify(
+                    manifest,
+                    expected_workshop_item_id=self.package_index_item_id,
+                ):
+                    raise CoordinationConfigurationError(
+                        "This computer's Steam package index is not valid for the group."
+                    )
+                previous = next(
+                    (
+                        item
+                        for item in index.session_media
+                        if item.project_uuid == artifact.project_uuid
+                    ),
+                    None,
+                )
+                media = SteamSessionMediaTransport(client)
+                reference = media.publish(
+                    image_path=image_path,
+                    project_uuid=artifact.project_uuid,
+                    project_version=artifact.project_version,
+                    package_item_id=artifact.remote_id,
+                    package_checksum=artifact.package_checksum,
+                    key_epoch=manifest.key_epoch,
+                    key_material=manifest.group_key_for(identity),
+                    captured_at_utc=captured_at_utc,
+                )
+                try:
+                    index_transport.update(
+                        index.add_session_media(reference, identity)
+                    )
+                except Exception:
+                    client.delete_item(reference.media_item_id)
+                    raise
+                if (
+                    previous is not None
+                    and previous.media_item_id != reference.media_item_id
+                ):
+                    try:
+                        client.delete_item(previous.media_item_id)
+                    except Exception as error:
+                        logger.warning(
+                            "Could not delete replaced Steam session image item=%s: %s",
+                            previous.media_item_id,
+                            error,
+                        )
+                return reference
+
+    def download_session_image(
+        self,
+        package: CatalogPackage,
+        destination: Path,
+    ) -> Path | None:
+        """Download media only when its signed pointer matches the exact save."""
+        artifact = package.artifact
+        with self._client() as client:
+            manifest, identity = self._context(client)
+            index_reference = next(
+                (
+                    item
+                    for item in manifest.member_package_indexes
+                    if item.device_id == package.published_by_device_id
+                ),
+                None,
+            )
+            if index_reference is None:
+                return None
+            index = SteamMemberPackageIndexTransport(client).download(
+                index_reference.workshop_item_id
+            )
+            if not index.verify(
+                manifest,
+                expected_workshop_item_id=index_reference.workshop_item_id,
+            ):
+                raise CoordinationConfigurationError(
+                    "The save publisher's Steam package index is invalid."
+                )
+            reference = next(
+                (
+                    item
+                    for item in index.session_media
+                    if item.matches_package(
+                        project_uuid=artifact.project_uuid,
+                        project_version=artifact.project_version,
+                        package_item_id=artifact.remote_id,
+                        package_checksum=artifact.package_checksum,
+                    )
+                ),
+                None,
+            )
+            if reference is None:
+                return None
+            key = manifest.group_key_for(identity, reference.key_epoch)
+            return SteamSessionMediaTransport(client).download(
+                reference,
+                destination=destination,
+                key_material=key,
+            )
+
+    def clear_session_image(self, project_uuid: str) -> bool:
+        """Remove this publisher's retained media item and signed pointer."""
+        project_id = str(uuid.UUID(project_uuid))
+        with self._publication_guard:
+            with self._client() as client:
+                manifest, identity = self._context(client)
+                transport = SteamMemberPackageIndexTransport(client)
+                index = transport.download(self.package_index_item_id)
+                if not index.verify(
+                    manifest,
+                    expected_workshop_item_id=self.package_index_item_id,
+                ):
+                    raise CoordinationConfigurationError(
+                        "This computer's Steam package index is not valid for the group."
+                    )
+                existing = next(
+                    (
+                        item
+                        for item in index.session_media
+                        if item.project_uuid == project_id
+                    ),
+                    None,
+                )
+                if existing is None:
+                    return False
+                transport.update(index.remove_session_media(project_id, identity))
+                try:
+                    client.delete_item(existing.media_item_id)
+                except Exception as error:
+                    logger.warning(
+                        "Could not delete cleared Steam session image item=%s: %s",
+                        existing.media_item_id,
+                        error,
+                    )
+                return True
 
     def remove_project(self, project_uuid: str) -> None:
         raise CoordinationConfigurationError(

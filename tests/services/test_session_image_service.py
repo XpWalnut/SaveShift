@@ -79,3 +79,15 @@ def test_stale_capture_cleanup_preserves_recent_candidates(
 
     assert not stale.parent.exists()
     assert recent.is_file()
+
+
+def test_visual_similarity_rejects_duplicate_frames(tmp_path: Path) -> None:
+    first = _image(tmp_path / "first.png", 640, 360)
+    second = _image(tmp_path / "second.png", 1280, 720)
+    different = tmp_path / "different.png"
+    image = QImage(640, 360, QImage.Format.Format_RGB32)
+    image.fill(QColor("#16D9D1"))
+    assert image.save(str(different), "PNG")
+
+    assert SessionImageService.visually_similar(first, second)
+    assert not SessionImageService.visually_similar(first, different)

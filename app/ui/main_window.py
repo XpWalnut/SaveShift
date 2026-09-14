@@ -32,6 +32,7 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.database.repositories.project_repository import ProjectRepository
 from app.core.logging import logger
+from app.core.config import AppConfig
 from app.core.distribution import detect_distribution_channel
 from app.core.settings import (
     AppSettings,
@@ -73,7 +74,7 @@ from app.services.project_service import ProjectService
 from app.services.project_version_service import ProjectVersionService
 from app.services.session_journal_service import SessionJournalService
 from app.services.game_window_capture import GameWindowCapture
-from app.services.session_image_service import SessionImageService
+from app.services.session_image_service import SessionImageRecord, SessionImageService
 from app.ui import styles, theme
 from app.ui.icons import apply_icon
 from app.ui.widgets.installed_game_card import InstalledGameCard
@@ -95,6 +96,7 @@ from app.steam.group_invitation import JoinedSteamGroup
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.native_group_service import CreatedSteamGroup
 from app.steam.native_provider import SteamNativeCoordinationProvider
+from app.steam.session_media_controller import SessionMediaController
 from app.steam.administrator_recovery import SteamAdministratorRecoveryService
 from app.steam.device_identity import SteamDeviceIdentityStore
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
@@ -232,6 +234,16 @@ class MainWindow(QMainWindow):
         self.package_handoff_controller.failed.connect(
             self._group_handoff_failed
         )
+        self.session_media_controller = SessionMediaController(self)
+        self.session_media_controller.publish_completed.connect(
+            self._session_media_published
+        )
+        self.session_media_controller.download_completed.connect(
+            self._session_media_downloaded
+        )
+        self.session_media_controller.failed.connect(
+            self._session_media_failed
+        )
         self._package_handoff_progress: QProgressDialog | None = None
         self._pending_handoff_project: Project | None = None
         self._pending_handoff_version: ProjectVersion | None = None
@@ -248,8 +260,9 @@ class MainWindow(QMainWindow):
         self.session_image_service = SessionImageService()
         self.session_image_service.clear_stale_candidates()
         self._session_capture_candidates: list[Path] = []
+        self._session_image_clear_requested = False
         self._session_capture_elapsed_seconds = 0
-        self._session_capture_next_second = 30
+        self._session_capture_next_second = 120
         self.automatic_session_timer = QTimer(self)
         self.automatic_session_timer.setInterval(1_000)
         self.automatic_session_timer.timeout.connect(
@@ -2431,7 +2444,7 @@ class MainWindow(QMainWindow):
             self.session_image_service.clear_candidates(project.uuid)
             self._session_capture_candidates = []
             self._session_capture_elapsed_seconds = 0
-            self._session_capture_next_second = 30
+            self._session_capture_next_second = 120
             self._automatic_session_project = project
             self._automatic_session_game = supported_game
             self._automatic_session_seen_running = was_already_running
@@ -3234,6 +3247,15 @@ class MainWindow(QMainWindow):
         latest_version = ProjectVersionService.get_latest_version(project.id)
         latest_journal = SessionJournalService.get_latest_entry(project.id)
         group = self._group_by_id(project.coordination_group_id)
+        session_image = self.session_image_service.latest(project.uuid)
+        if (
+            session_image is not None
+            and (
+                latest_version is None
+                or session_image.project_version != latest_version.version_number
+            )
+        ):
+            session_image = None
 
         card = ProjectCard(
             project=project,
@@ -3266,7 +3288,7 @@ class MainWindow(QMainWindow):
                 and group.is_administrator
                 else None
             ),
-            session_image=self.session_image_service.latest(project.uuid),
+            session_image=session_image,
         )
         self._apply_project_lock_status(project.uuid, card)
 
@@ -3282,7 +3304,7 @@ class MainWindow(QMainWindow):
 
         return card
 
-    def _group_handoff_published(self, _package: object) -> None:
+    def _group_handoff_published(self, package: object) -> None:
         project = self._pending_handoff_project
         version = self._pending_handoff_version
         automatic = self._automatic_handoff_in_progress
@@ -3321,8 +3343,16 @@ class MainWindow(QMainWindow):
                 ),
             )
 
+        image_record = None
+        clear_requested = False
         if automatic or self._session_capture_candidates:
-            self._choose_session_image(project, version)
+            image_record = self._choose_session_image(project, version)
+            clear_requested = self._session_image_clear_requested
+        self._session_image_clear_requested = False
+        if isinstance(package, CatalogPackage) and image_record is not None:
+            self._publish_session_media(package, image_record)
+        elif isinstance(package, CatalogPackage) and clear_requested:
+            self._clear_session_media(package.artifact.project_uuid)
         if automatic:
             _continue, journal_title, journal_body = (
                 self._request_session_journal_entry(project)
@@ -3364,7 +3394,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        _catalog_package, package_path = result
+        catalog_package, package_path = result
         package_path = Path(package_path)
 
         try:
@@ -3434,6 +3464,8 @@ class MainWindow(QMainWindow):
         )
         self.load_installed_games()
         self.load_projects()
+        if isinstance(catalog_package, CatalogPackage):
+            self._download_session_media(catalog_package)
 
     def _finish_host_preflight(self, result: object) -> None:
         project = self._pending_host_project
@@ -3447,7 +3479,7 @@ class MainWindow(QMainWindow):
 
         try:
             if result is not None:
-                _catalog_package, package_path = result
+                catalog_package, package_path = result
                 package_path = Path(package_path)
                 analysis = ImportService.analyze_import(
                     package_path,
@@ -3474,6 +3506,8 @@ class MainWindow(QMainWindow):
                     )
 
             installed_game = self._get_installed_game_for_project(project)
+            if result is not None and isinstance(catalog_package, CatalogPackage):
+                self._download_session_media(catalog_package)
         except Exception as error:
             self._release_coordination_lease(
                 project.uuid,
@@ -4082,10 +4116,9 @@ class MainWindow(QMainWindow):
         self._session_capture_elapsed_seconds += 1
         if (
             self._session_capture_elapsed_seconds < self._session_capture_next_second
-            or len(self._session_capture_candidates) >= 4
         ):
             return
-        index = len(self._session_capture_candidates) + 1
+        index = self._session_capture_elapsed_seconds
         destination = self.session_image_service.candidate_path(
             project.uuid,
             index,
@@ -4099,18 +4132,30 @@ class MainWindow(QMainWindow):
             logger.debug("Could not capture hosted game window: %s", error)
             captured = None
         if captured is not None:
-            self._session_capture_candidates.append(captured)
-        self._session_capture_next_second += 4 * 60
+            duplicate = any(
+                self.session_image_service.visually_similar(captured, candidate)
+                for candidate in self._session_capture_candidates
+            )
+            if duplicate:
+                captured.unlink(missing_ok=True)
+            else:
+                self._session_capture_candidates.append(captured)
+                while len(self._session_capture_candidates) > 4:
+                    oldest = self._session_capture_candidates.pop(0)
+                    oldest.unlink(missing_ok=True)
+        self._session_capture_next_second += 3 * 60
 
     def _choose_session_image(
         self,
         project: Project,
         version: ProjectVersion,
-    ) -> None:
+    ) -> SessionImageRecord | None:
         if not self.settings.capture_session_images:
             self.session_image_service.clear_candidates(project.uuid)
             self._session_capture_candidates = []
-            return
+            return None
+        record = None
+        self._session_image_clear_requested = False
         dialog = SessionImageDialog(
             project.name,
             list(self._session_capture_candidates),
@@ -4120,8 +4165,9 @@ class MainWindow(QMainWindow):
             try:
                 if dialog.clear_requested:
                     self.session_image_service.clear(project.uuid)
+                    self._session_image_clear_requested = True
                 elif dialog.selected_path is not None:
-                    self.session_image_service.select(
+                    record = self.session_image_service.select(
                         project_uuid=project.uuid,
                         project_version=version.version_number,
                         source_path=dialog.selected_path,
@@ -4135,6 +4181,95 @@ class MainWindow(QMainWindow):
                 )
         self.session_image_service.clear_candidates(project.uuid)
         self._session_capture_candidates = []
+        return record
+
+    def _clear_session_media(self, project_uuid: str) -> None:
+        try:
+            provider = self._require_coordination_manager().provider
+        except Exception as error:
+            self._session_media_failed("clear", str(error))
+            return
+        if isinstance(provider, SteamNativeCoordinationProvider):
+            self.session_media_controller.clear(provider, project_uuid)
+
+    def _publish_session_media(
+        self,
+        package: CatalogPackage,
+        record: SessionImageRecord,
+    ) -> None:
+        try:
+            provider = self._require_coordination_manager().provider
+        except Exception as error:
+            self._session_media_failed("publish", str(error))
+            return
+        if not isinstance(provider, SteamNativeCoordinationProvider):
+            return
+        self.statusBar().showMessage("Sharing the selected session image…")
+        self.session_media_controller.publish(
+            provider,
+            package,
+            record.image_path,
+            record.captured_at_utc,
+        )
+
+    def _download_session_media(self, package: CatalogPackage) -> None:
+        try:
+            provider = self._require_coordination_manager().provider
+        except Exception:
+            return
+        if not isinstance(provider, SteamNativeCoordinationProvider):
+            return
+        destination = (
+            AppConfig.get_temp_directory()
+            / "steam-session-media-downloads"
+            / (
+                f"{package.artifact.project_uuid}-"
+                f"{package.artifact.project_version}.jpg"
+            )
+        )
+        self.session_media_controller.download(provider, package, destination)
+
+    def _session_media_published(self, _result: object) -> None:
+        self.statusBar().showMessage(
+            "The session image was encrypted and shared with the group.",
+            10_000,
+        )
+
+    def _session_media_downloaded(self, result: object) -> None:
+        package, image_path = result
+        if not isinstance(package, CatalogPackage):
+            return
+        artifact = package.artifact
+        current = self.session_image_service.latest(artifact.project_uuid)
+        if image_path is None:
+            if current is not None and current.project_version <= artifact.project_version:
+                self.session_image_service.clear(artifact.project_uuid)
+            self.load_projects()
+            return
+        image_path = Path(image_path)
+        try:
+            self.session_image_service.select(
+                project_uuid=artifact.project_uuid,
+                project_version=artifact.project_version,
+                source_path=image_path,
+            )
+        except Exception as error:
+            self._session_media_failed("download", str(error))
+        finally:
+            image_path.unlink(missing_ok=True)
+        self.load_projects()
+
+    def _session_media_failed(self, operation: str, message: str) -> None:
+        action = {
+            "publish": "shared",
+            "download": "received",
+            "clear": "removed",
+        }.get(operation, "processed")
+        logger.warning("Session image %s failed: %s", operation, message)
+        self.statusBar().showMessage(
+            f"The save succeeded, but its session image could not be {action}: {message}",
+            20_000,
+        )
 
     @contextmanager
     def _temporary_coordination_lease(

@@ -559,6 +559,7 @@ def test_automatic_session_collects_bounded_game_window_candidates(
     window.settings = replace(window.settings, capture_session_images=True)
     window.session_image_service = SessionImageService(tmp_path / "selected")
     window._session_capture_elapsed_seconds = 29
+    window._session_capture_next_second = 30
     captured: list[Path] = []
 
     class FakeGame:

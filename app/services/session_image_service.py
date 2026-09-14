@@ -26,6 +26,9 @@ class SessionImageService:
     MAX_SOURCE_BYTES = 25 * 1024 * 1024
     MAX_WIDTH = 1600
     MAX_HEIGHT = 900
+    FINGERPRINT_WIDTH = 24
+    FINGERPRINT_HEIGHT = 14
+    SIMILARITY_THRESHOLD = 5.0
 
     def __init__(self, directory: Path | None = None) -> None:
         self.directory = directory or (
@@ -135,6 +138,34 @@ class SessionImageService:
             captured_at_utc=timestamp.astimezone(UTC).isoformat(),
             image_path=image_path,
         )
+
+    @classmethod
+    def visually_similar(cls, first_path: Path, second_path: Path) -> bool:
+        """Return whether two captures are effectively the same game frame."""
+        first = QImage(str(first_path))
+        second = QImage(str(second_path))
+        if first.isNull() or second.isNull():
+            return False
+        first = first.scaled(
+            cls.FINGERPRINT_WIDTH,
+            cls.FINGERPRINT_HEIGHT,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ).convertToFormat(QImage.Format.Format_RGB888)
+        second = second.scaled(
+            cls.FINGERPRINT_WIDTH,
+            cls.FINGERPRINT_HEIGHT,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        ).convertToFormat(QImage.Format.Format_RGB888)
+        difference = 0
+        samples = cls.FINGERPRINT_WIDTH * cls.FINGERPRINT_HEIGHT * 3
+        for y in range(cls.FINGERPRINT_HEIGHT):
+            first_line = first.constScanLine(y)
+            second_line = second.constScanLine(y)
+            for x in range(cls.FINGERPRINT_WIDTH * 3):
+                difference += abs(first_line[x] - second_line[x])
+        return difference / samples <= cls.SIMILARITY_THRESHOLD
 
     @classmethod
     def _scaled(cls, image: QImage) -> QImage:

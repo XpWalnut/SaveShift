@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from app.steam.device_identity import SteamDeviceIdentity, _decode
 from app.steam.group_manifest import SteamGroupManifest
 from app.steam.group_security import _canonical_json
+from app.steam.session_media import SteamSessionMediaReference
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,11 @@ class SteamMemberPackageIndex:
     workshop_item_id: str
     revision: int
     package_item_ids: tuple[str, ...]
+    session_media: tuple[SteamSessionMediaReference, ...]
     updated_at_utc: str
     signature: str
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
     METADATA_KIND = "saveshift-member-package-index"
 
     @classmethod
@@ -45,6 +47,7 @@ class SteamMemberPackageIndex:
             workshop_item_id=cls._item_id(workshop_item_id),
             revision=1,
             package_item_ids=(),
+            session_media=(),
             updated_at_utc=cls._timestamp(updated_at),
             signature="",
         )
@@ -64,8 +67,55 @@ class SteamMemberPackageIndex:
             return self
         return replace(
             self,
+            schema_version=self.SCHEMA_VERSION,
             revision=self.revision + 1,
             package_item_ids=package_ids,
+            updated_at_utc=self._timestamp(updated_at),
+            signature="",
+        )._signed(publisher)
+
+    def add_session_media(
+        self,
+        reference: SteamSessionMediaReference,
+        publisher: SteamDeviceIdentity,
+        *,
+        updated_at: datetime | None = None,
+    ) -> "SteamMemberPackageIndex":
+        self._require_publisher(publisher)
+        reference.validate()
+        retained = tuple(
+            item
+            for item in self.session_media
+            if item.project_uuid != reference.project_uuid
+        )
+        return replace(
+            self,
+            schema_version=self.SCHEMA_VERSION,
+            revision=self.revision + 1,
+            session_media=retained + (reference,),
+            updated_at_utc=self._timestamp(updated_at),
+            signature="",
+        )._signed(publisher)
+
+    def remove_session_media(
+        self,
+        project_uuid: str,
+        publisher: SteamDeviceIdentity,
+        *,
+        updated_at: datetime | None = None,
+    ) -> "SteamMemberPackageIndex":
+        self._require_publisher(publisher)
+        project_id = str(uuid.UUID(project_uuid))
+        retained = tuple(
+            item for item in self.session_media if item.project_uuid != project_id
+        )
+        if retained == self.session_media:
+            return self
+        return replace(
+            self,
+            schema_version=self.SCHEMA_VERSION,
+            revision=self.revision + 1,
+            session_media=retained,
             updated_at_utc=self._timestamp(updated_at),
             signature="",
         )._signed(publisher)
@@ -137,14 +187,22 @@ class SteamMemberPackageIndex:
             package_ids = raw["package_item_ids"]
             if not isinstance(package_ids, list):
                 raise ValueError("package item identifiers must be a list")
+            schema_version = int(raw["schema_version"])
+            media_values = raw.get("session_media", [])
+            if not isinstance(media_values, list):
+                raise ValueError("session media must be a list")
             index = cls(
-                schema_version=int(raw["schema_version"]),
+                schema_version=schema_version,
                 group_id=str(uuid.UUID(str(raw["group_id"]))),
                 publisher_steam_id=str(raw["publisher_steam_id"]),
                 publisher_device_id=str(uuid.UUID(str(raw["publisher_device_id"]))),
                 workshop_item_id=cls._item_id(str(raw["workshop_item_id"])),
                 revision=int(raw["revision"]),
                 package_item_ids=tuple(cls._item_id(str(item)) for item in package_ids),
+                session_media=tuple(
+                    SteamSessionMediaReference.from_dict(item)
+                    for item in media_values
+                ),
                 updated_at_utc=str(raw["updated_at_utc"]),
                 signature=str(raw["signature"]),
             )
@@ -158,6 +216,12 @@ class SteamMemberPackageIndex:
         normalized = replace(
             self,
             package_item_ids=tuple(sorted(set(self.package_item_ids), key=int)),
+            session_media=tuple(
+                sorted(
+                    self.session_media,
+                    key=lambda item: (item.project_uuid, item.project_version),
+                )
+            ),
         )
         return replace(
             normalized,
@@ -176,12 +240,14 @@ class SteamMemberPackageIndex:
 
     def _data(self, *, include_signature: bool) -> dict[str, object]:
         value = asdict(self)
+        if self.schema_version == 1:
+            value.pop("session_media")
         if not include_signature:
             value.pop("signature")
         return value
 
     def _validate(self) -> None:
-        if self.schema_version != self.SCHEMA_VERSION:
+        if self.schema_version not in {1, self.SCHEMA_VERSION}:
             raise ValueError("Unsupported Steam member package index version.")
         uuid.UUID(self.group_id)
         uuid.UUID(self.publisher_device_id)
@@ -194,6 +260,12 @@ class SteamMemberPackageIndex:
             raise ValueError("The package index contains duplicate items.")
         for item_id in self.package_item_ids:
             self._item_id(item_id)
+        projects: set[str] = set()
+        for reference in self.session_media:
+            reference.validate()
+            if reference.project_uuid in projects:
+                raise ValueError("The package index has duplicate session media.")
+            projects.add(reference.project_uuid)
         timestamp = datetime.fromisoformat(self.updated_at_utc)
         if timestamp.tzinfo is None:
             raise ValueError("The package index timestamp must include a timezone.")

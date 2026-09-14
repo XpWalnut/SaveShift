@@ -79,11 +79,15 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Optional game-window-only session captures during hosted play. After the
   handoff is safely uploaded and its hosting presence is released, the host can
   choose from up to four candidates, select another image, or keep no image;
-  selected images are resized, re-encoded without source metadata, and shown on
-  the local world card.
+  captures now sample the live foreground game pixels later in play, reject
+  near-duplicates, and retain the four most recent distinct choices. Selected
+  images are resized and stripped of source metadata, encrypted with the group
+  key, and propagated through Steam only with their exact save version.
 - A newly named multi-resolution Windows icon wired directly into PyInstaller,
   the application window, installer, Start Menu shortcut, desktop shortcut,
   uninstaller, and `.sspkg` file association to avoid stale blank icons.
+- Steam-created desktop shortcuts now repair a missing Steam icon-cache path to
+  the bundled refined Save Shift icon when the packaged app starts.
 - An optional World Journal prompt for completed hosted sessions, including a
   persistent "don't ask again" choice and a matching Settings toggle.
 - A Shared Projects group inbox that discovers the newest Steam handoff for
