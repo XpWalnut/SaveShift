@@ -107,7 +107,10 @@ if (-not $env:SAVESHIFT_STEAM_API_PATH -or -not (Test-Path $env:SAVESHIFT_STEAM_
     throw "steam_api64.dll was not found. Set STEAMWORKS_SDK_PATH before building a release."
 }
 
-pyinstaller SaveShift.spec
+# Invoke the module through the active interpreter. The Windows pyinstaller.exe
+# launcher can return before its child Python process has fully finished, which
+# lets Inno Setup race the still-changing dist directory.
+python -m PyInstaller SaveShift.spec
 
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed."

@@ -6,6 +6,22 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Process-wide Steamworks runtime ownership and native-call serialization, so
+  background hosting-status checks cannot shut down Steam while a friend
+  invitation or another Workshop operation is still using it.
+- Targeted Steam invitation discovery in Join Group, providing an automatic
+  fallback when Steam accepts a lobby invite but does not display its
+  notification, plus a shared callback inbox so background Workshop activity
+  cannot consume an invitation callback.
+- Resumable Steam enrollment for the case where the administrator recorded a
+  member but the recipient missed the final response. Retrying reuses the
+  existing signed identity and package index instead of creating a duplicate.
+- Fixed the shared Steam callback inbox remaining attached after an empty poll,
+  preventing a background Workshop worker from receiving the final enrollment
+  response while the recipient stayed on “Waiting for invitation.”
+- Group joining now pins the signed administrator while entering the temporary
+  lobby, so the final response remains valid if Steam transfers lobby ownership
+  after the administrator sends it and leaves.
 - In-app Steam friend selection for group invitations. Save Shift now sends
   the lobby invitation directly through Steam instead of depending on the
   Steam Overlay, which is unreliable for software-rendered desktop apps.

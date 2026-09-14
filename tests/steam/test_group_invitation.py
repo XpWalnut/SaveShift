@@ -28,8 +28,8 @@ class FakeSocialClient:
     def current_identity(self) -> SteamIdentity:
         return SteamIdentity(self.steam_id, f"User {self.steam_id[-2:]}")
 
-    def create_private_lobby(self, *, maximum_members=16, metadata=None):
-        assert maximum_members == 16
+    def create_searchable_lobby(self, *, maximum_members=16, metadata=None):
+        assert maximum_members == 2
         self.lobby.metadata.update(metadata or {})
         return SteamLobby(self.lobby.lobby_id)
 
@@ -107,6 +107,7 @@ def test_lobby_invitation_enrolls_authenticated_steam_device(tmp_path: Path) -> 
 
     assert not lobby.overlay_opened
     assert lobby.invited_friend_id == member.steam_id
+    assert lobby.metadata["saveshift_invitee_steam_id"] == member.steam_id
     assert transport.updated_item_id == "3797671909"
     assert joined.manifest == updated
     assert joined.group_key == group_key
@@ -142,6 +143,56 @@ def test_join_request_rejects_spoofed_steam_sender(tmp_path: Path) -> None:
         )
 
 
+def test_partial_membership_can_resume_without_duplicate_member(
+    tmp_path: Path,
+) -> None:
+    administrator = _identity(tmp_path, "administrator", "76561198000000001")
+    member = _identity(tmp_path, "member", "76561198000000002")
+    manifest, group_key = SteamGroupManifest.create("Friends", administrator)
+    lobby = SharedLobby(administrator.steam_id)
+    transport = MemoryManifestTransport(manifest)
+    administrator_service = SteamGroupInvitationService(
+        FakeSocialClient(administrator.steam_id, lobby), transport
+    )
+    member_service = SteamGroupInvitationService(
+        FakeSocialClient(member.steam_id, lobby), transport
+    )
+    administrator_service.begin_invitation(
+        manifest, "3797671909", member.steam_id
+    )
+    member_service.request_membership(lobby.lobby_id, member, "3797671910")
+    sender, payload = lobby.messages[-1]
+    event = SteamLobbyMessage(lobby.lobby_id, sender, payload)
+
+    enrolled = administrator_service.admit_member(
+        event,
+        "3797671909",
+        manifest,
+        group_key,
+        administrator,
+    )
+    resumed = administrator_service.admit_member(
+        event,
+        "3797671909",
+        enrolled,
+        group_key,
+        administrator,
+    )
+
+    assert resumed == enrolled
+    assert len(resumed.active_members) == 2
+    response_sender, response_payload = lobby.messages[-1]
+    joined = member_service.complete_membership(
+        SteamLobbyMessage(
+            lobby.lobby_id,
+            response_sender,
+            response_payload,
+        ),
+        member,
+    )
+    assert joined.manifest == enrolled
+
+
 def test_join_response_requires_original_lobby_owner(tmp_path: Path) -> None:
     administrator = _identity(tmp_path, "administrator", "76561198000000001")
     member = _identity(tmp_path, "member", "76561198000000002")
@@ -173,3 +224,41 @@ def test_join_response_requires_original_lobby_owner(tmp_path: Path) -> None:
         member_service.complete_membership(
             SteamLobbyMessage(lobby.lobby_id, response_sender, response), member
         )
+
+
+def test_join_response_accepts_pinned_original_owner_after_owner_leaves(
+    tmp_path: Path,
+) -> None:
+    administrator = _identity(tmp_path, "administrator", "76561198000000001")
+    member = _identity(tmp_path, "member", "76561198000000002")
+    manifest, group_key = SteamGroupManifest.create("Friends", administrator)
+    lobby = SharedLobby(administrator.steam_id)
+    transport = MemoryManifestTransport(manifest)
+    administrator_service = SteamGroupInvitationService(
+        FakeSocialClient(administrator.steam_id, lobby), transport
+    )
+    member_service = SteamGroupInvitationService(
+        FakeSocialClient(member.steam_id, lobby), transport
+    )
+    administrator_service.begin_invitation(
+        manifest, "3797671909", member.steam_id
+    )
+    member_service.request_membership(lobby.lobby_id, member, "3797671910")
+    sender, payload = lobby.messages[-1]
+    administrator_service.admit_member(
+        SteamLobbyMessage(lobby.lobby_id, sender, payload),
+        "3797671909",
+        manifest,
+        group_key,
+        administrator,
+    )
+    response_sender, response = lobby.messages[-1]
+
+    lobby.owner_steam_id = member.steam_id
+    joined = member_service.complete_membership(
+        SteamLobbyMessage(lobby.lobby_id, response_sender, response),
+        member,
+        administrator.steam_id,
+    )
+
+    assert joined.manifest.administrator_steam_id == administrator.steam_id

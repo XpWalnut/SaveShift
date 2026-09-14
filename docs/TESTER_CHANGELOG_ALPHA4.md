@@ -9,6 +9,12 @@ shared worlds.
 - Multiple named groups; each group has its own worlds and package history.
 - New groups use Steam instead of Cloudflare.
 - Invite friends from an in-app Steam friends list.
+- Fixed a native Steam crash that could occur while inviting a friend as
+  background hosting-status checks refreshed.
+- **Join Group** now finds invitations addressed to your Steam account even
+  when Steam does not show its invite notification.
+- Partially completed joins can be retried safely if the administrator sees
+  the computer but the recipient does not yet see the group.
 - **Host** pulls the latest save, launches the game, and marks you as host.
 - Closing the game automatically uploads the save and makes it available again.
 - Optional post-session journal entry and screenshot selection. Distinct

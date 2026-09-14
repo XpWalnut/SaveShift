@@ -150,11 +150,17 @@ class SteamGroupInvitationService:
         identity = self.social.current_identity()
         if identity.steam_id != manifest.administrator_steam_id:
             raise ValueError("Only the Steam group administrator can invite members.")
-        lobby = self.social.create_private_lobby(
+        # The direct Steam invite remains useful, but Valve documents that a
+        # successful return does not prove delivery. A targeted invisible lobby
+        # lets Save Shift discover the same invitation while the recipient is
+        # waiting in Join Group, without exposing it to unrelated accounts.
+        lobby = self.social.create_searchable_lobby(
+            maximum_members=2,
             metadata={
                 "saveshift_protocol": _PROTOCOL,
                 "saveshift_group_id": manifest.group_id,
                 "saveshift_manifest_item": manifest_item_id,
+                "saveshift_invitee_steam_id": friend_steam_id,
             }
         )
         self.social.invite_friend(lobby.lobby_id, friend_steam_id)
@@ -194,16 +200,55 @@ class SteamGroupInvitationService:
             event.sender_steam_id
         ):
             raise ValueError("The Steam group join request could not be authenticated.")
-        updated = manifest.add_public_member(
-            steam_id=request.steam_id,
-            device_id=request.device_id,
-            signing_public_key=request.signing_public_key,
-            agreement_public_key=request.agreement_public_key,
-            group_key=group_key,
-            administrator=administrator,
-            package_index_item_id=request.package_index_item_id,
+        existing = next(
+            (
+                member
+                for member in manifest.active_members
+                if member.device_id == request.device_id
+            ),
+            None,
         )
-        self.manifests.update(manifest_item_id, updated)
+        if existing is not None:
+            if (
+                existing.steam_id != request.steam_id
+                or existing.signing_public_key != request.signing_public_key
+                or existing.agreement_public_key != request.agreement_public_key
+            ):
+                raise ValueError(
+                    "The existing group member does not match this device identity."
+                )
+            current_index = next(
+                (
+                    item
+                    for item in manifest.member_package_indexes
+                    if item.device_id == request.device_id
+                ),
+                None,
+            )
+            if (
+                current_index is not None
+                and current_index.workshop_item_id
+                == request.package_index_item_id
+            ):
+                updated = manifest
+            else:
+                updated = manifest.set_member_package_index(
+                    device_id=request.device_id,
+                    workshop_item_id=request.package_index_item_id,
+                    administrator=administrator,
+                )
+                self.manifests.update(manifest_item_id, updated)
+        else:
+            updated = manifest.add_public_member(
+                steam_id=request.steam_id,
+                device_id=request.device_id,
+                signing_public_key=request.signing_public_key,
+                agreement_public_key=request.agreement_public_key,
+                group_key=group_key,
+                administrator=administrator,
+                package_index_item_id=request.package_index_item_id,
+            )
+            self.manifests.update(manifest_item_id, updated)
         self.social.send_lobby_message(
             event.lobby_id,
             SteamGroupJoinResponse(
@@ -219,6 +264,7 @@ class SteamGroupInvitationService:
         self,
         event: SteamLobbyMessage,
         identity: SteamDeviceIdentity,
+        expected_administrator_steam_id: str | None = None,
     ) -> JoinedSteamGroup:
         response = SteamGroupJoinResponse.from_message(event.payload)
         if response.recipient_device_id != identity.device_id:
@@ -228,7 +274,11 @@ class SteamGroupInvitationService:
             raise ValueError("The downloaded manifest belongs to another group.")
         if manifest.revision < response.manifest_revision:
             raise ValueError("Steam returned an older group manifest revision.")
-        owner = self.social.lobby_owner(event.lobby_id)
+        owner = (
+            str(expected_administrator_steam_id)
+            if expected_administrator_steam_id is not None
+            else self.social.lobby_owner(event.lobby_id)
+        )
         if (
             event.sender_steam_id != owner
             or manifest.administrator_steam_id != owner

@@ -153,6 +153,12 @@ class _LobbyChatMessage(ctypes.Structure):
 class SteamworksUgcClient:
     """Thin ctypes binding over the official Steamworks flat UGC API."""
 
+    _global_api_lock = threading.RLock()
+    _runtime_refcounts: dict[tuple[str, object], int] = {}
+    _social_callback_queues: dict[
+        tuple[str, object], list[_CallbackMessage]
+    ] = {}
+
     def __init__(
         self,
         dll_path: Path | None = None,
@@ -163,9 +169,13 @@ class SteamworksUgcClient:
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.download_timeout_seconds = download_timeout_seconds
-        self._lock = threading.RLock()
+        # SteamAPI is process-global. Every wrapper instance must serialize calls
+        # and keep the runtime alive until the last worker releases it.
+        self._lock = self._global_api_lock
         self._closed = False
+        self._runtime_registered = False
         self._pending_social_callbacks: list[_CallbackMessage] = []
+        injected_library = library is not None
 
         if library is None:
             resolved_path = self.resolve_dll_path(dll_path)
@@ -178,35 +188,51 @@ class SteamworksUgcClient:
                 ) from error
 
         self._api = library
-        self._configure_signatures()
-        error_message = ctypes.create_string_buffer(1024)
-        init_result = self._api.SteamAPI_InitFlat(error_message)
-
-        if init_result != 0:
-            message = error_message.value.decode("utf-8", errors="replace").strip()
-            raise SteamworksUnavailableError(
-                message or f"Steamworks initialization failed ({init_result})."
+        self._runtime_key = (
+            ("injected", id(library))
+            if injected_library
+            else ("native", str(resolved_path).casefold())
+        )
+        with self._lock:
+            self._configure_signatures()
+            self._pending_social_callbacks = self._social_callback_queues.setdefault(
+                self._runtime_key,
+                [],
             )
+            reference_count = self._runtime_refcounts.get(self._runtime_key, 0)
+            if reference_count == 0:
+                error_message = ctypes.create_string_buffer(1024)
+                init_result = self._api.SteamAPI_InitFlat(error_message)
 
-        self._api.SteamAPI_ManualDispatch_Init()
-        self._pipe = int(self._api.SteamAPI_GetHSteamPipe())
-        self._ugc = self._api.SteamAPI_SteamUGC_v021()
-        self._user = self._api.SteamAPI_SteamUser_v023()
-        self._friends = self._api.SteamAPI_SteamFriends_v018()
-        self._matchmaking = self._api.SteamAPI_SteamMatchmaking_v009()
+                if init_result != 0:
+                    message = error_message.value.decode(
+                        "utf-8", errors="replace"
+                    ).strip()
+                    raise SteamworksUnavailableError(
+                        message
+                        or f"Steamworks initialization failed ({init_result})."
+                    )
+                self._api.SteamAPI_ManualDispatch_Init()
+            self._runtime_refcounts[self._runtime_key] = reference_count + 1
+            self._runtime_registered = True
+            self._pipe = int(self._api.SteamAPI_GetHSteamPipe())
+            self._ugc = self._api.SteamAPI_SteamUGC_v021()
+            self._user = self._api.SteamAPI_SteamUser_v023()
+            self._friends = self._api.SteamAPI_SteamFriends_v018()
+            self._matchmaking = self._api.SteamAPI_SteamMatchmaking_v009()
 
-        if (
-            self._pipe == 0
-            or not self._ugc
-            or not self._user
-            or not self._friends
-            or not self._matchmaking
-        ):
-            self.close()
-            raise SteamworksUnavailableError(
-                "Steamworks did not provide the required user, friends, "
-                "matchmaking, and UGC interfaces."
-            )
+            if (
+                self._pipe == 0
+                or not self._ugc
+                or not self._user
+                or not self._friends
+                or not self._matchmaking
+            ):
+                self.close()
+                raise SteamworksUnavailableError(
+                    "Steamworks did not provide the required user, friends, "
+                    "matchmaking, and UGC interfaces."
+                )
 
     @staticmethod
     def resolve_dll_path(explicit_path: Path | None = None) -> Path:
@@ -784,8 +810,12 @@ class SteamworksUgcClient:
         with self._lock:
             self._ensure_open()
             events: list[SteamSocialEvent] = []
-            callbacks = self._pending_social_callbacks + self._next_callbacks()
-            self._pending_social_callbacks = []
+            # Every wrapper for this process shares the same callback inbox.
+            # Drain it in place so an instance that has already polled does not
+            # detach from the list used by background Workshop workers.
+            callbacks = list(self._pending_social_callbacks)
+            self._pending_social_callbacks.clear()
+            callbacks.extend(self._next_callbacks())
             for message in callbacks:
                 if message.callback_id == _GAME_LOBBY_JOIN_REQUESTED_CALLBACK:
                     request = ctypes.cast(
@@ -839,9 +869,20 @@ class SteamworksUgcClient:
             self._pending_social_callbacks.append(message)
 
     def close(self) -> None:
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
-            self._api.SteamAPI_Shutdown()
+            if not self._runtime_registered:
+                return
+            self._runtime_registered = False
+            reference_count = self._runtime_refcounts.get(self._runtime_key, 0)
+            if reference_count <= 1:
+                self._runtime_refcounts.pop(self._runtime_key, None)
+                self._social_callback_queues.pop(self._runtime_key, None)
+                self._api.SteamAPI_Shutdown()
+            else:
+                self._runtime_refcounts[self._runtime_key] = reference_count - 1
 
     def __enter__(self) -> "SteamworksUgcClient":
         self._ensure_open()

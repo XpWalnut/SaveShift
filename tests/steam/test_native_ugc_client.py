@@ -240,6 +240,24 @@ def test_native_client_initializes_and_shuts_down(tmp_path: Path) -> None:
     assert len(api.SteamAPI_Shutdown.calls) == 1
 
 
+def test_native_runtime_stays_alive_until_last_client_closes(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    first = StubbedResultClient(library=api)
+    second = StubbedResultClient(library=api)
+
+    assert len(api.SteamAPI_InitFlat.calls) == 1
+    assert len(api.SteamAPI_ManualDispatch_Init.calls) == 1
+
+    first.close()
+
+    assert api.SteamAPI_Shutdown.calls == []
+    assert second.current_identity().steam_id == "76561198000000001"
+
+    second.close()
+
+    assert len(api.SteamAPI_Shutdown.calls) == 1
+
+
 def test_publish_configures_and_submits_unlisted_item(tmp_path: Path) -> None:
     api = FakeSteamApi(tmp_path)
     client = StubbedResultClient(library=api)
@@ -504,6 +522,64 @@ def test_social_callback_is_preserved_while_another_operation_runs(
     client._preserve_social_callback(message)
 
     assert client.poll_social_events()[0].friend_steam_id == "76561198000000002"
+
+
+def test_social_callback_is_shared_between_runtime_clients(tmp_path: Path) -> None:
+    api = FakeSteamApi(tmp_path)
+    background = StubbedResultClient(library=api)
+    invitation = StubbedResultClient(library=api)
+    request = _GameLobbyJoinRequested(
+        lobby_id=109775240917155001,
+        friend_steam_id=76561198000000002,
+    )
+    message = _CallbackMessage(
+        steam_user=1,
+        callback_id=_GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+        parameter=ctypes.cast(
+            ctypes.pointer(request), ctypes.POINTER(ctypes.c_uint8)
+        ),
+        parameter_size=ctypes.sizeof(request),
+    )
+    message._parameter_copy = request
+
+    background._preserve_social_callback(message)
+
+    assert invitation.poll_social_events()[0].friend_steam_id == (
+        "76561198000000002"
+    )
+    background.close()
+    invitation.close()
+
+
+def test_social_callback_remains_shared_after_invitation_client_polls(
+    tmp_path: Path,
+) -> None:
+    api = FakeSteamApi(tmp_path)
+    background = StubbedResultClient(library=api)
+    invitation = StubbedResultClient(library=api)
+
+    assert invitation.poll_social_events() == []
+
+    request = _GameLobbyJoinRequested(
+        lobby_id=109775240917155001,
+        friend_steam_id=76561198000000002,
+    )
+    message = _CallbackMessage(
+        steam_user=1,
+        callback_id=_GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+        parameter=ctypes.cast(
+            ctypes.pointer(request), ctypes.POINTER(ctypes.c_uint8)
+        ),
+        parameter_size=ctypes.sizeof(request),
+    )
+    message._parameter_copy = request
+    background._preserve_social_callback(message)
+
+    assert invitation.poll_social_events()[0].friend_steam_id == (
+        "76561198000000002"
+    )
+    background.close()
+    invitation.close()
 
 
 def test_initialization_failure_uses_steam_error_message(tmp_path: Path) -> None:

@@ -983,9 +983,9 @@ class MainWindow(QMainWindow):
             self._pending_coordination_device_name = device_name
             self._pending_coordination_group_name = ""
             self._show_group_setup_progress(
-                "Waiting for a Steam friend invitation. Ask the group "
-                "administrator to choose Invite a Friend now, then accept it "
-                "in Steam."
+                "Looking for a Steam friend invitation. Ask the group "
+                "administrator to choose Invite a Friend now. Save Shift will "
+                "join automatically; accepting a Steam notification is optional."
             )
             if not self.group_setup_controller.join_steam_group():
                 self._close_group_setup_progress()
@@ -1068,8 +1068,9 @@ class MainWindow(QMainWindow):
     def _steam_invitation_ready(self, _lobby_id: str) -> None:
         if self._group_setup_progress is not None:
             self._group_setup_progress.setLabelText(
-                "The Steam invitation was sent. Waiting while your friend "
-                "accepts it and Save Shift securely enrolls their computer."
+                "The Steam invitation is ready. Have your friend choose Join "
+                "Group in Save Shift; it will find the invitation automatically. "
+                "They may also accept Steam's notification if it appears."
             )
 
     def _steam_friends_loaded(self, friends: list[SteamFriend]) -> None:

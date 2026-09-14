@@ -13,7 +13,7 @@ from app.coordination.cloudflare_provisioning import (
 )
 from app.coordination.http_provider import HttpCoordinationProvider
 from app.coordination.models import GroupInvitation, PairedDevice
-from app.core.logging import diagnostic_operation
+from app.core.logging import diagnostic_operation, logger
 from app.steam.native_group_service import (
     CreatedSteamGroup,
     SteamNativeGroupService,
@@ -263,46 +263,62 @@ class InviteSteamMemberTask(QRunnable):
         client: SteamworksUgcClient | None = None
         lobby_id = ""
         try:
-            client = self.client_factory()
-            steam_identity = client.current_identity()
-            identity = self.identity_store_factory().load_or_create(
-                steam_identity.steam_id
-            )
-            transport = SteamGroupManifestTransport(
-                client,
-                cache=self.manifest_cache_factory(),
-            )
-            manifest = transport.download(self.manifest_item_id)
-            if manifest.group_id != self.group_id:
-                raise ValueError("The saved Steam group manifest does not match.")
-            group_key = manifest.group_key_for(identity)
-            invitation = SteamGroupInvitationService(client, transport)
-            lobby = invitation.begin_invitation(
-                manifest,
-                self.manifest_item_id,
-                self.friend_steam_id,
-            )
-            lobby_id = lobby.lobby_id
-            self.signals.steam_invitation_ready.emit(lobby_id)
-            deadline = time.monotonic() + self.timeout_seconds
-            while time.monotonic() < deadline:
-                for event in client.poll_social_events():
-                    if not isinstance(event, SteamLobbyMessage):
-                        continue
-                    try:
-                        updated = invitation.admit_member(
-                            event,
-                            self.manifest_item_id,
-                            manifest,
-                            group_key,
-                            identity,
-                        )
-                    except ValueError:
-                        continue
-                    self.signals.steam_member_admitted.emit(updated)
-                    return
-                time.sleep(0.05)
-            raise TimeoutError("No friend joined the Steam invitation in time.")
+            with diagnostic_operation("steam_group.invite"):
+                client = self.client_factory()
+                steam_identity = client.current_identity()
+                identity = self.identity_store_factory().load_or_create(
+                    steam_identity.steam_id
+                )
+                transport = SteamGroupManifestTransport(
+                    client,
+                    cache=self.manifest_cache_factory(),
+                )
+                manifest = transport.download(self.manifest_item_id)
+                if manifest.group_id != self.group_id:
+                    raise ValueError(
+                        "The saved Steam group manifest does not match."
+                    )
+                group_key = manifest.group_key_for(identity)
+                invitation = SteamGroupInvitationService(client, transport)
+                lobby = invitation.begin_invitation(
+                    manifest,
+                    self.manifest_item_id,
+                    self.friend_steam_id,
+                )
+                lobby_id = lobby.lobby_id
+                logger.info(
+                    "steam_group.invite lobby=%s friend=%s queued_by_steam=true",
+                    lobby_id,
+                    self.friend_steam_id,
+                )
+                self.signals.steam_invitation_ready.emit(lobby_id)
+                deadline = time.monotonic() + self.timeout_seconds
+                while time.monotonic() < deadline:
+                    for event in client.poll_social_events():
+                        if not isinstance(event, SteamLobbyMessage):
+                            continue
+                        if event.sender_steam_id != self.friend_steam_id:
+                            logger.warning(
+                                "Ignoring Steam group join request from unexpected "
+                                "account %s; expected %s.",
+                                event.sender_steam_id,
+                                self.friend_steam_id,
+                            )
+                            continue
+                        try:
+                            updated = invitation.admit_member(
+                                event,
+                                self.manifest_item_id,
+                                manifest,
+                                group_key,
+                                identity,
+                            )
+                        except ValueError:
+                            continue
+                        self.signals.steam_member_admitted.emit(updated)
+                        return
+                    time.sleep(0.05)
+                raise TimeoutError("No friend joined the Steam invitation in time.")
         except Exception as error:
             self.signals.failed.emit(str(error))
         finally:
@@ -335,53 +351,153 @@ class JoinSteamGroupTask(QRunnable):
         client: SteamworksUgcClient | None = None
         lobby_id = ""
         try:
-            client = self.client_factory()
-            steam_identity = client.current_identity()
-            identity = self.identity_store_factory().load_or_create(
-                steam_identity.steam_id
-            )
-            transport = SteamGroupManifestTransport(
-                client,
-                cache=self.manifest_cache_factory(),
-            )
-            invitation = SteamGroupInvitationService(client, transport)
-            self.signals.steam_join_waiting.emit()
-            deadline = time.monotonic() + self.timeout_seconds
-            membership_requested = False
-            while time.monotonic() < deadline:
-                for event in client.poll_social_events():
-                    if (
-                        isinstance(event, SteamLobbyJoinRequest)
-                        and not membership_requested
-                    ):
-                        client.join_lobby(event.lobby_id)
-                        lobby_id = event.lobby_id
-                        group_id = client.lobby_data(
-                            lobby_id,
-                            "saveshift_group_id",
+            with diagnostic_operation("steam_group.join"):
+                client = self.client_factory()
+                steam_identity = client.current_identity()
+                identity = self.identity_store_factory().load_or_create(
+                    steam_identity.steam_id
+                )
+                transport = SteamGroupManifestTransport(
+                    client,
+                    cache=self.manifest_cache_factory(),
+                )
+                invitation = SteamGroupInvitationService(client, transport)
+                self.signals.steam_join_waiting.emit()
+                deadline = time.monotonic() + self.timeout_seconds
+                next_discovery = 0.0
+                membership_requested = False
+                invitation_owner_steam_id = ""
+
+                def request_membership(candidate_lobby_id: str) -> None:
+                    nonlocal lobby_id, membership_requested
+                    nonlocal invitation_owner_steam_id
+                    client.join_lobby(candidate_lobby_id)
+                    lobby_id = candidate_lobby_id
+                    invitation_owner_steam_id = client.lobby_owner(lobby_id)
+                    group_id = client.lobby_data(
+                        lobby_id,
+                        "saveshift_group_id",
+                    )
+                    manifest_item_id = client.lobby_data(
+                        lobby_id,
+                        "saveshift_manifest_item",
+                    )
+                    known_manifest = transport.download(manifest_item_id)
+                    if known_manifest.group_id != group_id:
+                        raise ValueError(
+                            "The invitation lobby and group manifest do not match."
                         )
-                        package_index = SteamMemberPackageIndexTransport(
+                    if (
+                        known_manifest.administrator_steam_id
+                        != invitation_owner_steam_id
+                    ):
+                        raise ValueError(
+                            "The invitation lobby is not owned by the signed group "
+                            "administrator."
+                        )
+                    existing_member = next(
+                        (
+                            member
+                            for member in known_manifest.active_members
+                            if member.device_id == identity.device_id
+                        ),
+                        None,
+                    )
+                    if existing_member is not None:
+                        if (
+                            existing_member.steam_id != identity.steam_id
+                            or existing_member.signing_public_key
+                            != identity.signing_public_key
+                            or existing_member.agreement_public_key
+                            != identity.agreement_public_key
+                        ):
+                            raise ValueError(
+                                "The existing group member does not match this "
+                                "computer's identity."
+                            )
+                        package_index = next(
+                            (
+                                item
+                                for item in known_manifest.member_package_indexes
+                                if item.device_id == identity.device_id
+                            ),
+                            None,
+                        )
+                        if package_index is None:
+                            raise ValueError(
+                                "The partial group membership has no package index."
+                            )
+                        package_index_item_id = package_index.workshop_item_id
+                        logger.info(
+                            "steam_group.join resuming_existing_membership "
+                            "lobby=%s group=%s",
+                            lobby_id,
+                            group_id,
+                        )
+                    else:
+                        published_index = SteamMemberPackageIndexTransport(
                             client
                         ).publish(group_id=group_id, publisher=identity)
-                        invitation.request_membership(
-                            lobby_id,
-                            identity,
-                            package_index.workshop_item_id,
+                        package_index_item_id = published_index.workshop_item_id
+                    invitation.request_membership(
+                        lobby_id,
+                        identity,
+                        package_index_item_id,
+                    )
+                    membership_requested = True
+                    logger.info(
+                        "steam_group.join membership_requested lobby=%s group=%s",
+                        lobby_id,
+                        group_id,
+                    )
+
+                while time.monotonic() < deadline:
+                    for event in client.poll_social_events():
+                        if (
+                            isinstance(event, SteamLobbyJoinRequest)
+                            and not membership_requested
+                        ):
+                            request_membership(event.lobby_id)
+                        elif (
+                            membership_requested
+                            and isinstance(event, SteamLobbyMessage)
+                            and event.lobby_id == lobby_id
+                        ):
+                            try:
+                                joined = invitation.complete_membership(
+                                    event,
+                                    identity,
+                                    invitation_owner_steam_id,
+                                )
+                            except ValueError as error:
+                                logger.warning(
+                                    "Rejected Steam group completion response: %s",
+                                    error,
+                                )
+                                continue
+                            self.signals.steam_join_completed.emit(joined)
+                            return
+
+                    now = time.monotonic()
+                    if not membership_requested and now >= next_discovery:
+                        candidates = client.find_lobbies(
+                            {
+                                "saveshift_protocol": "saveshift-group-invite-v1",
+                                "saveshift_invitee_steam_id": steam_identity.steam_id,
+                            },
+                            maximum_results=10,
                         )
-                        membership_requested = True
-                    elif (
-                        membership_requested
-                        and isinstance(event, SteamLobbyMessage)
-                        and event.lobby_id == lobby_id
-                    ):
-                        try:
-                            joined = invitation.complete_membership(event, identity)
-                        except ValueError:
-                            continue
-                        self.signals.steam_join_completed.emit(joined)
-                        return
-                time.sleep(0.05)
-            raise TimeoutError("No Steam group invitation was completed in time.")
+                        if candidates:
+                            logger.info(
+                                "steam_group.join discovered_targeted_lobbies count=%d",
+                                len(candidates),
+                            )
+                            request_membership(candidates[0].lobby_id)
+                        next_discovery = now + 1.0
+                    time.sleep(0.05)
+                raise TimeoutError(
+                    "No Steam group invitation was completed in time."
+                )
         except Exception as error:
             self.signals.failed.emit(str(error))
         finally:
