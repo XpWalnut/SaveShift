@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import os
 import platform
 from pathlib import Path
+import time
 import uuid
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -223,6 +224,8 @@ class MainWindow(QMainWindow):
         self._pending_coordination_group_name = ""
         self._leaving_group = False
         self._closing = False
+        self._steam_reconnecting = False
+        self._resume_reconnect_attempts = 0
         self.incoming_group_controller = GroupSetupController(
             self,
             steam_invitation_timeout_seconds=30.0,
@@ -286,10 +289,18 @@ class MainWindow(QMainWindow):
             self._check_automatic_host_session
         )
         self.automatic_sync_timer = QTimer(self)
-        self.automatic_sync_timer.setInterval(60 * 1000)
+        # Package discovery touches each group member's Workshop index. Keep it
+        # comfortably slower than lock presence polling so Steam does not show
+        # a distracting cluster of downloads every few seconds.
+        self.automatic_sync_timer.setInterval(2 * 60 * 1000)
         self.automatic_sync_timer.timeout.connect(
             self._refresh_automatic_group_versions
         )
+        self._last_resume_heartbeat = time.monotonic()
+        self.resume_heartbeat_timer = QTimer(self)
+        self.resume_heartbeat_timer.setInterval(5_000)
+        self.resume_heartbeat_timer.timeout.connect(self._check_system_resume)
+        self.resume_heartbeat_timer.start()
 
         if self.coordination_manager is not None:
             self.coordination_renewal_timer.start()
@@ -1225,6 +1236,7 @@ class MainWindow(QMainWindow):
     def _start_incoming_group_listener(self) -> None:
         if (
             self._closing
+            or self._steam_reconnecting
             or self.distribution_channel is not DistributionChannel.STEAM
         ):
             return
@@ -1246,12 +1258,75 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1_000, self._start_incoming_group_listener)
 
     def _incoming_group_listener_failed(self, message: str) -> None:
-        if self._closing:
+        if self._closing or self._steam_reconnecting:
             return
         normalized = message.casefold()
         if "invitation" not in normalized or "time" not in normalized:
             logger.warning("Incoming Steam group listener: %s", message)
         QTimer.singleShot(2_000, self._start_incoming_group_listener)
+
+    def _check_system_resume(self) -> None:
+        """Recover Steam clients after Windows suspends the process."""
+        now = time.monotonic()
+        elapsed = now - self._last_resume_heartbeat
+        self._last_resume_heartbeat = now
+        if elapsed < 20.0 or self._closing or self._steam_reconnecting:
+            return
+        logger.info("System resume detected after %.1fs; reconnecting Steam.", elapsed)
+        self._begin_steam_reconnect()
+
+    def _begin_steam_reconnect(self) -> None:
+        if self.distribution_channel is not DistributionChannel.STEAM:
+            return
+        manager = self.coordination_manager
+        if manager is not None and manager.active_leases:
+            # A hosted game may have survived suspend. Preserve its lease/client
+            # and let renewal either recover the lobby or report a lost lock.
+            self._renew_coordination_leases()
+            return
+        self._steam_reconnecting = True
+        self._resume_reconnect_attempts = 0
+        self.lock_status_timer.stop()
+        self.automatic_sync_timer.stop()
+        self.incoming_group_controller.cancel_current()
+        self.statusBar().showMessage("Reconnecting to Steam…")
+        QTimer.singleShot(250, self._finish_steam_reconnect)
+
+    def _finish_steam_reconnect(self) -> None:
+        if self._closing:
+            return
+        if self.incoming_group_controller.running:
+            self._resume_reconnect_attempts += 1
+            if self._resume_reconnect_attempts < 40:
+                QTimer.singleShot(250, self._finish_steam_reconnect)
+                return
+            logger.warning("Steam invitation listener did not stop during resume.")
+            self._steam_reconnecting = False
+            self.statusBar().showMessage(
+                "Steam is still reconnecting; Save Shift will retry.", 10_000
+            )
+            QTimer.singleShot(10_000, self._begin_steam_reconnect)
+            return
+
+        old_manager = self.coordination_manager
+        if old_manager is not None and not old_manager.active_leases:
+            old_manager.close()
+        self.coordination_manager = self._create_coordination_manager(self.settings)
+        self.project_lock_statuses.clear()
+        self._steam_reconnecting = False
+        if self.coordination_manager is not None:
+            self.lock_status_timer.start()
+            if not self.settings.manual_transfer_controls:
+                self.automatic_sync_timer.start()
+            self.statusBar().showMessage("Steam reconnected.", 5_000)
+            self._refresh_project_lock_statuses()
+            QTimer.singleShot(500, self._refresh_automatic_group_versions)
+        else:
+            self.statusBar().showMessage(
+                "Steam is still unavailable; Save Shift will retry.", 10_000
+            )
+            QTimer.singleShot(10_000, self._begin_steam_reconnect)
+        QTimer.singleShot(500, self._start_incoming_group_listener)
 
     def _group_created(self, created: CreatedGroup) -> None:
         self._close_group_setup_progress()
@@ -4742,5 +4817,6 @@ class MainWindow(QMainWindow):
         self.coordination_renewal_timer.stop()
         self.lock_status_timer.stop()
         self.automatic_sync_timer.stop()
+        self.resume_heartbeat_timer.stop()
         event.accept()
         super().closeEvent(event)

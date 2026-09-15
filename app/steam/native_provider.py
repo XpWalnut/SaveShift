@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import threading
+import time
 from typing import NoReturn
 import uuid
 
@@ -25,6 +26,7 @@ from app.core.logging import logger
 from app.package_transport.models import PackageArtifact
 from app.steam.device_identity import SteamDeviceIdentity, SteamDeviceIdentityStore
 from app.steam.group_manifest import SteamGroupManifest
+from app.steam.group_manifest import SteamProjectRetentionCheckpoint
 from app.steam.group_manifest_transport import SteamGroupManifestTransport
 from app.steam.hosting_presence import (
     SteamHostPresence,
@@ -44,9 +46,11 @@ from app.steam.package_lineage import SteamPackageForkError
 from app.steam.session_media_transport import SteamSessionMediaTransport
 from app.steam.session_media import SteamSessionMediaReference
 from app.steam.ugc_client import SteamUgcClient
+from app.steam.ugc_transport import SteamUgcBlobTransport
 
 
 _KEY_PREFIX = "steam-group"
+_REMOTE_HISTORY_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,7 @@ class SteamNativeCoordinationProvider:
         identity_store: SteamDeviceIdentityStore | None = None,
         lease_seconds: int = 900,
         manifest_cache: SteamGroupManifestCache | None = None,
+        manifest_refresh_seconds: float = 120.0,
     ) -> None:
         self.group_id = str(uuid.UUID(group_id))
         self.manifest_item_id = self._item_id(manifest_item_id, "manifest")
@@ -83,8 +88,12 @@ class SteamNativeCoordinationProvider:
         self.identity_store = identity_store or SteamDeviceIdentityStore()
         self.lease_seconds = max(60, int(lease_seconds))
         self.manifest_cache = manifest_cache or SteamGroupManifestCache()
+        self.manifest_refresh_seconds = max(5.0, float(manifest_refresh_seconds))
+        self._verified_manifest: SteamGroupManifest | None = None
+        self._verified_manifest_at = 0.0
         self._leases: dict[str, _LeaseState] = {}
         self._lease_guard = threading.RLock()
+        self._manifest_guard = threading.RLock()
         self._publication_guard = threading.RLock()
         self._bound = threading.local()
 
@@ -113,7 +122,11 @@ class SteamNativeCoordinationProvider:
         if not owner:
             raise CoordinationConfigurationError("A host display name is required.")
         with self._client() as client:
-            manifest, identity = self._context(client)
+            manifest, identity = self._context(client, refresh_manifest=True)
+            if self._compact_project_history_if_needed(
+                client, manifest, identity, project_id
+            ):
+                manifest, identity = self._context(client, refresh_manifest=True)
             parent_hash = self._single_head_hash(client, manifest, project_id)
         now = datetime.now(UTC)
         lease = LockLease(
@@ -175,7 +188,7 @@ class SteamNativeCoordinationProvider:
 
         client = self.client_factory()
         try:
-            manifest, identity = self._context(client)
+            manifest, identity = self._context(client, refresh_manifest=True)
             service = SteamHostingPresenceService(client)
             existing = service.find(manifest, project_uuids=[project_id]).get(
                 project_id
@@ -185,6 +198,10 @@ class SteamNativeCoordinationProvider:
                     f"{existing.host_display_name} is already hosting this world.",
                     existing.to_lease(),
                 )
+            if self._compact_project_history_if_needed(
+                client, manifest, identity, project_id
+            ):
+                manifest, identity = self._context(client, refresh_manifest=True)
             parent_hash = self._single_head_hash(client, manifest, project_id)
             if (
                 expected_parent_hash is not None
@@ -390,7 +407,7 @@ class SteamNativeCoordinationProvider:
             state = self._owned_state(lease)
         with self._publication_guard:
             with self._client() as client:
-                manifest, identity = self._context(client)
+                manifest, identity = self._context(client, refresh_manifest=True)
                 if artifact.encryption_key_id != self._key_id(manifest.key_epoch):
                     raise PackageKeyRotatedError(
                         "The Steam group key changed while the package was uploading."
@@ -425,6 +442,172 @@ class SteamNativeCoordinationProvider:
                     )
                 index_transport.update(index.add(artifact.remote_id, identity))
                 return self._catalog_package(descriptor)
+
+    def compact_project_history(
+        self,
+        project_uuid: str,
+        *,
+        retain_versions: int = _REMOTE_HISTORY_LIMIT,
+    ) -> bool:
+        """Rebuild one recoverable remote lineage and prune this account's old items.
+
+        Steam only permits an item owner to delete its Workshop items.  The signed
+        manifest checkpoint makes all members converge on the replacement lineage;
+        members clean their own superseded items on a later update.
+        """
+        project_id = str(uuid.UUID(project_uuid))
+        limit = int(retain_versions)
+        if limit < 1:
+            raise ValueError("At least one remote version must be retained.")
+        with self._publication_guard:
+            with self._client() as client:
+                manifest, identity = self._context(client, refresh_manifest=True)
+                return self._compact_project_history(
+                    client, manifest, identity, project_id, limit
+                )
+
+    def _compact_project_history_if_needed(
+        self,
+        client: SteamUgcClient,
+        manifest: SteamGroupManifest,
+        identity: SteamDeviceIdentity,
+        project_uuid: str,
+    ) -> bool:
+        """Perform bounded cleanup before a new hosted session, never mid-handoff."""
+        if identity.device_id != manifest.administrator_device_id:
+            return False
+        result = SteamGroupPackageDiscovery(client).discover(
+            manifest, project_uuid=project_uuid
+        )
+        try:
+            if len(result.lineage(project_uuid).descriptors) <= _REMOTE_HISTORY_LIMIT:
+                return False
+            return self._compact_project_history(
+                client, manifest, identity, project_uuid, _REMOTE_HISTORY_LIMIT
+            )
+        except Exception as error:
+            # Cleanup is housekeeping. It must not make a shared world impossible
+            # to host when Steam has a temporary UGC failure.
+            logger.warning("Could not compact Steam history for %s: %s", project_uuid, error)
+            return False
+
+    def _compact_project_history(
+        self,
+        client: SteamUgcClient,
+        manifest: SteamGroupManifest,
+        identity: SteamDeviceIdentity,
+        project_uuid: str,
+        limit: int,
+    ) -> bool:
+        if identity.device_id != manifest.administrator_device_id:
+            raise CoordinationConfigurationError(
+                "Only the group administrator can compact shared-world history."
+            )
+        discovery = SteamGroupPackageDiscovery(client).discover(
+            manifest, project_uuid=project_uuid
+        )
+        self._log_rejections(discovery.rejected)
+        try:
+            head = discovery.lineage(project_uuid).require_single_head()
+        except SteamPackageForkError as error:
+            raise PackageCatalogConflictError(
+                "Resolve competing world branches before cleaning up Steam history."
+            ) from error
+        if head is None:
+            return False
+        by_hash = {item.descriptor_hash: item for item in discovery.descriptors}
+        retained: list[SteamPackageDescriptor] = []
+        cursor: SteamPackageDescriptor | None = head
+        while cursor is not None and len(retained) < limit:
+            retained.append(cursor)
+            cursor = by_hash.get(cursor.parent_descriptor_hash)
+        retained.reverse()
+        if len(discovery.lineage(project_uuid).descriptors) <= limit:
+            return False
+
+        clones: list[SteamPackageDescriptor] = []
+        cloned_item_ids: list[str] = []
+        previous_hash: str | None = None
+        try:
+            transport = SteamUgcBlobTransport(client)
+            descriptor_transport = SteamPackageDescriptorTransport(client)
+            for source_descriptor in retained:
+                source = client.download_item(source_descriptor.workshop_item_id)
+                payload = source / STEAM_UGC_PAYLOAD_NAME
+                artifact = transport.publish_blob(
+                    payload,
+                    PackageArtifact(
+                        transport_name="steam-ugc",
+                        remote_id="1",  # replaced by the UGC transport
+                        project_uuid=source_descriptor.project_uuid,
+                        project_version=source_descriptor.project_version,
+                        package_checksum=source_descriptor.package_checksum,
+                        package_size_bytes=source_descriptor.package_size_bytes,
+                        encryption_key_id=self._key_id(manifest.key_epoch),
+                    ).descriptor,
+                )
+                clone = descriptor_transport.attach(
+                    artifact,
+                    manifest=manifest,
+                    publisher=identity,
+                    parent_descriptor_hash=previous_hash,
+                    project_name=source_descriptor.project_name,
+                    game_id=source_descriptor.game_id,
+                    created_by=source_descriptor.created_by,
+                )
+                clones.append(clone)
+                cloned_item_ids.append(artifact.remote_id)
+                previous_hash = clone.descriptor_hash
+
+            checkpoint = SteamProjectRetentionCheckpoint(
+                project_uuid=project_uuid,
+                root_descriptor_hash=clones[0].descriptor_hash,
+                package_item_ids=tuple(cloned_item_ids),
+                retained_versions=len(clones),
+                compacted_at_utc=datetime.now(UTC).isoformat(),
+            )
+            updated_manifest = manifest.set_retention_checkpoint(checkpoint, identity)
+            SteamGroupManifestTransport(client, cache=self.manifest_cache).update(
+                self.manifest_item_id, updated_manifest
+            )
+            self._verified_manifest = updated_manifest
+            self._verified_manifest_at = time.monotonic()
+
+            # Keep the replacement references in this member index, then remove and
+            # delete only obsolete package items owned by this same Steam account.
+            index_transport = SteamMemberPackageIndexTransport(client)
+            index = index_transport.download(self.package_index_item_id)
+            own_old_ids = {
+                item.workshop_item_id
+                for item in discovery.descriptors
+                if item.project_uuid == project_uuid
+                and item.publisher_device_id == identity.device_id
+            }
+            index_transport.update(
+                index.replace_package_items(
+                    remove_item_ids=own_old_ids,
+                    add_item_ids=tuple(cloned_item_ids),
+                    publisher=identity,
+                )
+            )
+            for item_id in sorted(own_old_ids - set(cloned_item_ids), key=int):
+                try:
+                    client.delete_item(item_id)
+                except Exception as error:
+                    logger.warning("Could not delete compacted Steam item %s: %s", item_id, error)
+            logger.info(
+                "Compacted Steam history project=%s retained=%s removed_owned=%s",
+                project_uuid, len(clones), len(own_old_ids),
+            )
+            return True
+        except Exception:
+            # No manifest checkpoint means these are unreachable staging artifacts.
+            for item_id in cloned_item_ids:
+                try:
+                    client.delete_item(item_id)
+                except Exception:
+                    pass
+            raise
 
     def list_packages(self, project_uuid: str) -> list[CatalogPackage]:
         project_id = str(uuid.UUID(project_uuid))
@@ -679,6 +862,8 @@ class SteamNativeCoordinationProvider:
     def _context(
         self,
         client: SteamUgcClient,
+        *,
+        refresh_manifest: bool = False,
     ) -> tuple[SteamGroupManifest, SteamDeviceIdentity]:
         steam_identity = client.current_identity()
         identity = self.identity_store.load_or_create(steam_identity.steam_id)
@@ -686,12 +871,21 @@ class SteamNativeCoordinationProvider:
             raise CoordinationConfigurationError(
                 "The saved Steam group belongs to a different device identity."
             )
-        manifest = SteamGroupManifestTransport(
-            client,
-            cache=self.manifest_cache,
-        ).download(
-            self.manifest_item_id
-        )
+        with self._manifest_guard:
+            now = time.monotonic()
+            manifest = self._verified_manifest
+            if (
+                refresh_manifest
+                or manifest is None
+                or now - self._verified_manifest_at
+                >= self.manifest_refresh_seconds
+            ):
+                manifest = SteamGroupManifestTransport(
+                    client,
+                    cache=self.manifest_cache,
+                ).download(self.manifest_item_id)
+                self._verified_manifest = manifest
+                self._verified_manifest_at = time.monotonic()
         if manifest.group_id != self.group_id:
             raise CoordinationConfigurationError(
                 "The downloaded Steam manifest belongs to another group."

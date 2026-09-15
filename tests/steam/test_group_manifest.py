@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from app.steam.device_identity import SteamDeviceIdentityStore
-from app.steam.group_manifest import SteamGroupManifest
+from app.steam.group_manifest import (
+    SteamGroupManifest,
+    SteamProjectRetentionCheckpoint,
+)
 from tests.steam.test_device_identity import MemoryProtector
 
 
@@ -54,6 +57,23 @@ def test_group_manifest_adds_member_with_device_specific_key(
         member.device_id,
     }
     assert updated.group_key_for(member) == group_key
+    assert SteamGroupManifest.from_json(updated.to_json()) == updated
+
+
+def test_group_manifest_signs_retention_checkpoint(tmp_path: Path) -> None:
+    administrator = _identity(tmp_path, "administrator", "76561198000000001")
+    manifest, _ = SteamGroupManifest.create("Friends", administrator)
+    checkpoint = SteamProjectRetentionCheckpoint(
+        project_uuid="12345678-1234-4678-9234-567812345678",
+        root_descriptor_hash="a" * 64,
+        package_item_ids=("3797671909", "3797671910"),
+        retained_versions=2,
+        compacted_at_utc="2026-09-15T00:00:00+00:00",
+    )
+
+    updated = manifest.set_retention_checkpoint(checkpoint, administrator)
+
+    assert updated.retention_checkpoint_for(checkpoint.project_uuid) == checkpoint
     assert SteamGroupManifest.from_json(updated.to_json()) == updated
 
 

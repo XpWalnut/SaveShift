@@ -3,6 +3,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLay
 
 from app.database.models.installed_game import InstalledGame
 from app.ui import theme, styles
+from app.ui.game_icons import steam_game_pixmap
 from app.ui.icons import icon
 
 
@@ -32,7 +33,14 @@ class InstalledGameCard(QFrame):
         title = QLabel(installed_game.display_name)
         title.setStyleSheet("font-size: 16px; font-weight: 600;")
         game_icon = QLabel()
-        game_icon.setPixmap(icon("game", theme.ACCENT_HOVER).pixmap(20, 20))
+        steam_icon = steam_game_pixmap(installed_game.game_id)
+        game_icon.setPixmap(
+            steam_icon
+            if steam_icon is not None
+            else icon("game", theme.ACCENT_HOVER).pixmap(20, 20)
+        )
+        game_icon.setFixedSize(24, 24)
+        game_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_row = QHBoxLayout()
         title_row.setSpacing(theme.SPACING_SMALL)
         title_row.addWidget(game_icon)

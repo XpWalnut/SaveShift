@@ -13,6 +13,7 @@ from app.coordination.models import (
     PackageCatalogMetadata,
 )
 from app.core.settings import AppSettings, CoordinationGroupSettings
+from app.core.distribution import DistributionChannel
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
@@ -76,6 +77,16 @@ class FakeHandoffController:
     def list_latest_packages(self, provider: object) -> bool:
         self.list_calls.append(provider)
         return True
+
+
+class FakeReconnectManager:
+    def __init__(self) -> None:
+        self.active_leases: dict[str, LockLease] = {}
+        self.closed = False
+
+    def close(self) -> list[object]:
+        self.closed = True
+        return []
 
 
 def _project(tmp_path: Path) -> Project:
@@ -802,3 +813,28 @@ def test_failed_handoff_keeps_project_lease_for_safe_retry(
     assert provider.released == []
     assert window.coordination_manager.active_leases[project.uuid] == lease
     assert messages[0][0] == "Hand Off Failed"
+
+
+def test_resume_replaces_idle_steam_coordination_manager(
+    qtbot,
+    monkeypatch,
+) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    old_manager = FakeReconnectManager()
+    replacement = FakeReconnectManager()
+    window.distribution_channel = DistributionChannel.STEAM
+    window.coordination_manager = old_manager  # type: ignore[assignment]
+    window._steam_reconnecting = True
+    monkeypatch.setattr(
+        MainWindow,
+        "_create_coordination_manager",
+        staticmethod(lambda _settings: replacement),
+    )
+
+    window._finish_steam_reconnect()
+
+    assert old_manager.closed is True
+    assert window.coordination_manager is replacement
+    assert window._steam_reconnecting is False
+    window._closing = True

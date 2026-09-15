@@ -1,10 +1,25 @@
 # Changelog
 
+- Reconnect Steam-native group coordination automatically after Windows sleep,
+  then refresh hosting presence and newer shared save versions.
+- Reuse recently verified Steam group manifests for frequent hosting-status
+  polling and consolidate full package discovery to reduce Workshop download
+  bursts without weakening the fresh checks performed before hosting/uploading.
+- Automatically receive newer versions of known shared worlds while idle.
+- Replace recipient-first group joining with passive invite-only discovery,
+  searchable Steam friends, and cancellable invitation waits.
+
 All notable changes to Save Shift are documented here. The project is currently in alpha, so package and database compatibility may change before the first stable release.
 
 ## [Unreleased]
 
 ### Added
+
+- Added signed Steam Workshop history compaction. Before an administrator
+  hosts a world with more than 20 remote versions, Save Shift rebuilds its
+  latest recoverable history as a new, verified chain. It then removes only superseded Workshop
+  packages owned by that same Steam account; packages owned by other members
+  are never deleted by an administrator's client.
 
 - Process-wide Steamworks runtime ownership and native-call serialization, so
   background hosting-status checks cannot shut down Steam while a friend

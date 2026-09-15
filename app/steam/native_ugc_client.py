@@ -220,7 +220,6 @@ class SteamworksUgcClient:
             self._user = self._api.SteamAPI_SteamUser_v023()
             self._friends = self._api.SteamAPI_SteamFriends_v018()
             self._matchmaking = self._api.SteamAPI_SteamMatchmaking_v009()
-
             if (
                 self._pipe == 0
                 or not self._ugc

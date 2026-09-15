@@ -74,6 +74,32 @@ class SteamMemberPackageIndex:
             signature="",
         )._signed(publisher)
 
+    def replace_package_items(
+        self,
+        *,
+        remove_item_ids: set[str],
+        add_item_ids: tuple[str, ...],
+        publisher: SteamDeviceIdentity,
+        updated_at: datetime | None = None,
+    ) -> "SteamMemberPackageIndex":
+        """Atomically swap owned package references after history compaction."""
+        self._require_publisher(publisher)
+        removals = {self._item_id(item) for item in remove_item_ids}
+        additions = {self._item_id(item) for item in add_item_ids}
+        package_ids = tuple(
+            sorted((set(self.package_item_ids) - removals) | additions, key=int)
+        )
+        if package_ids == self.package_item_ids:
+            return self
+        return replace(
+            self,
+            schema_version=self.SCHEMA_VERSION,
+            revision=self.revision + 1,
+            package_item_ids=package_ids,
+            updated_at_utc=self._timestamp(updated_at),
+            signature="",
+        )._signed(publisher)
+
     def add_session_media(
         self,
         reference: SteamSessionMediaReference,

@@ -115,16 +115,23 @@ class LoadSteamFriendsTask(QRunnable):
 
     def run(self) -> None:
         client: SteamworksUgcClient | None = None
+        friends: list[SteamFriend] | None = None
+        failure = ""
         try:
             client = self.client_factory()
             with diagnostic_operation("steam_group.list_friends"):
                 friends = client.list_friends()
-            self.signals.steam_friends_loaded.emit(friends)
         except Exception as error:
-            self.signals.failed.emit(str(error))
+            failure = str(error)
         finally:
             if client is not None:
                 client.close()
+        # Releasing the process-global Steam runtime before notifying the UI
+        # avoids racing a subsequent invite or post-resume reconnect.
+        if failure:
+            self.signals.failed.emit(failure)
+        elif friends is not None:
+            self.signals.steam_friends_loaded.emit(friends)
 
 
 class LoadSteamGroupMembersTask(QRunnable):

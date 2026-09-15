@@ -26,6 +26,7 @@ class MemoryUgcClient:
         self.next_item_id = 3797671909
         self.next_lobby_id = 109775240917155001
         self.lobbies: dict[str, dict[str, object]] = {}
+        self.download_calls: list[str] = []
 
     def current_identity(self) -> SteamIdentity:
         return SteamIdentity("76561198000000001", "Jake")
@@ -52,6 +53,7 @@ class MemoryUgcClient:
         return SteamPublishedItem(published_file_id)
 
     def download_item(self, published_file_id: str) -> Path:
+        self.download_calls.append(published_file_id)
         return self.root / published_file_id
 
     def delete_item(self, published_file_id: str) -> None:
@@ -182,6 +184,20 @@ def test_native_provider_registers_and_discovers_ancestry_head(
     assert provider.get_package_encryption_key().key_material == group_key
     provider.release_lock(lease)
     assert provider.get_lock(project_uuid) is None
+
+
+def test_native_provider_reuses_verified_manifest_for_status_polling(
+    tmp_path: Path,
+) -> None:
+    client, _manifest, _group_key, create_provider = _provider_setup(tmp_path)
+    provider = create_provider()
+    project_uuid = "12345678-1234-4678-9234-567812345678"
+    client.download_calls.clear()
+
+    assert provider.get_lock(project_uuid) is None
+    assert provider.get_lock(project_uuid) is None
+
+    assert client.download_calls.count(provider.manifest_item_id) == 1
 
 
 def test_native_provider_propagates_encrypted_session_image(tmp_path: Path) -> None:

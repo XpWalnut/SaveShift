@@ -45,6 +45,60 @@ class SteamMemberPackageIndexReference:
 
 
 @dataclass(frozen=True)
+class SteamProjectRetentionCheckpoint:
+    """Administrator-signed replacement root for a compacted package history."""
+
+    project_uuid: str
+    root_descriptor_hash: str
+    package_item_ids: tuple[str, ...]
+    retained_versions: int
+    compacted_at_utc: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "project_uuid", str(uuid.UUID(self.project_uuid)))
+        root = str(self.root_descriptor_hash).strip().lower()
+        if len(root) != 64 or any(character not in "0123456789abcdef" for character in root):
+            raise ValueError("The retention checkpoint root hash is invalid.")
+        object.__setattr__(self, "root_descriptor_hash", root)
+        item_ids = tuple(str(item).strip() for item in self.package_item_ids)
+        if not item_ids or any(not item.isdigit() or int(item) < 1 for item in item_ids):
+            raise ValueError("The retention checkpoint package items are invalid.")
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("The retention checkpoint repeats a package item.")
+        object.__setattr__(self, "package_item_ids", item_ids)
+        if self.retained_versions < 1 or self.retained_versions > len(item_ids):
+            raise ValueError("The retention checkpoint version count is invalid.")
+        timestamp = datetime.fromisoformat(self.compacted_at_utc)
+        if timestamp.tzinfo is None:
+            raise ValueError("The retention checkpoint timestamp must include a timezone.")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "project_uuid": self.project_uuid,
+            "root_descriptor_hash": self.root_descriptor_hash,
+            "package_item_ids": list(self.package_item_ids),
+            "retained_versions": self.retained_versions,
+            "compacted_at_utc": self.compacted_at_utc,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "SteamProjectRetentionCheckpoint":
+        try:
+            package_item_ids = value["package_item_ids"]
+            if not isinstance(package_item_ids, list):
+                raise ValueError("package items must be a list")
+            return cls(
+                project_uuid=str(value["project_uuid"]),
+                root_descriptor_hash=str(value["root_descriptor_hash"]),
+                package_item_ids=tuple(str(item) for item in package_item_ids),
+                retained_versions=int(value["retained_versions"]),
+                compacted_at_utc=str(value["compacted_at_utc"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("The Steam retention checkpoint is invalid.") from error
+
+
+@dataclass(frozen=True)
 class SteamGroupManifest:
     schema_version: int
     group_id: str
@@ -58,10 +112,11 @@ class SteamGroupManifest:
     revoked_certificate_ids: tuple[str, ...]
     key_envelopes: tuple[SteamGroupKeyEnvelope, ...]
     member_package_indexes: tuple[SteamMemberPackageIndexReference, ...]
+    retention_checkpoints: tuple[SteamProjectRetentionCheckpoint, ...]
     updated_at_utc: str
     signature: str
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     @classmethod
     def create(
@@ -103,6 +158,7 @@ class SteamGroupManifest:
             revoked_certificate_ids=(),
             key_envelopes=(envelope,),
             member_package_indexes=(),
+            retention_checkpoints=(),
             updated_at_utc=cls._timestamp(updated_at),
             signature="",
         )
@@ -219,6 +275,37 @@ class SteamGroupManifest:
             updated_at_utc=self._timestamp(updated_at),
             signature="",
         )._signed(administrator)
+
+    def set_retention_checkpoint(
+        self,
+        checkpoint: SteamProjectRetentionCheckpoint,
+        administrator: SteamDeviceIdentity,
+        *,
+        updated_at: datetime | None = None,
+    ) -> "SteamGroupManifest":
+        """Pins a replacement history root after verifying administrator authority."""
+        self._require_administrator(administrator)
+        retained = tuple(
+            item for item in self.retention_checkpoints
+            if item.project_uuid != checkpoint.project_uuid
+        )
+        return replace(
+            self,
+            schema_version=self.SCHEMA_VERSION,
+            revision=self.revision + 1,
+            retention_checkpoints=retained + (checkpoint,),
+            updated_at_utc=self._timestamp(updated_at),
+            signature="",
+        )._signed(administrator)
+
+    def retention_checkpoint_for(
+        self, project_uuid: str
+    ) -> SteamProjectRetentionCheckpoint | None:
+        project_id = str(uuid.UUID(project_uuid))
+        return next(
+            (item for item in self.retention_checkpoints if item.project_uuid == project_id),
+            None,
+        )
 
     def revoke_member(
         self,
@@ -350,6 +437,13 @@ class SteamGroupManifest:
                 isinstance(item, dict) for item in indexes_raw
             ):
                 raise ValueError("package indexes must be a list")
+            checkpoints_raw = raw.get("retention_checkpoints", [])
+            if schema_version >= 3 and "retention_checkpoints" not in raw:
+                raise ValueError("retention checkpoints are missing")
+            if not isinstance(checkpoints_raw, list) or not all(
+                isinstance(item, dict) for item in checkpoints_raw
+            ):
+                raise ValueError("retention checkpoints must be a list")
             revoked_raw = raw["revoked_certificate_ids"]
             if not isinstance(revoked_raw, list):
                 raise ValueError("revocations must be a list")
@@ -374,6 +468,10 @@ class SteamGroupManifest:
                 member_package_indexes=tuple(
                     SteamMemberPackageIndexReference.from_dict(item)
                     for item in indexes_raw
+                ),
+                retention_checkpoints=tuple(
+                    SteamProjectRetentionCheckpoint.from_dict(item)
+                    for item in checkpoints_raw
                 ),
                 updated_at_utc=str(raw["updated_at_utc"]),
                 signature=str(raw["signature"]),
@@ -400,6 +498,9 @@ class SteamGroupManifest:
             ),
             member_package_indexes=tuple(
                 sorted(self.member_package_indexes, key=lambda item: item.device_id)
+            ),
+            retention_checkpoints=tuple(
+                sorted(self.retention_checkpoints, key=lambda item: item.project_uuid)
             ),
         )
         signed = replace(
@@ -445,15 +546,24 @@ class SteamGroupManifest:
                     key=lambda entry: entry.device_id,
                 )
             ]
+        if self.schema_version >= 3:
+            value["retention_checkpoints"] = [
+                item.to_dict()
+                for item in sorted(
+                    self.retention_checkpoints, key=lambda entry: entry.project_uuid
+                )
+            ]
         if include_signature:
             value["signature"] = self.signature
         return value
 
     def _validate(self) -> None:
-        if self.schema_version not in (1, self.SCHEMA_VERSION):
+        if self.schema_version not in (1, 2, self.SCHEMA_VERSION):
             raise ValueError("Unsupported Steam group manifest version.")
         if self.schema_version == 1 and self.member_package_indexes:
             raise ValueError("A version-one manifest cannot contain package indexes.")
+        if self.schema_version < 3 and self.retention_checkpoints:
+            raise ValueError("An older manifest cannot contain retention checkpoints.")
         uuid.UUID(self.group_id)
         uuid.UUID(self.administrator_device_id)
         self._name(self.name)
@@ -526,6 +636,9 @@ class SteamGroupManifest:
             member = members_by_device.get(reference.device_id)
             if member is None or member.steam_id != reference.steam_id:
                 raise ValueError("A package index does not belong to an active member.")
+        checkpoint_projects = [item.project_uuid for item in self.retention_checkpoints]
+        if len(checkpoint_projects) != len(set(checkpoint_projects)):
+            raise ValueError("The manifest contains duplicate retention checkpoints.")
 
     def _require_administrator(self, identity: SteamDeviceIdentity) -> None:
         if (

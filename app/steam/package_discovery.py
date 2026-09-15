@@ -80,12 +80,91 @@ class SteamGroupPackageDiscovery:
                     )
                 elif project_uuid is None or descriptor.project_uuid == project_uuid:
                     accepted[descriptor.descriptor_hash] = descriptor
+        # A compaction checkpoint is manifest-pinned rather than member-index-pinned.
+        # This lets the administrator publish a replacement chain atomically before
+        # asking individual members to prune the indexes they personally own.
+        for checkpoint in manifest.retention_checkpoints:
+            if project_uuid is not None and checkpoint.project_uuid != project_uuid:
+                continue
+            for item_id in checkpoint.package_item_ids:
+                try:
+                    descriptor = descriptors.read(item_id)
+                except ValueError as error:
+                    rejected.append(
+                        RejectedSteamPackage(
+                            item_id, manifest.administrator_steam_id, str(error)
+                        )
+                    )
+                    continue
+                if not descriptor.verify(manifest, expected_workshop_item_id=item_id):
+                    rejected.append(
+                        RejectedSteamPackage(
+                            item_id,
+                            manifest.administrator_steam_id,
+                            "The retention checkpoint descriptor signature is invalid.",
+                        )
+                    )
+                elif descriptor.project_uuid != checkpoint.project_uuid:
+                    rejected.append(
+                        RejectedSteamPackage(
+                            item_id,
+                            manifest.administrator_steam_id,
+                            "The retention checkpoint references another world.",
+                        )
+                    )
+                else:
+                    accepted[descriptor.descriptor_hash] = descriptor
+        accepted = self._filter_compacted_histories(accepted, manifest)
         return SteamPackageDiscoveryResult(
             descriptors=tuple(
                 sorted(accepted.values(), key=lambda value: value.descriptor_hash)
             ),
             rejected=tuple(rejected),
         )
+
+    @staticmethod
+    def _filter_compacted_histories(
+        accepted: dict[str, SteamPackageDescriptor],
+        manifest: SteamGroupManifest,
+    ) -> dict[str, SteamPackageDescriptor]:
+        """Ignore predecessors which were superseded by a signed checkpoint."""
+        retained = dict(accepted)
+        for checkpoint in manifest.retention_checkpoints:
+            by_hash = {
+                item.descriptor_hash: item
+                for item in retained.values()
+                if item.project_uuid == checkpoint.project_uuid
+            }
+            root = by_hash.get(checkpoint.root_descriptor_hash)
+            if root is None or root.parent_descriptor_hash:
+                # The later lineage check reports this as incomplete.  Do not silently
+                # fall back to an intentionally superseded history.
+                continue
+            allowed: set[str] = set()
+            for descriptor_hash, descriptor in by_hash.items():
+                cursor = descriptor
+                seen: set[str] = set()
+                while True:
+                    current_hash = cursor.descriptor_hash
+                    if current_hash in seen:
+                        break
+                    seen.add(current_hash)
+                    if current_hash == checkpoint.root_descriptor_hash:
+                        allowed.add(descriptor_hash)
+                        break
+                    if not cursor.parent_descriptor_hash:
+                        break
+                    parent = by_hash.get(cursor.parent_descriptor_hash)
+                    if parent is None:
+                        break
+                    cursor = parent
+            for descriptor_hash, descriptor in tuple(retained.items()):
+                if (
+                    descriptor.project_uuid == checkpoint.project_uuid
+                    and descriptor_hash not in allowed
+                ):
+                    retained.pop(descriptor_hash)
+        return retained
 
     @staticmethod
     def _rejection_reason(
