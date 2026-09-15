@@ -35,5 +35,17 @@ class SteamUgcClient(Protocol):
         """Download an item and return its installed content directory."""
         ...
 
+    def update_item(
+        self,
+        published_file_id: str,
+        content_directory: Path,
+        *,
+        title: str,
+        description: str,
+        metadata: str,
+        visibility: SteamUgcVisibility,
+    ) -> SteamPublishedItem:
+        ...
+
     def delete_item(self, published_file_id: str) -> None:
         ...

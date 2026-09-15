@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from app.core.settings import AppSettings, SettingsService
+from app.core.settings import AppSettings, CoordinationGroupSettings, SettingsService
 from app.core.distribution import DistributionChannel
 from app.ui.dialogs.settings_dialog import SettingsDialog
 from app.ui.main_window import MainWindow
@@ -65,6 +65,20 @@ def test_settings_dialog_exposes_session_journal_prompt_preference(
     dialog.session_journal_prompt_checkbox.setChecked(True)
 
     assert dialog.prompt_for_session_journal
+
+
+def test_settings_dialog_exposes_game_window_capture_preference(qtbot) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings(capture_session_images=False)
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.capture_session_images
+    assert "visible supported-game window" in dialog.session_image_checkbox.toolTip()
+
+    dialog.session_image_checkbox.setChecked(True)
+
+    assert dialog.capture_session_images
 
 
 def test_steam_settings_explain_that_updates_are_managed_by_steam(qtbot) -> None:
@@ -148,8 +162,35 @@ def test_settings_dialog_shows_administrator_actions_after_pairing(qtbot) -> Non
     assert dialog.create_invitation_button.isVisible()
     assert dialog.manage_devices_button.isVisible()
     assert dialog.leave_group_button.isVisible()
-    assert not dialog.create_group_button.isVisible()
+    assert dialog.create_group_button.isVisible()
     assert "group administrator" in dialog.coordination_status_label.text()
+
+
+def test_settings_dialog_offers_steam_administrator_recovery(qtbot) -> None:
+    dialog = SettingsDialog(
+        settings=AppSettings().upsert_group(
+            CoordinationGroupSettings(
+                group_id="12345678-1234-4678-9234-567812345678",
+                name="Family Worlds",
+                device_id="device-123",
+                is_administrator=True,
+                provider_kind="steam",
+                steam_manifest_item_id="3797671909",
+                steam_package_index_item_id="3797671910",
+            )
+        )
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.export_recovery_button.isVisible()
+    assert dialog.import_recovery_button.isVisible()
+    assert dialog.manage_devices_button.isVisible()
+
+    dialog.export_recovery_button.click()
+
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    assert dialog.coordination_action == "export_admin_recovery"
 
 
 def test_legacy_administrator_migration_is_kept_in_advanced_settings(qtbot) -> None:

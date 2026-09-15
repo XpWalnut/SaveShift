@@ -13,6 +13,7 @@ from app.packages.checksum import calculate_checksums
 from app.packages.package_manifest import PackageManifest
 from app.packages.package_journal_entry import PackageJournalEntry
 from app.packages.package_metadata import PackageMetadata
+from app.packages.archive_policy import validate_archive_structure
 from app.version import APP_VERSION
 
 
@@ -114,23 +115,11 @@ class PackageService:
             raise FileNotFoundError(f"Package does not exist: {package_path}")
 
         with ZipFile(package_path, "r") as package:
-            required_files = {"manifest.json", "checksums.json"}
-            package_names = set(package.namelist())
+            _manifest, checksums, save_entries = validate_archive_structure(package)
 
-            missing = required_files - package_names
-            if missing:
-                raise ValueError(f"Package is missing required files: {missing}")
-
-            manifest = json.loads(package.read("manifest.json"))
-            checksums = json.loads(package.read("checksums.json"))
-
-            for relative_file in manifest["files"]:
-                archived_path = f"files/{relative_file}"
-
-                if archived_path not in package_names:
-                    raise ValueError(f"Package is missing save file: {archived_path}")
-
-                with package.open(archived_path) as file:
+            for entry in save_entries:
+                relative_file = entry.filename.removeprefix("files/")
+                with package.open(entry) as file:
                     actual_checksum = PackageService._calculate_stream_sha256(file)
 
                 expected_checksum = checksums.get(relative_file)

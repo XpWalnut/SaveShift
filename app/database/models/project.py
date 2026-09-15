@@ -12,6 +12,11 @@ class Project(Base):
     installed_game_id: Mapped[int] = mapped_column(ForeignKey("installed_games.id"), nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     local_path: Mapped[str] = mapped_column(String, nullable=False)
+    coordination_group_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
     uuid: Mapped[str] = mapped_column(
         String(36),
         unique=True,

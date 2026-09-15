@@ -106,16 +106,45 @@ class SaveFileService:
             project_files &= managed_paths
 
         files_to_delete = project_files - source_files
+        source_file_paths = SaveFileService._list_absolute_files(source_directory)
+        resolved_project_root = project_root.resolve()
+        resolved_source_root = source_directory.resolve()
+
+        for relative_path in files_to_delete:
+            SaveFileService._require_safe_child(
+                project_root / relative_path,
+                resolved_project_root,
+                "project",
+            )
+        for source_file in source_file_paths:
+            SaveFileService._require_safe_child(
+                source_file,
+                resolved_source_root,
+                "extracted package",
+            )
+            relative_path = source_file.relative_to(source_directory)
+            SaveFileService._require_safe_child(
+                project_root / relative_path,
+                resolved_project_root,
+                "project",
+            )
 
         for relative_path in files_to_delete:
             (project_root / relative_path).unlink()
 
-        for source_file in SaveFileService._list_absolute_files(source_directory):
+        for source_file in source_file_paths:
             relative_path = source_file.relative_to(source_directory)
             target_file = project_root / relative_path
 
             target_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_file, target_file)
+
+    @staticmethod
+    def _require_safe_child(path: Path, resolved_root: Path, label: str) -> None:
+        if not path.resolve().is_relative_to(resolved_root):
+            raise ValueError(
+                f"A {label} path resolves outside its expected directory."
+            )
 
     @staticmethod
     def _list_absolute_files(root: Path) -> list[Path]:

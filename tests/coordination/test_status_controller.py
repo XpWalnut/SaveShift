@@ -50,3 +50,27 @@ def test_status_controller_reports_provider_failure(qtbot) -> None:
         assert controller.refresh(FailingProvider(), ["project"])
 
     assert failed.args == ["offline"]
+
+
+def test_status_controller_uses_batch_lookup_when_provider_supports_it(qtbot) -> None:
+    class BatchProvider(StatusProvider):
+        def get_locks(self, project_uuids: list[str]):
+            self.requests.extend(project_uuids)
+            return {
+                project_uuid: (
+                    _lease(project_uuid) if project_uuid == "locked" else None
+                )
+                for project_uuid in project_uuids
+            }
+
+        def get_lock(self, _project_uuid: str):
+            raise AssertionError("Batch-capable providers should be queried once.")
+
+    provider = BatchProvider()
+    controller = LockStatusController()
+
+    with qtbot.waitSignal(controller.completed, timeout=2_000) as completed:
+        assert controller.refresh(provider, ["locked", "available"])
+
+    assert completed.args[0]["locked"].owner_display_name == "Alice"
+    assert provider.requests == ["locked", "available"]

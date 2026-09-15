@@ -23,9 +23,8 @@ def test_home_screen_surfaces_group_setup_and_help(
     window = _window(qtbot, monkeypatch)
 
     assert not window.create_group_button.isHidden()
-    assert not window.join_group_button.isHidden()
+    assert window.join_group_button.isHidden()
     assert window.shared_projects_button.isHidden()
-    assert "invitation" in window.join_group_button.toolTip()
     assert "Receive" in window.how_it_works_button.toolTip()
 
 
@@ -60,7 +59,7 @@ def test_connected_home_screen_surfaces_invite_and_shared_worlds(
 
     window._refresh_group_buttons()
 
-    assert window.create_group_button.isHidden()
+    assert not window.create_group_button.isHidden()
     assert window.join_group_button.isHidden()
     assert not window.invite_friend_button.isHidden()
     assert not window.shared_projects_button.isHidden()

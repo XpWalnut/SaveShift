@@ -125,6 +125,16 @@ function packageRequest(
   });
 }
 
+function removeProjectRequest(
+  projectUuid: string,
+  deviceToken: string
+): Promise<Response> {
+  return SELF.fetch(`${API}/projects/${projectUuid}/packages`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${deviceToken}` }
+  });
+}
+
 describe("provider-neutral lock contract", () => {
   it("checks health through the durable coordination backend", async () => {
     const response = await SELF.fetch("https://coordination.test/health");
@@ -133,7 +143,7 @@ describe("provider-neutral lock contract", () => {
     expect(await response.json()).toEqual({
       status: "ok",
       api_version: "v1",
-      provider_version: "1.5.0"
+      provider_version: "1.6.0"
     });
   });
 
@@ -631,6 +641,54 @@ describe("group package catalog", () => {
       project_name: "Shared World",
       game_id: "abiotic_factor"
     });
+  });
+
+  it("lets the administrator unshare an unlocked project", async () => {
+    const administrator = await bootstrap("Owner PC");
+    const invitation = await createInvitation(administrator.device_token);
+    const joinedResponse = await join(invitation.invitation_token, "Member PC");
+    const member = (await joinedResponse.json<{ device: Device }>()).device;
+    const leaseId = await acquire(administrator);
+    const key = await currentKey(administrator.device_token);
+    await packageRequest(
+      projectUuid,
+      administrator.device_token,
+      packageBody(leaseId, key.key_id)
+    );
+
+    const memberResponse = await removeProjectRequest(
+      projectUuid,
+      member.device_token
+    );
+    expect(memberResponse.status).toBe(403);
+    expect(await memberResponse.json()).toMatchObject({
+      error: { code: "administrator_required" }
+    });
+
+    const lockedResponse = await removeProjectRequest(
+      projectUuid,
+      administrator.device_token
+    );
+    expect(lockedResponse.status).toBe(409);
+    expect(await lockedResponse.json()).toMatchObject({
+      error: { code: "project_locked" }
+    });
+
+    await lockRequest(projectUuid, "release", administrator.device_token, {
+      lease_id: leaseId
+    });
+    const removedResponse = await removeProjectRequest(
+      projectUuid,
+      administrator.device_token
+    );
+    expect(removedResponse.status).toBe(200);
+    expect(await removedResponse.json()).toEqual({
+      removed: true,
+      package_count: 1
+    });
+
+    const catalog = await packageRequest(projectUuid, member.device_token);
+    expect(await catalog.json()).toEqual({ packages: [] });
   });
 
   it("rejects different content for an existing project version", async () => {

@@ -25,6 +25,7 @@ class FakeProvider:
         self.renewed: list[LockLease] = []
         self.released: list[LockLease] = []
         self.renew_error: Exception | None = None
+        self.closed = False
 
     def pair(self, pairing_code: str, device_name: str) -> PairedDevice:
         return PairedDevice("device-123", "token")
@@ -47,6 +48,9 @@ class FakeProvider:
     def get_lock(self, project_uuid: str) -> LockLease | None:
         return None
 
+    def close(self) -> None:
+        self.closed = True
+
 
 def test_hosting_lease_is_retained_and_renewed() -> None:
     provider = FakeProvider()
@@ -59,6 +63,44 @@ def test_hosting_lease_is_retained_and_renewed() -> None:
     assert manager.active_leases["project-uuid"].lease_id == acquired.lease_id
     assert provider.acquired == [("project-uuid", "Jake")]
     assert provider.renewed == [acquired]
+
+
+def test_manager_uses_provider_specific_hosting_acquisition_when_available() -> None:
+    class HostingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.hosting_acquired: list[tuple[str, str]] = []
+
+        def acquire_hosting_lock(self, project_uuid: str, owner: str) -> LockLease:
+            self.hosting_acquired.append((project_uuid, owner))
+            return _lease(project_uuid)
+
+    provider = HostingProvider()
+    manager = CoordinationManager(provider)
+
+    manager.acquire_hosting_lease("project-uuid", "Jake")
+    with manager.temporary_lease("temporary-project", "Jake"):
+        pass
+
+    assert provider.hosting_acquired == [("project-uuid", "Jake")]
+    assert provider.acquired == [("temporary-project", "Jake")]
+
+
+def test_manager_tracks_recovered_hosting_lease() -> None:
+    class RecoveryProvider(FakeProvider):
+        def acquire_recovery_lock(self, project_uuid, owner, parent_hash):
+            assert parent_hash == "a" * 64
+            return _lease(project_uuid)
+
+    manager = CoordinationManager(RecoveryProvider())
+
+    lease = manager.recover_hosting_lease(
+        "project-uuid",
+        "Jake",
+        "a" * 64,
+    )
+
+    assert manager.active_leases["project-uuid"] == lease
 
 
 def test_renewal_failure_preserves_lease_for_retry() -> None:
@@ -98,3 +140,15 @@ def test_temporary_operation_rejects_actively_hosted_project() -> None:
     with pytest.raises(RuntimeError, match="Stop hosting"):
         with manager.temporary_lease("project-uuid", "Jake"):
             pass
+
+
+def test_close_releases_leases_and_disposes_provider() -> None:
+    provider = FakeProvider()
+    manager = CoordinationManager(provider)
+    lease = manager.acquire_hosting_lease("project-uuid", "Jake")
+
+    assert manager.close() == []
+
+    assert provider.released == [lease]
+    assert provider.closed
+    assert manager.active_leases == {}

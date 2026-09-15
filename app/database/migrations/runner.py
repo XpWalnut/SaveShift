@@ -7,7 +7,7 @@ import sqlite3
 from sqlalchemy import Connection, Engine, MetaData, inspect, text
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 LEGACY_SCHEMA_VERSION = 1
 
 _APPLICATION_TABLES = {
@@ -124,6 +124,21 @@ def _create_session_journal_entries(connection: Connection) -> None:
     )
 
 
+def _add_project_coordination_group(connection: Connection) -> None:
+    connection.execute(
+        text(
+            "ALTER TABLE projects "
+            "ADD COLUMN coordination_group_id VARCHAR(36)"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX ix_projects_coordination_group_id "
+            "ON projects (coordination_group_id)"
+        )
+    )
+
+
 MIGRATIONS = (
     Migration(
         target_version=2,
@@ -134,6 +149,11 @@ MIGRATIONS = (
         target_version=3,
         name="create session journal entries",
         apply=_create_session_journal_entries,
+    ),
+    Migration(
+        target_version=4,
+        name="associate projects with coordination groups",
+        apply=_add_project_coordination_group,
     ),
 )
 
@@ -262,7 +282,9 @@ def _detect_unversioned_schema(engine: Engine) -> int:
         return LEGACY_SCHEMA_VERSION
 
     if "session_journal_entries" in inspect(engine).get_table_names():
-        return CURRENT_SCHEMA_VERSION
+        if "coordination_group_id" in _column_names(engine, "projects"):
+            return CURRENT_SCHEMA_VERSION
+        return 3
 
     return 2
 
@@ -316,6 +338,19 @@ def _validate_schema(engine: Engine, version: int) -> None:
                 "The session_journal_entries table is missing required "
                 f"columns: {missing_names}."
             )
+
+    project_columns = _column_names(engine, "projects")
+    has_coordination_group = "coordination_group_id" in project_columns
+    if version >= 4 and not has_coordination_group:
+        raise UnknownDatabaseSchemaError(
+            "The database schema version does not contain the project group "
+            "association required by that version."
+        )
+    if version < 4 and has_coordination_group:
+        raise UnknownDatabaseSchemaError(
+            "The database contains project group associations newer than its "
+            "reported schema version."
+        )
 
 
 def _validate_baseline_columns(engine: Engine) -> None:

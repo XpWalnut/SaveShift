@@ -22,9 +22,10 @@ Save Shift is a source-available Windows desktop application for sharing and man
 - World Journals for recording shared adventures, shown on project cards and carried in `.sspkg` handoffs
 - Backup of an existing local save before an imported version is synchronized
 - Automatic update checks through GitHub Releases, with an opt-out setting and manual checks
-- Optional cross-device project locking through a user-owned coordination provider
-- Project-card lock status with current owner and lease expiration
-- A reusable profile name for history and lock attribution
+- Steam-native groups, friend invitations, signed online host presence, and
+  package-ancestry conflict protection
+- Project-card hosting status with active host and interrupted-session recovery
+- A reusable profile name for history and host attribution
 - Per-user Windows installer
 
 ## Supported games
@@ -80,15 +81,24 @@ To create a release installer, install [Inno Setup 6](https://jrsoftware.org/isi
 
 The build script runs the complete Python and Cloudflare regression suites, regenerates the bundled provider, and then runs PyInstaller and Inno Setup. Output is written to `dist/installer/`.
 
-### Optional project coordination
+### Project coordination
 
-Groups that rotate hosts can create or join a group from **Settings → Project Coordination**. The organizer authorizes Cloudflare in their browser; Save Shift deploys the user-owned provider and generates single-use invitations for friends. Other members only paste the invitation into Save Shift. Save Shift acquires a renewable lease while a project is hosted and short-lived leases around import and restore. Project cards show the current owner and lease expiration. If the provider cannot confirm ownership, the destructive operation is stopped before save files are changed.
+Groups that rotate hosts can create or join a Steam-native group in Save Shift
+and invite members through the Steam friend overlay. Group membership, package
+indexes, and encryption-key envelopes are signed; save packages remain
+encrypted in unlisted Steam Workshop items.
 
-Any paired computer can leave from Settings. Administrators must revoke other active computers before leaving. When the final computer leaves, Save Shift clears the group's Durable Object storage and, for automatically provisioned groups, asks the Cloudflare owner to authorize deletion of the Worker.
+Choosing **Host** checks the latest package ancestry and creates signed online
+hosting presence before launching the game. After the game closes, Save Shift
+uploads the successor and clears that presence. If the app or computer exits
+mid-session, a local checkpoint offers a safe handoff retry. Recovery refuses
+to overwrite a group save that advanced elsewhere and keeps the local work as a
+fork instead.
 
-The registered Cloudflare OAuth client uses `Memberships Read` and `Workers Scripts Write`. It may remain private for development, but its publisher domain must be verified and the client promoted to public visibility before release builds are distributed.
-
-Cloudflare is not embedded in the desktop application. The desktop uses the provider-neutral [coordination API contract](coordination/openapi.yaml), so another HTTPS service can replace the included adapter without rewriting application workflows. Deployment instructions are in the [Cloudflare adapter README](coordination/cloudflare/README.md).
+Steam presence is advisory rather than a durable lock. The descriptor ancestry
+check is the final guard against two members publishing from the same starting
+save. Existing Cloudflare groups remain supported during migration through the
+provider-neutral [coordination API contract](coordination/openapi.yaml).
 
 ## Documentation
 

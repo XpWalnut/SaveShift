@@ -6,8 +6,104 @@ All notable changes to Save Shift are documented here. The project is currently 
 
 ### Added
 
+- Process-wide Steamworks runtime ownership and native-call serialization, so
+  background hosting-status checks cannot shut down Steam while a friend
+  invitation or another Workshop operation is still using it.
+- Targeted Steam invitation discovery in Join Group, providing an automatic
+  fallback when Steam accepts a lobby invite but does not display its
+  notification, plus a shared callback inbox so background Workshop activity
+  cannot consume an invitation callback.
+- Resumable Steam enrollment for the case where the administrator recorded a
+  member but the recipient missed the final response. Retrying reuses the
+  existing signed identity and package index instead of creating a duplicate.
+- Fixed the shared Steam callback inbox remaining attached after an empty poll,
+  preventing a background Workshop worker from receiving the final enrollment
+  response while the recipient stayed on “Waiting for invitation.”
+- Group joining now pins the signed administrator while entering the temporary
+  lobby, so the final response remains valid if Steam transfers lobby ownership
+  after the administrator sends it and leaves.
+- In-app Steam friend selection for group invitations. Save Shift now sends
+  the lobby invitation directly through Steam instead of depending on the
+  Steam Overlay, which is unreliable for software-rendered desktop apps.
+- Steam group member management for administrators, including signed member
+  revocation, removal of the revoked member's package index, and automatic
+  encryption-key rotation for the remaining members.
+
+- Signed, per-world Steam hosting presence using short-lived invisible lobbies.
+  Host checks now distinguish Available, Hosted by another member, and an
+  unavailable offline status without presenting Steam as a durable lock.
+- Crash-safe Steam host-session checkpoints. If Save Shift or Windows exits
+  before handoff, the world card offers recovery and will publish only when the
+  group head still matches the exact package the interrupted session began
+  from; otherwise the local work is retained as a fork.
+- Batched Steam hosting-status discovery and explicit lobby cleanup on handoff,
+  provider shutdown, and application exit.
+- A last-known verified cache for each signed Steam group manifest and a
+  password-encrypted administrator recovery kit. Administrators can restore
+  the group identity, encryption access, and pinned Workshop coordinates on a
+  replacement computer while live Steam state remains the source of truth.
+- Hardened package imports against malicious archives from an authorized group
+  member: imports now reject path traversal and Windows device/alternate-stream
+  paths, undeclared payloads, duplicate and case-colliding entries, links and
+  special files, unsupported or ZIP-encrypted entries, oversized metadata,
+  excessive file counts, archives that expand beyond bounded limits, and local
+  symlink or junction paths that would redirect synchronization outside the
+  selected save directory.
+- Side-by-side Cloudflare and Steam-native coordination selected per group.
+  Steam-native groups now encrypt with manifest key epochs, publish signed
+  ancestry descriptors through stable member-owned indexes, discover the one
+  valid group head, and stop a handoff when another member advanced the head
+  after hosting began. Existing Cloudflare groups retain their current provider
+  and behavior.
+- A guarded schema-4-to-schema-3 database downgrade tool for temporarily
+  returning to the `develop` build, with a verified backup and automatic restore
+  on failure.
+- Verified pre-rollout checkpoints for Save Shift's database and settings, plus
+  a guarded restore command that first preserves the current alpha state for a
+  reversible test-group rollback.
+- Steam-native group foundations: authenticated friend-list invitation lobbies,
+  signed per-device membership certificates, a stable signed Workshop manifest,
+  per-member encrypted group-key envelopes, revocation key rotation, and
+  authenticated lobby enrollment without exposing private keys.
+- The Create Group, Join Group, and Invite a Friend screens now drive Steam's
+  signed manifest and friend-lobby enrollment flow for new groups, while legacy
+  provider invitations remain available for existing groups.
+- Steam package ancestry descriptors now bind each encrypted Workshop item to
+  its group, active publisher certificate, unique version ID, parent descriptor,
+  encryption epoch, payload checksum, and signature. Stable member-owned package
+  indexes make unlisted items discoverable without exposing them to Workshop
+  search. Discovery rejects spoofed, tampered, and revoked publishers and reports
+  competing children as explicit forks instead of choosing the largest version.
+- Administrator-controlled world unsharing, which removes the world from the
+  group catalog while preserving the local save and Save Shift history.
+- Editable local group names, with generated Cloudflare Worker identifiers
+  replaced by a friendly default label.
+- Multiple persisted groups with an active-group selector, creation and join
+  flows that remain available while connected, and per-group invitations,
+  computer management, departure, locks, and package catalogs.
+- Explicit Local worlds and Shared worlds sections, group-name badges, and a
+  Share action that associates a local world with the active group.
+- Schema version 4 project-to-group associations and a backward-compatible
+  migration that keeps existing coordinated worlds attached to the original
+  group.
 - New neon pixel-art branding assets for the Windows application icon and
   Steamworks banner artwork.
+- A compact header derived from the refined Save Shift wordmark, plus a quieter
+  professional vaporwave palette, restrained purple and cyan accents, and
+  consistent line icons for games, groups, transfers, history, journals, and
+  sharing actions.
+- Optional game-window-only session captures during hosted play. After the
+  handoff is safely uploaded and its hosting presence is released, the host can
+  choose from up to four candidates, select another image, or keep no image;
+  captures now sample the live foreground game pixels later in play, reject
+  near-duplicates, and retain the four most recent distinct choices. Selected
+  images are resized and stripped of source metadata, encrypted with the group
+  key, and propagated through Steam only with their exact save version.
+- A newly named multi-resolution Windows icon wired directly into PyInstaller,
+  the application window, installer, Start Menu shortcut, desktop shortcut,
+  uninstaller, and `.sspkg` file association to avoid stale blank icons.
+- Steam-created desktop shortcuts now repair a missing Steam icon-cache path to
+  the bundled refined Save Shift icon when the packaged app starts.
 - An optional World Journal prompt for completed hosted sessions, including a
   persistent "don't ask again" choice and a matching Settings toggle.
 - A Shared Projects group inbox that discovers the newest Steam handoff for
@@ -73,6 +169,14 @@ All notable changes to Save Shift are documented here. The project is currently 
 - Service, package, integration, and UI regression coverage for journal workflows.
 
 ### Changed
+
+- Improved the default-window layout with compact sidebar action rows and a
+  responsive hero that grows on wide displays without stretching its artwork.
+- Added a restrained vaporwave-orange accent to card outlines, section
+  dividers, and scrollbars.
+- Reworked world cards around a session-image preview, clearer title and status
+  hierarchy, group badges, and one visually primary Host action while keeping
+  transfer, history, journal, share, and unshare actions outlined.
 
 - Hosting retains and renews its project lease until export or application exit.
 - Import and restore fail before touching save files when a remote lock cannot be verified.

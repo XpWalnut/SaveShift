@@ -90,6 +90,64 @@ def test_project_card_import_button_opens_global_import_workflow(
     assert import_calls == [True]
 
 
+def test_project_card_visibly_distinguishes_local_and_shared_worlds(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    local = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        on_share=lambda _project: None,
+    )
+    shared = ProjectCard(
+        project=_project(tmp_path),
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        group_name="Family Valheim",
+    )
+    qtbot.addWidget(local)
+    qtbot.addWidget(shared)
+
+    assert local.scope_badge.text() == "Local"
+    assert local.share_button.isVisibleTo(local)
+    assert shared.scope_badge.text() == "Shared · Family Valheim"
+    assert not shared.share_button.isVisibleTo(shared)
+
+
+def test_shared_project_card_offers_unshare_to_group_administrator(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    unshared: list[Project] = []
+    project = _project(tmp_path)
+    card = ProjectCard(
+        project=project,
+        installed_game=_installed_game(tmp_path),
+        latest_version=None,
+        on_host=lambda _project: None,
+        on_import=lambda: None,
+        on_export=lambda _project: None,
+        on_history=lambda _project: None,
+        group_name="Family Valheim",
+        on_unshare=unshared.append,
+    )
+    qtbot.addWidget(card)
+    card.show()
+
+    assert card.unshare_button.isVisibleTo(card)
+    qtbot.mouseClick(card.unshare_button, Qt.MouseButton.LeftButton)
+    assert unshared == [project]
+
+
 def test_project_card_displays_lock_owner_and_expiration(
     qtbot,
     tmp_path: Path,
@@ -117,7 +175,7 @@ def test_project_card_displays_lock_owner_and_expiration(
 
     card.show_lock(lease, local_device_id="local-device")
 
-    assert "Locked by Alice" in card.lock_status_label.text()
+    assert "Hosted by Alice" in card.lock_status_label.text()
     assert "Expires" in card.lock_status_label.text()
     assert "unless renewed" in card.lock_status_label.text()
 
@@ -149,7 +207,7 @@ def test_project_card_identifies_lock_owned_by_this_computer(
 
     card.show_lock(lease, local_device_id="local-device")
 
-    assert "Locked by Bob (this computer)" in card.lock_status_label.text()
+    assert "Hosted by Bob (this computer)" in card.lock_status_label.text()
 
 
 def test_main_window_import_validates_then_imports_and_refreshes(

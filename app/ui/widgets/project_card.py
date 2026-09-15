@@ -1,3 +1,7 @@
+from datetime import datetime
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from app.ui import theme, styles
@@ -6,6 +10,8 @@ from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.database.models.session_journal_entry import SessionJournalEntry
 from app.coordination.models import LockLease
+from app.services.session_image_service import SessionImageRecord
+from app.ui.icons import apply_icon
 
 
 class ProjectCard(QFrame):
@@ -21,6 +27,11 @@ class ProjectCard(QFrame):
             on_join=None,
             latest_journal: SessionJournalEntry | None = None,
             on_journal=None,
+            group_name: str | None = None,
+            group_active: bool = True,
+            on_share=None,
+            on_unshare=None,
+            session_image: SessionImageRecord | None = None,
             parent=None,
     ) -> None:
         super().__init__(parent)
@@ -32,21 +43,41 @@ class ProjectCard(QFrame):
         self.setObjectName("ProjectCard")
         self.setStyleSheet(
             styles.card_style("ProjectCard")
-            + styles.primary_button_style()
+            + styles.secondary_button_style()
         )
 
-        title = QLabel(f"🌍 {project.name}")
-        title.setStyleSheet("font-size: 20px; font-weight: bold;")
+        title = QLabel(project.name)
+        title.setStyleSheet("font-size: 21px; font-weight: 600;")
 
-        game_label = QLabel(f"🎮 {installed_game.display_name}")
+        self.scope_badge = QLabel(
+            f"Shared · {group_name}" if group_name else "Local"
+        )
+        self.scope_badge.setObjectName("ProjectScopeBadge")
+        self.scope_badge.setToolTip(
+            "This world is synchronized only with members of this group."
+            if group_name
+            else "This world stays on this computer until you share it with a group."
+        )
+        badge_color = theme.SUCCESS if group_name else theme.TEXT_SECONDARY
+        self.scope_badge.setStyleSheet(
+            f"color: {badge_color}; border: 1px solid {badge_color}; "
+            "border-radius: 8px; padding: 2px 8px; font-weight: 500;"
+        )
+
+        title_row = QHBoxLayout()
+        title_row.addWidget(title)
+        title_row.addStretch()
+        title_row.addWidget(self.scope_badge)
+
+        game_label = QLabel(installed_game.display_name)
         game_label.setObjectName("SecondaryText")
 
         if latest_version is None:
-            version_text = "📈 No versions yet"
-            updated_by_text = "👤 Nobody yet"
+            version_text = "No versions yet"
+            updated_by_text = "No sessions recorded"
         else:
-            version_text = f"📈 Main Timeline • Version {latest_version.version_number}"
-            updated_by_text = f"👤 Last updated by {latest_version.created_by}"
+            version_text = f"Main Timeline  ·  Version {latest_version.version_number}"
+            updated_by_text = f"Last played by {latest_version.created_by}"
 
         version_label = QLabel(version_text)
         version_label.setObjectName("SecondaryText")
@@ -71,10 +102,24 @@ class ProjectCard(QFrame):
         self.lock_status_label.setObjectName("SecondaryText")
 
         self.host_button = QPushButton("Host")
+        self.host_button.setStyleSheet(styles.primary_button_style())
         self.import_button = QPushButton("Import")
         self.export_button = QPushButton("Export")
         self.history_button = QPushButton("History")
         self.journal_button = QPushButton("Journal")
+        self.share_button = QPushButton("Share")
+        self.unshare_button = QPushButton("Unshare")
+
+        for button, icon_name, primary in (
+            (self.host_button, "play", True),
+            (self.import_button, "download", False),
+            (self.export_button, "upload", False),
+            (self.history_button, "clock", False),
+            (self.journal_button, "journal", False),
+            (self.share_button, "share", False),
+            (self.unshare_button, "unshare", False),
+        ):
+            apply_icon(button, icon_name, primary=primary)
 
         self.host_button.setToolTip(
             "Reserve the world, receive the latest group version, and launch "
@@ -100,8 +145,10 @@ class ProjectCard(QFrame):
                 self.export_button,
                 self.history_button,
                 self.journal_button,
+                self.share_button,
+                self.unshare_button,
         ):
-            button.setMinimumWidth(105)
+            button.setMinimumWidth(82)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.host_button)
@@ -109,6 +156,8 @@ class ProjectCard(QFrame):
         button_row.addWidget(self.export_button)
         button_row.addWidget(self.history_button)
         button_row.addWidget(self.journal_button)
+        button_row.addWidget(self.share_button)
+        button_row.addWidget(self.unshare_button)
         button_row.addStretch()
 
         self.host_button.clicked.connect(
@@ -134,16 +183,76 @@ class ProjectCard(QFrame):
         else:
             self.journal_button.setEnabled(False)
 
+        if on_share is not None and group_name is None:
+            self.share_button.clicked.connect(lambda: on_share(project))
+            self.share_button.setToolTip(
+                "Associate this local world with the active group."
+            )
+        else:
+            self.share_button.setVisible(False)
+
+        if on_unshare is not None and group_name is not None:
+            self.unshare_button.clicked.connect(lambda: on_unshare(project))
+            self.unshare_button.setToolTip(
+                "Remove this world from the group catalog and keep the local copy."
+            )
+        else:
+            self.unshare_button.setVisible(False)
+
         self.show_coordination_disabled()
 
+        image_label = QLabel("No session image")
+        image_label.setObjectName("SessionImage")
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setFixedSize(260, 146)
+        image_label.setStyleSheet(
+            f"background: {theme.PANEL_BACKGROUND}; color: {theme.TEXT_MUTED}; "
+            f"border: 1px solid {theme.CARD_BORDER}; border-radius: 7px;"
+        )
+        image_caption = QLabel("Add an image after your next hosted session")
+        image_caption.setObjectName("SecondaryText")
+        if session_image is not None:
+            pixmap = QPixmap(str(session_image.image_path))
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    image_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = max(0, (scaled.width() - image_label.width()) // 2)
+                y = max(0, (scaled.height() - image_label.height()) // 2)
+                image_label.setPixmap(
+                    scaled.copy(x, y, image_label.width(), image_label.height())
+                )
+                timestamp = datetime.fromisoformat(session_image.captured_at_utc)
+                image_caption.setText(
+                    "Pictured session  ·  "
+                    + timestamp.astimezone().strftime("%b %d, %Y")
+                )
+
+        image_column = QVBoxLayout()
+        image_column.setSpacing(theme.SPACING_SMALL)
+        image_column.addWidget(image_label)
+        image_column.addWidget(image_caption)
+
+        details = QVBoxLayout()
+        details.setSpacing(theme.SPACING_SMALL)
+        details.addLayout(title_row)
+        details.addWidget(game_label)
+        details.addSpacing(5)
+        details.addWidget(version_label)
+        details.addWidget(updated_by_label)
+        details.addWidget(self.journal_preview_label)
+        details.addStretch()
+        details.addWidget(self.lock_status_label)
+
+        body = QHBoxLayout()
+        body.setSpacing(theme.SPACING_LARGE)
+        body.addLayout(image_column)
+        body.addLayout(details, 1)
+
         layout = QVBoxLayout()
-        layout.addWidget(title)
-        layout.addWidget(game_label)
-        layout.addSpacing(8)
-        layout.addWidget(version_label)
-        layout.addWidget(updated_by_label)
-        layout.addWidget(self.journal_preview_label)
-        layout.addWidget(self.lock_status_label)
+        layout.addLayout(body)
         layout.addSpacing(12)
         layout.addLayout(button_row)
 
@@ -157,6 +266,9 @@ class ProjectCard(QFrame):
         layout.setSpacing(theme.SPACING_SMALL)
 
         self.setLayout(layout)
+
+        if group_name and not group_active:
+            self.show_inactive_group(group_name)
 
     def _perform_primary_action(self) -> None:
         if self.host_button.property("saveshift_action") == "join":
@@ -188,31 +300,62 @@ class ProjectCard(QFrame):
         self.host_button.setProperty("saveshift_action", "host")
         self.host_button.setText("Hosting")
         self.host_button.setToolTip(
-            "This computer currently owns the group lock. Exit the game and "
-            "choose Hand Off when you are finished."
+            "This computer is the active host. Exit the game and Save Shift "
+            "will upload the save and release the world."
         )
         self.host_button.setEnabled(False)
 
     def show_coordination_disabled(self) -> None:
         self.show_host_action()
         self.lock_status_label.setText(
-            "Project lock: Local protection only — coordination disabled"
+            "Hosting status: Local protection only — coordination disabled"
         )
         self.lock_status_label.setStyleSheet("")
 
+    def show_local(self) -> None:
+        self.show_host_action()
+        self.lock_status_label.setText(
+            "Local world · not shared with a group"
+        )
+        self.lock_status_label.setStyleSheet("")
+
+    def show_inactive_group(self, group_name: str) -> None:
+        self.show_host_action()
+        self.lock_status_label.setText(
+            f"Shared with {group_name} · select this group to synchronize"
+        )
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
+
     def show_lock_checking(self) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Checking…")
+        self.lock_status_label.setText("Hosting status: Checking…")
         self.lock_status_label.setStyleSheet("")
 
     def show_lock_available(self) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Available")
+        self.lock_status_label.setText("Hosting status: Available")
         self.lock_status_label.setStyleSheet(f"color: {theme.SUCCESS};")
 
-    def show_lock_unavailable(self) -> None:
+    def show_lock_unavailable(self, *, steam: bool = False) -> None:
         self.show_host_action()
-        self.lock_status_label.setText("Project lock: Status unavailable")
+        self.lock_status_label.setText(
+            "Hosting status: Offline status unknown"
+            if steam
+            else "Hosting status: Status unavailable"
+        )
+        self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
+
+    def show_interrupted_host_session(self) -> None:
+        self.host_button.setProperty("saveshift_action", "host")
+        self.host_button.setText("Recover Handoff")
+        self.host_button.setToolTip(
+            "Save Shift closed before this hosted session was handed off. "
+            "Verify Steam ancestry and upload the preserved local save."
+        )
+        self.host_button.setEnabled(True)
+        self.lock_status_label.setText(
+            "Hosting status: Fork needs attention · interrupted local session"
+        )
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
 
     def show_lock(
@@ -220,6 +363,7 @@ class ProjectCard(QFrame):
         lease: LockLease,
         *,
         local_device_id: str,
+        steam: bool = False,
     ) -> None:
         owner_suffix = (
             " (this computer)"
@@ -230,8 +374,13 @@ class ProjectCard(QFrame):
             "%b %d, %Y at %I:%M:%S %p %Z"
         )
         self.lock_status_label.setText(
-            f"Project lock: Locked by {lease.owner_display_name}"
-            f"{owner_suffix} · Expires {expires_at} unless renewed"
+            f"Hosting status: Hosted by {lease.owner_display_name}"
+            f"{owner_suffix}"
+            + (
+                " · Active Steam presence"
+                if steam
+                else f" · Expires {expires_at} unless renewed"
+            )
         )
         self.lock_status_label.setStyleSheet(f"color: {theme.WARNING};")
         if lease.owner_device_id == local_device_id:

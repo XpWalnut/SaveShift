@@ -129,7 +129,7 @@ export class CoordinationGroup extends DurableObject<Env> {
       return jsonResponse({
         status: "ok",
         api_version: "v1",
-        provider_version: "1.5.0"
+        provider_version: "1.6.0"
       });
     }
 
@@ -230,6 +230,10 @@ export class CoordinationGroup extends DurableObject<Env> {
 
       if (request.method === "POST") {
         return this.registerPackage(request, projectUuid, device);
+      }
+
+      if (request.method === "DELETE") {
+        return this.removeProject(projectUuid, device);
       }
 
       return errorResponse(405, "method_not_allowed", "Method not allowed.");
@@ -1034,6 +1038,42 @@ export class CoordinationGroup extends DurableObject<Env> {
       (left, right) => right.published_at_utc.localeCompare(left.published_at_utc)
     );
     return jsonResponse({ packages });
+  }
+
+  private async removeProject(
+    projectUuid: string,
+    device: DeviceRecord
+  ): Promise<Response> {
+    if (!device.administrator) {
+      return errorResponse(
+        403,
+        "administrator_required",
+        "Only the group administrator can unshare a world."
+      );
+    }
+
+    const activeLock = await this.ctx.storage.get<LockRecord>(lockKey(projectUuid));
+    if (activeLock && !isExpired(activeLock, new Date())) {
+      return errorResponse(
+        409,
+        "project_locked",
+        "Finish the hosted session before unsharing this world.",
+        activeLock
+      );
+    }
+
+    const records = await this.ctx.storage.list<PackageArtifactRecord>({
+      prefix: packagePrefix(projectUuid)
+    });
+    const packageKeys = Array.from(records.keys());
+    for (let index = 0; index < packageKeys.length; index += 128) {
+      await this.ctx.storage.delete(packageKeys.slice(index, index + 128));
+    }
+    await this.ctx.storage.delete([
+      lockKey(projectUuid),
+      fencingKey(projectUuid)
+    ]);
+    return jsonResponse({ removed: true, package_count: records.size });
   }
 
   private async acquireLock(

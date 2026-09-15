@@ -12,15 +12,20 @@ from app.coordination.models import (
     LockLease,
     PackageCatalogMetadata,
 )
+from app.core.settings import AppSettings, CoordinationGroupSettings
 from app.database.models.installed_game import InstalledGame
 from app.database.models.project import Project
 from app.database.models.project_version import ProjectVersion
 from app.packages.package_info import PackageInfo
 from app.package_transport.models import PackageArtifact
 from app.services.hosting_service import HostingService
+from app.services.game_window_capture import GameWindowCapture
 from app.services.import_conflict import ImportAnalysis, ImportConflictKind
 from app.services.import_service import ImportService
+from app.services.project_version_service import ProjectVersionService
+from app.services.session_image_service import SessionImageService
 from app.services.session_journal_service import SessionJournalService
+from app.steam.host_session_store import SteamHostSessionCheckpoint
 from app.ui.main_window import MainWindow
 
 
@@ -160,6 +165,7 @@ def _window(qtbot, monkeypatch, tmp_path: Path) -> tuple[MainWindow, FakeProvide
     window.settings = replace(
         window.settings,
         coordination_enabled=True,
+        capture_session_images=False,
         player_display_name="Bob",
         coordination_device_name="Bob-PC",
     )
@@ -343,6 +349,74 @@ def test_host_download_failure_releases_preflight_lease(
     assert messages[0][0] == "Host Failed"
 
 
+def test_interrupted_steam_host_reacquires_original_parent_then_hands_off(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    group_id = "87654321-4321-4678-9234-567812345678"
+    project = _project(tmp_path)
+    project.coordination_group_id = group_id
+    checkpoint = SteamHostSessionCheckpoint.create(
+        group_id=group_id,
+        project_uuid=project.uuid,
+        parent_descriptor_hash="a" * 64,
+        host_display_name="Bob",
+    )
+    recovery_calls: list[tuple[str, str, str]] = []
+    handoffs: list[tuple[Project, bool]] = []
+
+    class RecoveryProvider(FakeProvider):
+        def acquire_recovery_lock(
+            self,
+            project_uuid: str,
+            owner: str,
+            parent_hash: str,
+        ) -> LockLease:
+            recovery_calls.append((project_uuid, owner, parent_hash))
+            return self.acquire_lock(project_uuid, owner)
+
+    class StoppedGame:
+        display_name = "Abiotic Factor"
+
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+    window.settings = AppSettings(player_display_name="Bob").upsert_group(
+        CoordinationGroupSettings(
+            group_id=group_id,
+            name="Family Worlds",
+            device_id="12345678-1234-4678-9234-567812345678",
+            provider_kind="steam",
+            steam_manifest_item_id="3797671909",
+            steam_package_index_item_id="3797671910",
+        )
+    )
+    provider = RecoveryProvider()
+    window.coordination_manager = CoordinationManager(provider)
+    window.interrupted_host_sessions = {project.uuid: checkpoint}
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: StoppedGame(),
+    )
+    monkeypatch.setattr(
+        window,
+        "handoff_project",
+        lambda selected, *, automatic=False: handoffs.append(
+            (selected, automatic)
+        ),
+    )
+
+    window.host_project(project)
+
+    assert recovery_calls == [(project.uuid, "Bob", "a" * 64)]
+    assert handoffs == [(project, True)]
+    assert window.coordination_manager.has_active_lease(project.uuid)
+    window._release_coordination_lease(project.uuid, report_error=False)
+
+
 def test_window_stays_open_during_automatic_host_session(
     qtbot,
     tmp_path: Path,
@@ -440,6 +514,70 @@ def test_automatic_handoff_completes_without_success_dialog(
     assert messages == []
     assert journal_prompts == [project]
     assert "handed off as Version 8" in window.statusBar().currentMessage()
+
+
+def test_session_image_prompt_runs_only_after_handoff_releases_presence(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    version = _version(tmp_path / "hosted.sspkg")
+    lease = window.coordination_manager.acquire_hosting_lease(
+        project.uuid,
+        "Bob",
+    )
+    window.settings = replace(window.settings, capture_session_images=True)
+    window._pending_handoff_project = project
+    window._pending_handoff_version = version
+    window._automatic_handoff_in_progress = True
+    events: list[str] = []
+
+    def choose_image(_project, _version):
+        assert provider.released == [lease]
+        events.append("choose")
+
+    monkeypatch.setattr(window, "_choose_session_image", choose_image)
+    monkeypatch.setattr(
+        window,
+        "_request_session_journal_entry",
+        lambda _project: (True, None, None),
+    )
+
+    window._group_handoff_published(object())
+
+    assert events == ["choose"]
+
+
+def test_automatic_session_collects_bounded_game_window_candidates(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, _provider = _window(qtbot, monkeypatch, tmp_path)
+    project = _project(tmp_path)
+    window.settings = replace(window.settings, capture_session_images=True)
+    window.session_image_service = SessionImageService(tmp_path / "selected")
+    window._session_capture_elapsed_seconds = 29
+    window._session_capture_next_second = 30
+    captured: list[Path] = []
+
+    class FakeGame:
+        process_names = ["game.exe"]
+
+    def capture(_process_names, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"candidate")
+        captured.append(destination)
+        return destination
+
+    monkeypatch.setattr(GameWindowCapture, "capture", capture)
+
+    window._capture_automatic_session_image(project, FakeGame())
+
+    assert window._session_capture_candidates == captured
+    assert len(captured) == 1
 
 
 def test_automatic_handoff_records_journal_after_upload(
@@ -585,6 +723,60 @@ def test_group_inbox_discovers_and_receives_unknown_project(
     assert controller.download_calls == [(PROJECT_UUID, provider)]
     assert window._pending_receive_project is None
     assert window._pending_receive_project_name == "Shared World"
+
+
+def test_idle_automatic_sync_downloads_newer_known_group_world(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    window, provider = _window(qtbot, monkeypatch, tmp_path)
+    group = CoordinationGroupSettings(
+        group_id="group-1",
+        name="Friends",
+        device_id="device-1",
+        provider_kind="steam",
+        steam_manifest_item_id="100",
+        steam_package_index_item_id="101",
+    )
+    window.settings = replace(
+        window.settings.upsert_group(group),
+        manual_transfer_controls=False,
+    )
+    project = _project(tmp_path)
+    project.coordination_group_id = "group-1"
+    package = _catalog_package()
+    package = replace(
+        package,
+        artifact=replace(package.artifact, project_version=9),
+    )
+    window.project_lock_statuses[project.uuid] = None
+    monkeypatch.setattr(
+        "app.ui.main_window.ProjectRepository.get_by_uuid",
+        lambda _uuid: project,
+    )
+    monkeypatch.setattr(
+        ProjectVersionService,
+        "get_latest_version",
+        lambda _project_id: _version(tmp_path / "local.sspkg"),
+    )
+
+    class NotRunning:
+        @staticmethod
+        def is_running() -> bool:
+            return False
+
+    monkeypatch.setattr(
+        "app.ui.main_window.GameRegistry.get_by_game_id",
+        lambda _game_id: NotRunning(),
+    )
+
+    window._automatic_catalog_refresh = True
+    window._package_catalog_loaded([package])
+
+    controller = window.package_handoff_controller
+    assert controller.download_calls == [(project.uuid, provider)]
+    assert window._automatic_receive_project == project
 
 
 def test_failed_handoff_keeps_project_lease_for_safe_retry(

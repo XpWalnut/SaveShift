@@ -75,6 +75,9 @@ class PackageCatalogProvider(Protocol):
     def list_latest_packages(self) -> list[CatalogPackage]:
         ...
 
+    def remove_project(self, project_uuid: str) -> None:
+        ...
+
 
 class PackageKeyProvider(Protocol):
     """Authenticated access to group package encryption material."""

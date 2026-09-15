@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from app.core.settings import AppSettings, SettingsService
+import json
+
+from app.core.settings import (
+    AppSettings,
+    CoordinationGroupSettings,
+    SettingsService,
+)
 from app.core.secrets import SecretProtector
 
 
@@ -50,6 +56,19 @@ def test_session_journal_prompt_preference_is_saved_and_loaded(
     loaded = SettingsService.load(settings_path)
 
     assert not loaded.prompt_for_session_journal
+
+
+def test_session_image_capture_preference_is_saved_and_loaded(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+
+    SettingsService.save(
+        AppSettings(capture_session_images=False),
+        settings_path,
+    )
+
+    assert not SettingsService.load(settings_path).capture_session_images
 
 
 def test_coordination_credential_is_protected_at_rest(
@@ -105,3 +124,144 @@ def test_invalid_automatic_update_value_is_ignored(tmp_path: Path) -> None:
     )
 
     assert SettingsService.load(settings_path) == AppSettings()
+
+
+def test_multiple_groups_and_active_group_are_protected_and_restored(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(SecretProtector, "protect", lambda value: f"safe:{value}")
+    monkeypatch.setattr(
+        SecretProtector,
+        "unprotect",
+        lambda value: value.removeprefix("safe:"),
+    )
+    family = CoordinationGroupSettings(
+        group_id="family",
+        name="Family Valheim",
+        server_url="https://family.example",
+        device_id="device-family",
+        device_token="family-secret",
+    )
+    friends = CoordinationGroupSettings(
+        group_id="friends",
+        name="Friends V Rising",
+        server_url="https://friends.example",
+        device_id="device-friends",
+        device_token="friends-secret",
+        is_administrator=True,
+    )
+    settings = AppSettings(
+        coordination_groups=(family, friends),
+    ).with_active_group("friends")
+
+    SettingsService.save(settings, settings_path)
+    stored = settings_path.read_text(encoding="utf-8")
+
+    assert '"device_token":' not in stored
+    assert '"device_token_protected": "family-secret"' not in stored
+    assert '"device_token_protected": "friends-secret"' not in stored
+    assert SettingsService.load(settings_path) == settings
+
+
+def test_group_can_be_renamed_without_changing_its_connection() -> None:
+    group = CoordinationGroupSettings(
+        group_id="family",
+        name="Old name",
+        server_url="https://family.example",
+        device_id="device-family",
+        device_token="family-secret",
+    )
+    settings = AppSettings(coordination_groups=(group,)).with_active_group("family")
+
+    renamed = settings.rename_group("family", "  Family Valheim  ")
+
+    assert renamed.active_coordination_group is not None
+    assert renamed.active_coordination_group.name == "Family Valheim"
+    assert renamed.coordination_server_url == "https://family.example"
+    assert renamed.coordination_device_token == "family-secret"
+
+
+def test_steam_native_group_manifest_coordinates_are_persisted(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "settings.json"
+    group = CoordinationGroupSettings(
+        group_id="steam-family",
+        name="Family worlds",
+        device_id="device-1",
+        provider_kind="steam",
+        is_administrator=True,
+        steam_manifest_item_id="3797671909",
+        steam_package_index_item_id="3797671910",
+        steam_administrator_steam_id="76561198000000001",
+    )
+    settings = AppSettings(coordination_groups=(group,)).with_active_group(
+        group.group_id
+    )
+
+    SettingsService.save(settings, path)
+    restored = SettingsService.load(path).active_coordination_group
+
+    assert restored is not None
+    assert restored.provider_kind == "steam"
+    assert restored.steam_manifest_item_id == "3797671909"
+    assert restored.steam_package_index_item_id == "3797671910"
+    assert restored.steam_administrator_steam_id == "76561198000000001"
+
+
+def test_generated_cloudflare_script_name_is_not_shown_as_group_name(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "coordination_groups": [
+                    {
+                        "group_id": "group-1",
+                        "name": "saveshift-coordination-03fcb8",
+                    }
+                ],
+                "active_coordination_group_id": "group-1",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = SettingsService.load(settings_path)
+
+    assert loaded.active_coordination_group is not None
+    assert loaded.active_coordination_group.name == "My Save Shift Group"
+
+
+def test_legacy_single_group_is_migrated_with_stable_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(SecretProtector, "unprotect", lambda _value: "token")
+    settings_path.write_text(
+        json.dumps(
+            {
+                "coordination_enabled": True,
+                "coordination_server_url": "https://original.example",
+                "coordination_device_id": "device-1",
+                "coordination_device_token_protected": "protected",
+                "coordination_cloudflare_script_name": "Family worlds",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = SettingsService.load(settings_path)
+    second = SettingsService.load(settings_path)
+
+    assert first.legacy_group_migration_pending
+    assert len(first.coordination_groups) == 1
+    assert first.active_coordination_group is not None
+    assert first.active_coordination_group.name == "Family worlds"
+    assert first.active_coordination_group.group_id == (
+        second.active_coordination_group.group_id
+    )

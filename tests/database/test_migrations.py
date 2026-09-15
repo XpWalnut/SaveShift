@@ -144,6 +144,10 @@ def test_legacy_pre_versioned_database_is_backed_up_and_migrated(
         column["name"]
         for column in inspect(local_engine).get_columns("project_versions")
     }
+    assert "coordination_group_id" in {
+        column["name"]
+        for column in inspect(local_engine).get_columns("projects")
+    }
 
     with local_engine.connect() as connection:
         row = connection.execute(
@@ -158,6 +162,10 @@ def test_legacy_pre_versioned_database_is_backed_up_and_migrated(
         "Legacy history remains intact.",
         None,
     )
+    with local_engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT coordination_group_id FROM projects WHERE id = 1")
+        ).scalar_one() is None
     assert _schema_version(result.backup_path) == 0
 
     with sqlite3.connect(result.backup_path) as backup:
@@ -180,6 +188,10 @@ def test_unversioned_published_alpha_database_is_backed_up_and_migrated(
 
     with local_engine.begin() as connection:
         connection.execute(text("DROP TABLE session_journal_entries"))
+        connection.execute(text("DROP INDEX ix_projects_coordination_group_id"))
+        connection.execute(
+            text("ALTER TABLE projects DROP COLUMN coordination_group_id")
+        )
         connection.execute(
             text(
                 "INSERT INTO installed_games "

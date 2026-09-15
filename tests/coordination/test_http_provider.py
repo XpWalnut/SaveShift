@@ -375,6 +375,30 @@ def test_list_latest_packages_uses_group_inbox_endpoint(
     assert packages[0].metadata.project_name == "Shared World"
 
 
+def test_remove_project_uses_authenticated_catalog_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = []
+
+    def fake_urlopen(request, timeout: float):
+        requests.append(request)
+        return _Response({"removed": True, "package_count": 2})
+
+    monkeypatch.setattr("app.coordination.http_provider.urlopen", fake_urlopen)
+    provider = HttpCoordinationProvider(
+        "https://locks.example.com",
+        device_token="device-token",
+    )
+
+    provider.remove_project(PROJECT_UUID)
+
+    assert requests[0].method == "DELETE"
+    assert requests[0].full_url.endswith(
+        f"/api/v1/projects/{PROJECT_UUID}/packages"
+    )
+    assert requests[0].get_header("Authorization") == "Bearer device-token"
+
+
 def test_get_package_encryption_key_parses_group_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

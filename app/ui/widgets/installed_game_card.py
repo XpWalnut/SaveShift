@@ -1,8 +1,9 @@
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
 
 from app.database.models.installed_game import InstalledGame
 from app.ui import theme, styles
+from app.ui.icons import icon
 
 
 class InstalledGameCard(QFrame):
@@ -28,8 +29,15 @@ class InstalledGameCard(QFrame):
         )
         self._apply_style()
 
-        title = QLabel(f"🎮 {installed_game.display_name}")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title = QLabel(installed_game.display_name)
+        title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        game_icon = QLabel()
+        game_icon.setPixmap(icon("game", theme.ACCENT_HOVER).pixmap(20, 20))
+        title_row = QHBoxLayout()
+        title_row.setSpacing(theme.SPACING_SMALL)
+        title_row.addWidget(game_icon)
+        title_row.addWidget(title)
+        title_row.addStretch()
 
         subtitle = QLabel(
             f"{project_count} project{'s' if project_count != 1 else ''} tracked"
@@ -38,7 +46,7 @@ class InstalledGameCard(QFrame):
 
         layout = QVBoxLayout()
         layout.setSpacing(theme.SPACING_SMALL)
-        layout.addWidget(title)
+        layout.addLayout(title_row)
         layout.addWidget(subtitle)
 
         self.setLayout(layout)

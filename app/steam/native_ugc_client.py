@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Mapping
 
 from app.core.logging import diagnostic_operation, logger
 from app.steam.constants import SAVESHIFT_STEAM_APP_ID
@@ -11,6 +12,14 @@ from app.steam.errors import SteamworksError, SteamworksUnavailableError
 from app.steam.ugc_client import (
     SteamPublishedItem,
     SteamUgcVisibility,
+)
+from app.steam.social_client import (
+    SteamFriend,
+    SteamIdentity,
+    SteamLobby,
+    SteamLobbyJoinRequest,
+    SteamLobbyMessage,
+    SteamSocialEvent,
 )
 
 
@@ -22,11 +31,24 @@ _CREATE_ITEM_CALLBACK = 3403
 _SUBMIT_ITEM_UPDATE_CALLBACK = 3404
 _DOWNLOAD_ITEM_CALLBACK = 3406
 _DELETE_ITEM_CALLBACK = 3417
+_LOBBY_ENTER_CALLBACK = 504
+_LOBBY_MATCH_LIST_CALLBACK = 510
+_LOBBY_CREATED_CALLBACK = 513
+_GAME_LOBBY_JOIN_REQUESTED_CALLBACK = 333
+_LOBBY_CHAT_MESSAGE_CALLBACK = 507
 _ITEM_STATE_INSTALLED = 4
 _ITEM_STATE_NEEDS_UPDATE = 8
 _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
 _TRANSIENT_DOWNLOAD_RESULTS = {2, 3, 16, 20, 50, 53}
+_FRIEND_FLAG_IMMEDIATE = 0x04
+_LOBBY_TYPE_PRIVATE = 0
+_LOBBY_TYPE_INVISIBLE = 3
+_LOBBY_COMPARISON_EQUAL = 0
+_LOBBY_DISTANCE_WORLDWIDE = 3
+_CHAT_ROOM_ENTER_SUCCESS = 1
+_CHAT_ENTRY_TYPE_MESSAGE = 1
+_MAX_LOBBY_MESSAGE_BYTES = 4000
 
 _RESULT_MESSAGES = {
     2: "generic failure",
@@ -92,8 +114,50 @@ class _DeleteItemResult(ctypes.Structure):
     ]
 
 
+class _LobbyCreatedResult(ctypes.Structure):
+    _fields_ = [
+        ("result", ctypes.c_int),
+        ("lobby_id", ctypes.c_uint64),
+    ]
+
+
+class _LobbyEnterResult(ctypes.Structure):
+    _fields_ = [
+        ("lobby_id", ctypes.c_uint64),
+        ("chat_permissions", ctypes.c_uint32),
+        ("locked", ctypes.c_bool),
+        ("chat_room_enter_response", ctypes.c_uint32),
+    ]
+
+
+class _LobbyMatchListResult(ctypes.Structure):
+    _fields_ = [("lobbies_matching", ctypes.c_uint32)]
+
+
+class _GameLobbyJoinRequested(ctypes.Structure):
+    _fields_ = [
+        ("lobby_id", ctypes.c_uint64),
+        ("friend_steam_id", ctypes.c_uint64),
+    ]
+
+
+class _LobbyChatMessage(ctypes.Structure):
+    _fields_ = [
+        ("lobby_id", ctypes.c_uint64),
+        ("sender_steam_id", ctypes.c_uint64),
+        ("chat_entry_type", ctypes.c_uint8),
+        ("chat_id", ctypes.c_uint32),
+    ]
+
+
 class SteamworksUgcClient:
     """Thin ctypes binding over the official Steamworks flat UGC API."""
+
+    _global_api_lock = threading.RLock()
+    _runtime_refcounts: dict[tuple[str, object], int] = {}
+    _social_callback_queues: dict[
+        tuple[str, object], list[_CallbackMessage]
+    ] = {}
 
     def __init__(
         self,
@@ -105,8 +169,13 @@ class SteamworksUgcClient:
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.download_timeout_seconds = download_timeout_seconds
-        self._lock = threading.RLock()
+        # SteamAPI is process-global. Every wrapper instance must serialize calls
+        # and keep the runtime alive until the last worker releases it.
+        self._lock = self._global_api_lock
         self._closed = False
+        self._runtime_registered = False
+        self._pending_social_callbacks: list[_CallbackMessage] = []
+        injected_library = library is not None
 
         if library is None:
             resolved_path = self.resolve_dll_path(dll_path)
@@ -119,25 +188,51 @@ class SteamworksUgcClient:
                 ) from error
 
         self._api = library
-        self._configure_signatures()
-        error_message = ctypes.create_string_buffer(1024)
-        init_result = self._api.SteamAPI_InitFlat(error_message)
-
-        if init_result != 0:
-            message = error_message.value.decode("utf-8", errors="replace").strip()
-            raise SteamworksUnavailableError(
-                message or f"Steamworks initialization failed ({init_result})."
+        self._runtime_key = (
+            ("injected", id(library))
+            if injected_library
+            else ("native", str(resolved_path).casefold())
+        )
+        with self._lock:
+            self._configure_signatures()
+            self._pending_social_callbacks = self._social_callback_queues.setdefault(
+                self._runtime_key,
+                [],
             )
+            reference_count = self._runtime_refcounts.get(self._runtime_key, 0)
+            if reference_count == 0:
+                error_message = ctypes.create_string_buffer(1024)
+                init_result = self._api.SteamAPI_InitFlat(error_message)
 
-        self._api.SteamAPI_ManualDispatch_Init()
-        self._pipe = int(self._api.SteamAPI_GetHSteamPipe())
-        self._ugc = self._api.SteamAPI_SteamUGC_v021()
+                if init_result != 0:
+                    message = error_message.value.decode(
+                        "utf-8", errors="replace"
+                    ).strip()
+                    raise SteamworksUnavailableError(
+                        message
+                        or f"Steamworks initialization failed ({init_result})."
+                    )
+                self._api.SteamAPI_ManualDispatch_Init()
+            self._runtime_refcounts[self._runtime_key] = reference_count + 1
+            self._runtime_registered = True
+            self._pipe = int(self._api.SteamAPI_GetHSteamPipe())
+            self._ugc = self._api.SteamAPI_SteamUGC_v021()
+            self._user = self._api.SteamAPI_SteamUser_v023()
+            self._friends = self._api.SteamAPI_SteamFriends_v018()
+            self._matchmaking = self._api.SteamAPI_SteamMatchmaking_v009()
 
-        if self._pipe == 0 or not self._ugc:
-            self.close()
-            raise SteamworksUnavailableError(
-                "Steamworks did not provide the current user UGC interface."
-            )
+            if (
+                self._pipe == 0
+                or not self._ugc
+                or not self._user
+                or not self._friends
+                or not self._matchmaking
+            ):
+                self.close()
+                raise SteamworksUnavailableError(
+                    "Steamworks did not provide the required user, friends, "
+                    "matchmaking, and UGC interfaces."
+                )
 
     @staticmethod
     def resolve_dll_path(explicit_path: Path | None = None) -> Path:
@@ -299,6 +394,82 @@ class SteamworksUgcClient:
                 ),
             )
 
+    def update_item(
+        self,
+        published_file_id: str,
+        content_directory: Path,
+        *,
+        title: str,
+        description: str,
+        metadata: str,
+        visibility: SteamUgcVisibility,
+    ) -> SteamPublishedItem:
+        numeric_id = self._parse_published_file_id(published_file_id)
+        content_directory = content_directory.resolve()
+        if not content_directory.is_dir():
+            raise FileNotFoundError(
+                f"Steam UGC content directory does not exist: {content_directory}"
+            )
+        with self._lock:
+            self._ensure_open()
+            update_handle = self._api.SteamAPI_ISteamUGC_StartItemUpdate(
+                self._ugc,
+                SAVESHIFT_STEAM_APP_ID,
+                numeric_id,
+            )
+            if update_handle == _INVALID_UPDATE_HANDLE:
+                raise SteamworksError("Steam could not start the Workshop item update.")
+            self._require_true(
+                "set Workshop title",
+                self._api.SteamAPI_ISteamUGC_SetItemTitle(
+                    self._ugc, update_handle, title.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop description",
+                self._api.SteamAPI_ISteamUGC_SetItemDescription(
+                    self._ugc, update_handle, description.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop metadata",
+                self._api.SteamAPI_ISteamUGC_SetItemMetadata(
+                    self._ugc, update_handle, metadata.encode("utf-8")
+                ),
+            )
+            self._require_true(
+                "set Workshop visibility",
+                self._api.SteamAPI_ISteamUGC_SetItemVisibility(
+                    self._ugc, update_handle, int(visibility)
+                ),
+            )
+            self._require_true(
+                "set Workshop content",
+                self._api.SteamAPI_ISteamUGC_SetItemContent(
+                    self._ugc,
+                    update_handle,
+                    str(content_directory).encode("utf-8"),
+                ),
+            )
+            result = self._await_call(
+                self._api.SteamAPI_ISteamUGC_SubmitItemUpdate(
+                    self._ugc,
+                    update_handle,
+                    b"Save Shift group manifest update",
+                ),
+                _SubmitItemUpdateResult,
+                _SUBMIT_ITEM_UPDATE_CALLBACK,
+            )
+            self._require_ok("update Workshop item", result.result)
+            if int(result.published_file_id) != numeric_id:
+                raise SteamworksError(
+                    "Steam returned a different item after the update."
+                )
+            return SteamPublishedItem(
+                published_file_id=str(numeric_id),
+                user_needs_legal_agreement=bool(result.needs_legal_agreement),
+            )
+
     @diagnostic_operation("steam.download")
     def download_item(self, published_file_id: str) -> Path:
         numeric_id = self._parse_published_file_id(published_file_id)
@@ -356,10 +527,362 @@ class SteamworksUgcClient:
                     "Steam confirmed deletion for a different Workshop item."
                 )
 
+    def current_identity(self) -> SteamIdentity:
+        with self._lock:
+            self._ensure_open()
+            steam_id = int(self._api.SteamAPI_ISteamUser_GetSteamID(self._user))
+            if steam_id < 1:
+                raise SteamworksUnavailableError(
+                    "Steam is not signed in to a valid account."
+                )
+            return SteamIdentity(
+                steam_id=str(steam_id),
+                persona_name=self._decode_steam_text(
+                    self._api.SteamAPI_ISteamFriends_GetPersonaName(self._friends)
+                ),
+            )
+
+    def list_friends(self) -> list[SteamFriend]:
+        with self._lock:
+            self._ensure_open()
+            count = int(
+                self._api.SteamAPI_ISteamFriends_GetFriendCount(
+                    self._friends,
+                    _FRIEND_FLAG_IMMEDIATE,
+                )
+            )
+            if count < 0:
+                raise SteamworksError("Steam could not load the friends list.")
+            friends: list[SteamFriend] = []
+            for index in range(count):
+                steam_id = int(
+                    self._api.SteamAPI_ISteamFriends_GetFriendByIndex(
+                        self._friends,
+                        index,
+                        _FRIEND_FLAG_IMMEDIATE,
+                    )
+                )
+                if steam_id < 1:
+                    continue
+                friends.append(
+                    SteamFriend(
+                        steam_id=str(steam_id),
+                        persona_name=self._decode_steam_text(
+                            self._api.SteamAPI_ISteamFriends_GetFriendPersonaName(
+                                self._friends,
+                                steam_id,
+                            )
+                        ),
+                    )
+                )
+            return friends
+
+    def create_private_lobby(
+        self,
+        *,
+        maximum_members: int = 16,
+        metadata: Mapping[str, str] | None = None,
+    ) -> SteamLobby:
+        return self._create_lobby(
+            _LOBBY_TYPE_PRIVATE,
+            maximum_members=maximum_members,
+            metadata=metadata,
+        )
+
+    def create_searchable_lobby(
+        self,
+        *,
+        maximum_members: int = 16,
+        metadata: Mapping[str, str] | None = None,
+    ) -> SteamLobby:
+        return self._create_lobby(
+            _LOBBY_TYPE_INVISIBLE,
+            maximum_members=maximum_members,
+            metadata=metadata,
+        )
+
+    def _create_lobby(
+        self,
+        lobby_type: int,
+        *,
+        maximum_members: int,
+        metadata: Mapping[str, str] | None,
+    ) -> SteamLobby:
+        if not 2 <= maximum_members <= 250:
+            raise ValueError("A Steam lobby must allow between 2 and 250 members.")
+        with self._lock:
+            self._ensure_open()
+            result = self._await_call(
+                self._api.SteamAPI_ISteamMatchmaking_CreateLobby(
+                    self._matchmaking,
+                    lobby_type,
+                    maximum_members,
+                ),
+                _LobbyCreatedResult,
+                _LOBBY_CREATED_CALLBACK,
+            )
+            self._require_ok("create private lobby", result.result)
+            lobby = SteamLobby(lobby_id=str(int(result.lobby_id)))
+            if lobby.lobby_id == "0":
+                raise SteamworksError("Steam created an invalid lobby identifier.")
+            for key, value in (metadata or {}).items():
+                self.set_lobby_data(lobby.lobby_id, key, value)
+            return lobby
+
+    def find_lobbies(
+        self,
+        metadata: Mapping[str, str],
+        *,
+        maximum_results: int = 50,
+    ) -> list[SteamLobby]:
+        if not metadata:
+            raise ValueError("A Steam lobby search requires metadata filters.")
+        if not 1 <= maximum_results <= 50:
+            raise ValueError("A Steam lobby search can return between 1 and 50 results.")
+        with self._lock:
+            self._ensure_open()
+            for key, value in metadata.items():
+                self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter(
+                    self._matchmaking,
+                    self._lobby_text(key, "Lobby metadata key"),
+                    self._lobby_text(value, "Lobby metadata value"),
+                    _LOBBY_COMPARISON_EQUAL,
+                )
+            self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter(
+                self._matchmaking,
+                _LOBBY_DISTANCE_WORLDWIDE,
+            )
+            self._api.SteamAPI_ISteamMatchmaking_AddRequestLobbyListResultCountFilter(
+                self._matchmaking,
+                maximum_results,
+            )
+            result = self._await_call(
+                self._api.SteamAPI_ISteamMatchmaking_RequestLobbyList(
+                    self._matchmaking
+                ),
+                _LobbyMatchListResult,
+                _LOBBY_MATCH_LIST_CALLBACK,
+            )
+            return [
+                SteamLobby(
+                    lobby_id=str(
+                        int(
+                            self._api.SteamAPI_ISteamMatchmaking_GetLobbyByIndex(
+                                self._matchmaking,
+                                index,
+                            )
+                        )
+                    )
+                )
+                for index in range(int(result.lobbies_matching))
+            ]
+
+    def join_lobby(self, lobby_id: str) -> SteamLobby:
+        numeric_id = self._parse_steam_id(lobby_id, "lobby")
+        with self._lock:
+            self._ensure_open()
+            result = self._await_call(
+                self._api.SteamAPI_ISteamMatchmaking_JoinLobby(
+                    self._matchmaking,
+                    numeric_id,
+                ),
+                _LobbyEnterResult,
+                _LOBBY_ENTER_CALLBACK,
+            )
+            response = int(result.chat_room_enter_response)
+            if response != _CHAT_ROOM_ENTER_SUCCESS:
+                raise SteamworksError(
+                    "Steam did not allow this account to join the lobby "
+                    f"(response {response})."
+                )
+            joined_id = int(result.lobby_id)
+            if joined_id != numeric_id:
+                raise SteamworksError("Steam joined a different lobby.")
+            return SteamLobby(lobby_id=str(joined_id))
+
+    def leave_lobby(self, lobby_id: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            self._api.SteamAPI_ISteamMatchmaking_LeaveLobby(
+                self._matchmaking,
+                self._parse_steam_id(lobby_id, "lobby"),
+            )
+
+    def invite_friend(self, lobby_id: str, friend_steam_id: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            invited = self._api.SteamAPI_ISteamMatchmaking_InviteUserToLobby(
+                self._matchmaking,
+                self._parse_steam_id(lobby_id, "lobby"),
+                self._parse_steam_id(friend_steam_id, "friend"),
+            )
+            self._require_true("invite Steam friend to lobby", invited)
+
+    def open_invite_overlay(self, lobby_id: str) -> None:
+        with self._lock:
+            self._ensure_open()
+            self._api.SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog(
+                self._friends,
+                self._parse_steam_id(lobby_id, "lobby"),
+            )
+
+    def lobby_members(self, lobby_id: str) -> list[str]:
+        numeric_id = self._parse_steam_id(lobby_id, "lobby")
+        with self._lock:
+            self._ensure_open()
+            count = max(
+                0,
+                int(
+                    self._api.SteamAPI_ISteamMatchmaking_GetNumLobbyMembers(
+                        self._matchmaking,
+                        numeric_id,
+                    )
+                ),
+            )
+            return [
+                str(
+                    int(
+                        self._api.SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex(
+                            self._matchmaking,
+                            numeric_id,
+                            index,
+                        )
+                    )
+                )
+                for index in range(count)
+            ]
+
+    def lobby_data(self, lobby_id: str, key: str) -> str:
+        encoded_key = self._lobby_text(key, "Lobby metadata key")
+        with self._lock:
+            self._ensure_open()
+            return self._decode_steam_text(
+                self._api.SteamAPI_ISteamMatchmaking_GetLobbyData(
+                    self._matchmaking,
+                    self._parse_steam_id(lobby_id, "lobby"),
+                    encoded_key,
+                )
+            )
+
+    def set_lobby_data(self, lobby_id: str, key: str, value: str) -> None:
+        encoded_key = self._lobby_text(key, "Lobby metadata key")
+        encoded_value = self._lobby_text(value, "Lobby metadata value", empty=True)
+        with self._lock:
+            self._ensure_open()
+            saved = self._api.SteamAPI_ISteamMatchmaking_SetLobbyData(
+                self._matchmaking,
+                self._parse_steam_id(lobby_id, "lobby"),
+                encoded_key,
+                encoded_value,
+            )
+            self._require_true("set lobby metadata", saved)
+
+    def lobby_owner(self, lobby_id: str) -> str:
+        with self._lock:
+            self._ensure_open()
+            owner = int(
+                self._api.SteamAPI_ISteamMatchmaking_GetLobbyOwner(
+                    self._matchmaking,
+                    self._parse_steam_id(lobby_id, "lobby"),
+                )
+            )
+            if owner < 1:
+                raise SteamworksError("Steam returned an invalid lobby owner.")
+            return str(owner)
+
+    def send_lobby_message(self, lobby_id: str, payload: bytes) -> None:
+        if not isinstance(payload, bytes) or not payload:
+            raise ValueError("A Steam lobby message cannot be empty.")
+        if len(payload) > _MAX_LOBBY_MESSAGE_BYTES:
+            raise ValueError("A Steam lobby message cannot exceed 4000 bytes.")
+        buffer = ctypes.create_string_buffer(payload, len(payload))
+        with self._lock:
+            self._ensure_open()
+            sent = self._api.SteamAPI_ISteamMatchmaking_SendLobbyChatMsg(
+                self._matchmaking,
+                self._parse_steam_id(lobby_id, "lobby"),
+                buffer,
+                len(payload),
+            )
+            self._require_true("send lobby invitation data", sent)
+
+    def poll_social_events(self) -> list[SteamSocialEvent]:
+        with self._lock:
+            self._ensure_open()
+            events: list[SteamSocialEvent] = []
+            # Every wrapper for this process shares the same callback inbox.
+            # Drain it in place so an instance that has already polled does not
+            # detach from the list used by background Workshop workers.
+            callbacks = list(self._pending_social_callbacks)
+            self._pending_social_callbacks.clear()
+            callbacks.extend(self._next_callbacks())
+            for message in callbacks:
+                if message.callback_id == _GAME_LOBBY_JOIN_REQUESTED_CALLBACK:
+                    request = ctypes.cast(
+                        message.parameter,
+                        ctypes.POINTER(_GameLobbyJoinRequested),
+                    ).contents
+                    events.append(
+                        SteamLobbyJoinRequest(
+                            lobby_id=str(int(request.lobby_id)),
+                            friend_steam_id=str(int(request.friend_steam_id)),
+                        )
+                    )
+                elif message.callback_id == _LOBBY_CHAT_MESSAGE_CALLBACK:
+                    notice = ctypes.cast(
+                        message.parameter,
+                        ctypes.POINTER(_LobbyChatMessage),
+                    ).contents
+                    if int(notice.chat_entry_type) != _CHAT_ENTRY_TYPE_MESSAGE:
+                        continue
+                    sender = ctypes.c_uint64()
+                    entry_type = ctypes.c_int()
+                    payload = ctypes.create_string_buffer(
+                        _MAX_LOBBY_MESSAGE_BYTES
+                    )
+                    size = int(
+                        self._api.SteamAPI_ISteamMatchmaking_GetLobbyChatEntry(
+                            self._matchmaking,
+                            int(notice.lobby_id),
+                            int(notice.chat_id),
+                            ctypes.byref(sender),
+                            payload,
+                            len(payload),
+                            ctypes.byref(entry_type),
+                        )
+                    )
+                    if size > 0 and entry_type.value == _CHAT_ENTRY_TYPE_MESSAGE:
+                        events.append(
+                            SteamLobbyMessage(
+                                lobby_id=str(int(notice.lobby_id)),
+                                sender_steam_id=str(sender.value),
+                                payload=bytes(payload.raw[:size]),
+                            )
+                        )
+            return events
+
+    def _preserve_social_callback(self, message: _CallbackMessage) -> None:
+        if message.callback_id in {
+            _GAME_LOBBY_JOIN_REQUESTED_CALLBACK,
+            _LOBBY_CHAT_MESSAGE_CALLBACK,
+        }:
+            self._pending_social_callbacks.append(message)
+
     def close(self) -> None:
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
-            self._api.SteamAPI_Shutdown()
+            if not self._runtime_registered:
+                return
+            self._runtime_registered = False
+            reference_count = self._runtime_refcounts.get(self._runtime_key, 0)
+            if reference_count <= 1:
+                self._runtime_refcounts.pop(self._runtime_key, None)
+                self._social_callback_queues.pop(self._runtime_key, None)
+                self._api.SteamAPI_Shutdown()
+            else:
+                self._runtime_refcounts[self._runtime_key] = reference_count - 1
 
     def __enter__(self) -> "SteamworksUgcClient":
         self._ensure_open()
@@ -382,6 +905,7 @@ class SteamworksUgcClient:
         while time.monotonic() < deadline:
             for message in self._next_callbacks():
                 if message.callback_id != _STEAM_API_CALL_COMPLETED_CALLBACK:
+                    self._preserve_social_callback(message)
                     continue
 
                 completed = ctypes.cast(
@@ -443,6 +967,7 @@ class SteamworksUgcClient:
 
             for message in self._next_callbacks():
                 if message.callback_id != _DOWNLOAD_ITEM_CALLBACK:
+                    self._preserve_social_callback(message)
                     continue
 
                 result = ctypes.cast(
@@ -582,6 +1107,105 @@ class SteamworksUgcClient:
                 ctypes.c_bool,
             ),
             "SteamAPI_SteamUGC_v021": ([], ctypes.c_void_p),
+            "SteamAPI_SteamUser_v023": ([], ctypes.c_void_p),
+            "SteamAPI_SteamFriends_v018": ([], ctypes.c_void_p),
+            "SteamAPI_SteamMatchmaking_v009": ([], ctypes.c_void_p),
+            "SteamAPI_ISteamUser_GetSteamID": (
+                [ctypes.c_void_p],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamFriends_GetPersonaName": (
+                [ctypes.c_void_p],
+                ctypes.c_char_p,
+            ),
+            "SteamAPI_ISteamFriends_GetFriendCount": (
+                [ctypes.c_void_p, ctypes.c_int],
+                ctypes.c_int,
+            ),
+            "SteamAPI_ISteamFriends_GetFriendByIndex": (
+                [ctypes.c_void_p, ctypes.c_int, ctypes.c_int],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamFriends_GetFriendPersonaName": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                ctypes.c_char_p,
+            ),
+            "SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_CreateLobby": (
+                [ctypes.c_void_p, ctypes.c_int, ctypes.c_int],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter": (
+                [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter": (
+                [ctypes.c_void_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_AddRequestLobbyListResultCountFilter": (
+                [ctypes.c_void_p, ctypes.c_int],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_RequestLobbyList": (
+                [ctypes.c_void_p],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyByIndex": (
+                [ctypes.c_void_p, ctypes.c_int],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_JoinLobby": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_LeaveLobby": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                None,
+            ),
+            "SteamAPI_ISteamMatchmaking_InviteUserToLobby": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64],
+                ctypes.c_bool,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetNumLobbyMembers": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                ctypes.c_int,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_int],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyData": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p],
+                ctypes.c_char_p,
+            ),
+            "SteamAPI_ISteamMatchmaking_SetLobbyData": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_char_p],
+                ctypes.c_bool,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyOwner": (
+                [ctypes.c_void_p, ctypes.c_uint64],
+                ctypes.c_uint64,
+            ),
+            "SteamAPI_ISteamMatchmaking_SendLobbyChatMsg": (
+                [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int],
+                ctypes.c_bool,
+            ),
+            "SteamAPI_ISteamMatchmaking_GetLobbyChatEntry": (
+                [
+                    ctypes.c_void_p,
+                    ctypes.c_uint64,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_uint64),
+                    ctypes.c_void_p,
+                    ctypes.c_int,
+                    ctypes.POINTER(ctypes.c_int),
+                ],
+                ctypes.c_int,
+            ),
             "SteamAPI_ISteamUGC_CreateItem": (
                 [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int],
                 ctypes.c_uint64,
@@ -662,6 +1286,25 @@ class SteamworksUgcClient:
             raise SteamworksError("The Workshop item identifier is invalid.")
 
         return int(normalized)
+
+    @staticmethod
+    def _parse_steam_id(value: str, label: str) -> int:
+        normalized = str(value).strip()
+        if not normalized.isdigit() or int(normalized) < 1:
+            raise ValueError(f"The Steam {label} identifier is invalid.")
+        return int(normalized)
+
+    @staticmethod
+    def _decode_steam_text(value: bytes | None) -> str:
+        return value.decode("utf-8", errors="replace") if value else ""
+
+    @staticmethod
+    def _lobby_text(value: str, label: str, *, empty: bool = False) -> bytes:
+        if not isinstance(value, str) or (not empty and not value):
+            raise ValueError(f"{label} cannot be empty.")
+        if "\x00" in value:
+            raise ValueError(f"{label} cannot contain a null character.")
+        return value.encode("utf-8")
 
     @staticmethod
     def _require_true(operation: str, succeeded: bool) -> None:

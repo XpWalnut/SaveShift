@@ -2,6 +2,7 @@ import platform
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -13,7 +14,6 @@ from PySide6.QtWidgets import (
 
 from app.core.settings import AppSettings
 from app.core.distribution import DistributionChannel, detect_distribution_channel
-from app.coordination.cloudflare_provisioning import CloudflareOAuthConfig
 from app.ui import styles, theme
 from app.version import APP_VERSION
 
@@ -25,6 +25,9 @@ class SettingsDialog(QDialog):
     ACTION_MANAGE_DEVICES = "manage_devices"
     ACTION_CLAIM_ADMINISTRATOR = "claim_administrator"
     ACTION_LEAVE_GROUP = "leave_group"
+    ACTION_SWITCH_GROUP = "switch_group"
+    ACTION_EXPORT_ADMIN_RECOVERY = "export_admin_recovery"
+    ACTION_IMPORT_ADMIN_RECOVERY = "import_admin_recovery"
 
     def __init__(
         self,
@@ -56,7 +59,7 @@ class SettingsDialog(QDialog):
 
         profile_description = QLabel(
             "This name is recorded in project history and shown to friends "
-            "when you hold a project lock."
+            "when you are the active host."
         )
         profile_description.setWordWrap(True)
         profile_description.setStyleSheet(f"color: {theme.TEXT_SECONDARY};")
@@ -106,6 +109,16 @@ class SettingsDialog(QDialog):
             settings.prompt_for_session_journal
         )
 
+        self.session_image_checkbox = QCheckBox(
+            "Capture a few game-window images during hosted sessions"
+        )
+        self.session_image_checkbox.setChecked(settings.capture_session_images)
+        self.session_image_checkbox.setToolTip(
+            "Only the visible supported-game window is captured. Save Shift "
+            "does not capture the desktop or other applications. You choose "
+            "whether to keep an image after the save is handed off."
+        )
+
         self.update_management_label = QLabel()
         self.update_management_label.setWordWrap(True)
         self.update_management_label.setStyleSheet(
@@ -125,13 +138,13 @@ class SettingsDialog(QDialog):
                 "Save Shift's official GitHub releases."
             )
 
-        coordination_heading = QLabel("Project Coordination")
+        coordination_heading = QLabel("Groups & Project Coordination")
         coordination_heading.setStyleSheet("font-size: 20px; font-weight: bold;")
 
         coordination_description = QLabel(
-            "Create or join a group so Save Shift can prevent two friends from "
-            "changing the same world at the same time. Save files are still "
-            "shared through .sspkg packages."
+            "Create or join groups through Steam friends. Existing Cloudflare "
+            "groups remain available while Save Shift migrates their shared "
+            "worlds and coordination safely."
         )
         coordination_description.setWordWrap(True)
         coordination_description.setStyleSheet(
@@ -139,13 +152,37 @@ class SettingsDialog(QDialog):
         )
 
         self.coordination_enabled_checkbox = QCheckBox(
-            "Enable coordinated project locking"
+            "Enable coordinated group hosting"
         )
         self.coordination_enabled_checkbox.setChecked(
             settings.coordination_enabled
         )
         self._paired_device_id = settings.coordination_device_id
         self._is_administrator = settings.coordination_is_administrator
+        active_group = settings.active_coordination_group
+        self._provider_kind = (
+            active_group.provider_kind
+            if active_group is not None
+            else settings.coordination_provider_kind
+        )
+
+        self.group_selector = QComboBox()
+        self.group_selector.setObjectName("CoordinationGroupSelector")
+        for group in settings.coordination_groups:
+            self.group_selector.addItem(group.name, group.group_id)
+        active_index = self.group_selector.findData(
+            settings.active_coordination_group_id
+        )
+        if active_index >= 0:
+            self.group_selector.setCurrentIndex(active_index)
+        self.switch_group_button = QPushButton("Switch")
+        self.switch_group_button.setStyleSheet(styles.secondary_button_style())
+        self.switch_group_button.clicked.connect(
+            lambda: self._request_coordination_action(self.ACTION_SWITCH_GROUP)
+        )
+        group_row = QHBoxLayout()
+        group_row.addWidget(self.group_selector, 1)
+        group_row.addWidget(self.switch_group_button)
 
         self.coordination_server_input = QLineEdit(
             settings.coordination_server_url
@@ -186,8 +223,7 @@ class SettingsDialog(QDialog):
         self.create_group_button.clicked.connect(
             lambda: self._request_coordination_action(self.ACTION_CREATE_GROUP)
         )
-        oauth_available = CloudflareOAuthConfig.from_environment().available
-        self.create_group_button.setEnabled(oauth_available)
+        self.create_group_button.setEnabled(True)
 
         self.join_group_button = QPushButton("Join Group")
         self.join_group_button.setStyleSheet(styles.secondary_button_style())
@@ -225,13 +261,44 @@ class SettingsDialog(QDialog):
             lambda: self._request_coordination_action(self.ACTION_LEAVE_GROUP)
         )
 
-        coordination_action_row = QHBoxLayout()
-        coordination_action_row.addWidget(self.create_group_button)
-        coordination_action_row.addWidget(self.join_group_button)
-        coordination_action_row.addWidget(self.create_invitation_button)
-        coordination_action_row.addWidget(self.manage_devices_button)
-        coordination_action_row.addWidget(self.claim_administrator_button)
-        coordination_action_row.addWidget(self.leave_group_button)
+        self.export_recovery_button = QPushButton("Back Up Group Access")
+        self.export_recovery_button.setStyleSheet(styles.secondary_button_style())
+        self.export_recovery_button.setToolTip(
+            "Create a password-encrypted recovery kit for this Steam group."
+        )
+        self.export_recovery_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_EXPORT_ADMIN_RECOVERY
+            )
+        )
+
+        self.import_recovery_button = QPushButton("Recover Group")
+        self.import_recovery_button.setStyleSheet(styles.secondary_button_style())
+        self.import_recovery_button.setToolTip(
+            "Restore administrator access from an encrypted recovery kit."
+        )
+        self.import_recovery_button.clicked.connect(
+            lambda: self._request_coordination_action(
+                self.ACTION_IMPORT_ADMIN_RECOVERY
+            )
+        )
+
+        coordination_setup_row = QHBoxLayout()
+        coordination_setup_row.addWidget(self.create_group_button)
+        coordination_setup_row.addWidget(self.join_group_button)
+        coordination_setup_row.addStretch()
+
+        coordination_management_row = QHBoxLayout()
+        coordination_management_row.addWidget(self.create_invitation_button)
+        coordination_management_row.addWidget(self.manage_devices_button)
+        coordination_management_row.addWidget(self.claim_administrator_button)
+        coordination_management_row.addWidget(self.leave_group_button)
+        coordination_management_row.addStretch()
+
+        coordination_recovery_row = QHBoxLayout()
+        coordination_recovery_row.addWidget(self.import_recovery_button)
+        coordination_recovery_row.addWidget(self.export_recovery_button)
+        coordination_recovery_row.addStretch()
 
         self.coordination_setup_note = QLabel()
         self.coordination_setup_note.setWordWrap(True)
@@ -239,16 +306,16 @@ class SettingsDialog(QDialog):
             f"color: {theme.TEXT_SECONDARY};"
         )
 
-        if not oauth_available and not self._paired_device_id:
+        if not self._paired_device_id:
             self.coordination_setup_note.setText(
-                "Creating a group is unavailable until this Save Shift build "
-                "is registered with Cloudflare. You can still join a group or "
-                "configure a custom provider."
+                "New groups use Steam identity, friend invitations, and signed "
+                "Workshop data. Custom provider settings below are retained "
+                "for existing groups."
             )
 
         paired = bool(self._paired_device_id)
-        self.create_group_button.setVisible(not paired)
-        self.join_group_button.setVisible(not paired)
+        self.create_group_button.setVisible(True)
+        self.join_group_button.setVisible(True)
         self.create_invitation_button.setVisible(
             paired and self._is_administrator
         )
@@ -257,6 +324,9 @@ class SettingsDialog(QDialog):
         )
         self.claim_administrator_button.setVisible(False)
         self.leave_group_button.setVisible(paired)
+        self.export_recovery_button.setVisible(
+            paired and self._is_administrator and self._provider_kind == "steam"
+        )
 
         self.advanced_coordination_checkbox = QCheckBox(
             "Advanced custom provider setup"
@@ -303,11 +373,17 @@ class SettingsDialog(QDialog):
         layout.addWidget(journal_heading)
         layout.addWidget(journal_description)
         layout.addWidget(self.session_journal_prompt_checkbox)
+        layout.addWidget(self.session_image_checkbox)
         layout.addSpacing(theme.SPACING)
         layout.addWidget(coordination_heading)
         layout.addWidget(coordination_description)
+        if self.group_selector.count():
+            layout.addWidget(QLabel("Active group"))
+            layout.addLayout(group_row)
         layout.addWidget(self.coordination_enabled_checkbox)
-        layout.addLayout(coordination_action_row)
+        layout.addLayout(coordination_setup_row)
+        layout.addLayout(coordination_management_row)
+        layout.addLayout(coordination_recovery_row)
         layout.addWidget(self.coordination_setup_note)
         layout.addWidget(self.advanced_coordination_checkbox)
         layout.addLayout(coordination_form)
@@ -327,6 +403,10 @@ class SettingsDialog(QDialog):
     @property
     def prompt_for_session_journal(self) -> bool:
         return self.session_journal_prompt_checkbox.isChecked()
+
+    @property
+    def capture_session_images(self) -> bool:
+        return self.session_image_checkbox.isChecked()
 
     @property
     def manual_transfer_controls(self) -> bool:
@@ -351,6 +431,11 @@ class SettingsDialog(QDialog):
     @property
     def coordination_pairing_code(self) -> str:
         return self.coordination_pairing_code_input.text().strip()
+
+    @property
+    def selected_group_id(self) -> str:
+        value = self.group_selector.currentData()
+        return value if isinstance(value, str) else ""
 
     def _request_check(self) -> None:
         self.check_requested = True
@@ -390,8 +475,14 @@ class SettingsDialog(QDialog):
             )
         elif self._paired_device_id:
             role = "group administrator" if self._is_administrator else "group member"
-            status = f"Status: Connected as a {role}."
+            if self._provider_kind == "steam":
+                status = f"Status: Connected through Steam as a {role}."
+            else:
+                status = f"Status: Connected as a {role}."
         else:
-            status = "Status: Not paired. Enter the pairing code before saving."
+            status = (
+                "Status: Not paired with an active group. Create one or join "
+                "through a Steam friend."
+            )
 
         self.coordination_status_label.setText(status)

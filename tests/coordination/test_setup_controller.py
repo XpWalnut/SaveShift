@@ -5,6 +5,11 @@ import pytest
 from app.coordination.cloudflare_provisioning import CreatedGroup
 from app.coordination.models import GroupInvitation, GroupLeaveResult, PairedDevice
 from app.coordination.setup_controller import GroupLeaveOutcome, GroupSetupController
+from app.steam.device_identity import SteamDeviceIdentityStore
+from app.steam.group_manifest import SteamGroupManifest
+from app.steam.social_client import SteamIdentity
+from app.steam.social_client import SteamFriend
+from tests.steam.test_device_identity import MemoryProtector
 
 
 def test_setup_controller_creates_group_off_ui_thread(qtbot) -> None:
@@ -29,6 +34,120 @@ def test_setup_controller_creates_group_off_ui_thread(qtbot) -> None:
 
     assert signal.args == [created]
     qtbot.waitUntil(lambda: not controller.running, timeout=2000)
+
+
+def test_setup_controller_creates_steam_group_off_ui_thread(qtbot) -> None:
+    created = object()
+
+    class FakeSteamService:
+        def create_group(self, name: str):
+            assert name == "Family Worlds"
+            return created
+
+    controller = GroupSetupController(
+        steam_service_factory=FakeSteamService,
+    )
+    with qtbot.waitSignal(controller.steam_create_completed) as signal:
+        assert controller.create_steam_group("Family Worlds")
+
+    assert signal.args == [created]
+    assert not controller.running
+
+
+def test_setup_controller_loads_steam_friends_off_ui_thread(qtbot) -> None:
+    friends = [SteamFriend("76561198000000002", "Hunter")]
+
+    class FakeSteamClient:
+        closed = False
+
+        def list_friends(self):
+            return friends
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = FakeSteamClient()
+    controller = GroupSetupController(steam_client_factory=lambda: client)
+
+    with qtbot.waitSignal(controller.steam_friends_loaded) as signal:
+        assert controller.load_steam_friends()
+
+    assert signal.args == [friends]
+    assert client.closed
+    assert not controller.running
+
+
+def test_setup_controller_lists_and_revokes_steam_member(
+    qtbot,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity_store = SteamDeviceIdentityStore(
+        tmp_path / "administrator.json",
+        protector=MemoryProtector(),
+    )
+    administrator = identity_store.load_or_create("76561198000000001")
+    member = SteamDeviceIdentityStore(
+        tmp_path / "member.json",
+        protector=MemoryProtector(),
+    ).load_or_create("76561198000000002")
+    manifest, group_key = SteamGroupManifest.create("Friends", administrator)
+    state = {"manifest": manifest.add_member(member, group_key, administrator)}
+
+    class FakeSteamClient:
+        def current_identity(self):
+            return SteamIdentity(administrator.steam_id, "Administrator")
+
+        def list_friends(self):
+            return [SteamFriend(member.steam_id, "Hunter")]
+
+        def close(self) -> None:
+            pass
+
+    class FakeTransport:
+        def __init__(self, _client, cache=None) -> None:
+            pass
+
+        def download(self, item_id: str):
+            assert item_id == "3797671909"
+            return state["manifest"]
+
+        def update(self, item_id: str, updated: SteamGroupManifest) -> None:
+            assert item_id == "3797671909"
+            state["manifest"] = updated
+
+    monkeypatch.setattr(
+        "app.coordination.setup_controller.SteamGroupManifestTransport",
+        FakeTransport,
+    )
+    controller = GroupSetupController(
+        steam_client_factory=FakeSteamClient,
+        identity_store_factory=lambda: identity_store,
+        manifest_cache_factory=lambda: object(),
+    )
+
+    with qtbot.waitSignal(controller.steam_members_loaded) as listed:
+        assert controller.load_steam_group_members(
+            "3797671909",
+            state["manifest"].group_id,
+        )
+
+    assert listed.args[0][0].persona_name == "Hunter"
+    assert listed.args[0][0].device_id == member.device_id
+
+    with qtbot.waitSignal(controller.steam_member_revoked) as revoked:
+        assert controller.revoke_steam_member(
+            "3797671909",
+            state["manifest"].group_id,
+            member.device_id,
+        )
+
+    updated = revoked.args[0]
+    assert updated.key_epoch == 2
+    assert [item.device_id for item in updated.active_members] == [
+        administrator.device_id
+    ]
+    assert not controller.running
 
 
 def test_setup_controller_joins_group_off_ui_thread(
